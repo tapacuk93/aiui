@@ -179,6 +179,47 @@ const WebBackend = (() => {
   const utilCategories = () => [...new Set(Object.values(loadUtils())
     .flatMap((i) => i.path.map((_, n) => i.path.slice(0, n + 1).join(' › '))))].sort();
 
+  // ------------------------------------------------------------- user profile
+  // Characteristic tree (from the profiler AI) + behavioral baseline, in localStorage.
+
+  const PROFILE = 'aiui.profile';
+  const loadProfile = () => { try { return JSON.parse(localStorage.getItem(PROFILE)) || { traits: {}, baseline: {} }; } catch { return { traits: {}, baseline: {} }; } };
+  const saveProfile = (p) => { try { localStorage.setItem(PROFILE, JSON.stringify(p)); } catch {} };
+  const pkey = (path) => path.map((x) => x.toLowerCase()).join(' › ');
+  function profileOverview(limit = 24) {
+    return Object.values(loadProfile().traits)
+      .sort((a, b) => b.confidence * Math.log(b.evidence + 1.7) - a.confidence * Math.log(a.evidence + 1.7))
+      .slice(0, limit).map((t) => `${t.path.join(' › ')}: ${t.value} (${t.confidence.toFixed(1)})`);
+  }
+  function profileMerge(r) {
+    const p = loadProfile();
+    for (const u of r.updates || []) {
+      if (!u.path || !u.path.length || !u.value) continue;
+      const k = pkey(u.path), conf = Math.min(1, Math.max(0, u.confidence ?? 0.5)), prev = p.traits[k];
+      p.traits[k] = { path: u.path, value: u.value, confidence: prev ? prev.confidence * 0.6 + conf * 0.4 : conf,
+        evidence: (prev ? prev.evidence : 0) + 1, updated: Date.now() };
+    }
+    for (const r2 of r.remove || []) delete p.traits[pkey(r2)];
+    const all = Object.entries(p.traits);
+    if (all.length > 300) all.sort((a, b) => a[1].confidence * a[1].evidence - b[1].confidence * b[1].evidence)
+      .slice(0, all.length - 300).forEach(([k]) => delete p.traits[k]);
+    saveProfile(p);
+  }
+  function profileTree(path) {
+    const under = Object.values(loadProfile().traits)
+      .filter((t) => t.path.length > path.length && pkey(t.path.slice(0, path.length)) === pkey(path));
+    const branches = {}, here = [];
+    for (const t of under) {
+      if (t.path.length > path.length + 1) branches[t.path[path.length]] = (branches[t.path[path.length]] || 0) + 1;
+      else here.push(t);
+    }
+    return {
+      branches: Object.entries(branches).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([name, count]) => ({ name, count })),
+      traits: here.sort((a, b) => b.confidence - a.confidence).map((t) => ({ name: t.path[t.path.length - 1], value: t.value, confidence: t.confidence, path: t.path })),
+      total: Object.keys(loadProfile().traits).length,
+    };
+  }
+
   // ------------------------------------------------------------- model calls
 
   const screenToolDesc = 'Show the next screen to the user. Ends your turn.';
@@ -298,6 +339,12 @@ const WebBackend = (() => {
     if (ov.length) event.flows = ov;
     const uo = utilOverview(words);
     if (uo.length) { event.utilities = uo; event.utilityCategories = utilCategories(); }
+    const user = {};
+    if (input.guest) user.guest = true;
+    else { const pr = profileOverview(); if (pr.length) user.profile = pr; }
+    if (input.userCheck) user.check = input.userCheck;
+    delete event.guest; delete event.userCheck;
+    if (Object.keys(user).length) event.user = user;
 
     const prompt = 'UI event from aiui:\n' + json(event) + '\nDo what it needs, then return the next screen.';
     const messages = [...convo];
@@ -405,6 +452,24 @@ const WebBackend = (() => {
       }
       case 'reset': convo = []; openScreen = null; return { ok: true };
       case 'sys': return sys(body);
+      case 'profile': {
+        const p = loadProfile();
+        if (body.op === 'baseline') { p.baseline = body.baseline || {}; saveProfile(p); return { ok: true }; }
+        if (body.op === 'tree') return profileTree(body.path || []);
+        if (body.op === 'remove') { delete p.traits[pkey(body.path || [])]; saveProfile(p); return profileTree((body.path || []).slice(0, -1)); }
+        if (body.op === 'learn') {
+          const k = getKey();
+          if (!k) throw err('no-ai');
+          const pr = await loadPrompts();
+          const evidence = { tree: profileOverview(80), flows: overview(40), utilities: utilOverview([], 20),
+            language: navigator.language, behavior: body.behavior || {} };
+          const { screen } = await turn(k, instructions(pr.system + pr.profiler), JSON.parse(pr.profileSchema), [],
+            'Update the user\'s characteristic tree from this evidence:\n' + json(evidence), null, 'profile', () => {});
+          profileMerge(screen);
+          return { traits: profileOverview() };
+        }
+        return { traits: profileOverview(), baseline: p.baseline };
+      }
       case 'utilities': {
         if (body.op === 'open') {
           const u = loadUtils(), item = u[body.id];

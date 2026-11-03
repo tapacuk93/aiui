@@ -497,3 +497,21 @@ html.web #webnote:hover { color: var(--accent); }
   .hint { font-size: 10px; -webkit-line-clamp: 1; max-width: 82%; }
   #title { font-size: 22px; }
 }
+
+/* ---------- someone else? ---------- */
+
+#who {
+  position: fixed;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 8;
+  padding: 4px 12px;
+  border-radius: 14px;
+  border: 1px solid color-mix(in srgb, var(--danger) 45%, transparent);
+  background: var(--chip);
+  color: var(--danger);
+  font: 600 12px/1.4 -apple-system, system-ui;
+  cursor: pointer;
+}
+#who[hidden] { display: none; }

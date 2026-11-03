@@ -9,6 +9,8 @@ let out: [String: Any] = [
     "scout": Prompts.scout,
     "refine": Prompts.refine,
     "translate": Prompts.translate,
+    "profiler": Prompts.profiler,
+    "profileSchema": Prompts.profileSchema,
     "patchSchema": Prompts.patchSchema,
     "translateSchema": Prompts.translateSchema,
     "screenSchema": Prompts.screenSchema,

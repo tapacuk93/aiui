@@ -104,6 +104,13 @@ enum Prompts {
     `utilities` as "path › name — description [id]"; to bring one back unchanged, set `reuse` to \
     its id instead of rebuilding it.
 
+    The user: events carry `user` — `profile`, an indexed tree of what is known about them (path: \
+    value (confidence)); use it to choose and order what you show. If `user.check.suspect` is true, \
+    the app's behavioral checks say this may be someone else (reasons listed): keep their personal \
+    data out of the screen, avoid anything destructive or outward-facing, and where it matters ask \
+    gently. If `user.guest` is true, the user confirmed it is someone else: treat them as a new \
+    person with no history.
+
     Every screen may have a `title` and a `go` label (Go button, bottom center) — decide per screen; \
     omit them when they add nothing. Go means "do it / continue with what is selected". `message` is an \
     optional short line under the title (status, result summary, a question).
@@ -199,6 +206,33 @@ enum Prompts {
     Translate the UI strings in `strings` into the language `language` (a BCP 47 code). Keep them \
     short, natural UI text; keep emoji and placeholders like {name} unchanged. Return every key.
     """
+
+    static let profiler = """
+
+    ## Profiler mode
+    You are now the profiler, a separate background call. From the user's flows, utilities, and the \
+    current characteristic tree, maintain an indexed tree of who this user is: interests, skills, \
+    habits and rhythms, preferences (style, language, pace), goals, tools and apps they use, people \
+    and places only as far as their own actions show. Paths go broad → specific, 2–4 levels, using \
+    stable top branches (Interests, Skills, Habits, Preferences, Goals, Tools, Context). Return only \
+    changes: `updates` (path, short value, confidence 0–1 from the evidence) and `remove` (paths that \
+    no longer hold). Infer only from the given evidence; nothing sensitive (health, beliefs, \
+    finances beyond what they explicitly did). Do not perform any actions.
+    """
+
+    static let profileSchema: String = json([
+        "type": "object",
+        "properties": [
+            "updates": ["type": "array", "items": [
+                "type": "object",
+                "properties": ["path": ["type": "array", "items": ["type": "string"]], "value": ["type": "string"],
+                               "confidence": ["type": "number"]],
+                "required": ["path", "value", "confidence"],
+            ] as [String: Any]],
+            "remove": ["type": "array", "items": ["type": "array", "items": ["type": "string"]]],
+        ] as [String: Any],
+        "required": ["updates"],
+    ])
 
     static let patchSchema: String = json([
         "type": "object",

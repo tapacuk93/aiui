@@ -4,6 +4,7 @@ import Cocoa
 final class API: NSObject, AIUIHost {
     let cache: Cache
     let utilities: Utilities
+    let profile: Profile
     /// The AI behind screens (persistent session) and the stateless background pager.
     /// nil until a CLI is detected or an API key is given.
     private(set) var claude: AIEngine?
@@ -14,6 +15,7 @@ final class API: NSObject, AIUIHost {
     private(set) var scout: AIEngine?
     private(set) var refiner: AIEngine?
     private(set) var translator: AIEngine?
+    private(set) var profiler: AIEngine?
     /// The user's system language (BCP 47), sent with every event.
     let language = Locale.preferredLanguages.first ?? "en"
     private(set) var engineID: String?   // cli id, or "key"
@@ -38,6 +40,7 @@ final class API: NSObject, AIUIHost {
         let mb = Int(ProcessInfo.processInfo.environment["AIUI_CACHE_MB"] ?? "") ?? 64
         cache = Cache(dir: support.appendingPathComponent("cache", isDirectory: true), limitMB: mb)
         utilities = Utilities(dir: support.appendingPathComponent("utilities", isDirectory: true))
+        profile = Profile(dir: support.appendingPathComponent("profile", isDirectory: true))
         let memory = Prompts.memory(index: cache.indexText.path)
         systemPrompt = Prompts.system + memory
         pagerPrompt = Prompts.system + memory + Prompts.pager
@@ -76,6 +79,7 @@ final class API: NSObject, AIUIHost {
         scout = make(false, systemPrompt + Prompts.scout, Prompts.screenSchema)
         refiner = make(false, systemPrompt + Prompts.refine, Prompts.patchSchema)
         translator = make(false, Prompts.translate, Prompts.translateSchema)
+        profiler = make(false, systemPrompt + Prompts.profiler, Prompts.profileSchema)
         engineID = id
         UserDefaults.standard.set(id, forKey: "engine")
         return true
@@ -93,7 +97,7 @@ final class API: NSObject, AIUIHost {
 
     func resetSession() { pager?.cancel(); suggester?.cancel(); scout?.cancel(); refiner?.cancel(); claude?.reset() }
     func shutdown() {
-        for e in [pager, suggester, scout, refiner, translator, claude] { e?.cancel() }
+        for e in [pager, suggester, scout, refiner, translator, profiler, claude] { e?.cancel() }
     }
 
     /// Runs a stateless side engine on `input` (plus flow index context) and replies with its JSON.
@@ -241,6 +245,17 @@ final class API: NSObject, AIUIHost {
                 event["utilities"] = utils
                 event["utilityCategories"] = utilities.categories
             }
+            // Who the user is (unless a guest is using the app) and the page's behavioral check.
+            var user: [String: Any] = [:]
+            let guest = (input["guest"] as? Bool) == true
+            if guest { user["guest"] = true } else {
+                let traits = profile.overview()
+                if !traits.isEmpty { user["profile"] = traits }
+            }
+            if let check = input["userCheck"] as? [String: Any] { user["check"] = check }
+            event["guest"] = nil
+            event["userCheck"] = nil
+            if !user.isEmpty { event["user"] = user }
             let prompt = Self.prompt(for: event)
             claude.next(prompt: prompt, progress: { line in
                 Self.emit(["type": "progress", "text": line])
@@ -277,6 +292,39 @@ final class API: NSObject, AIUIHost {
                 case .failure(let e): fail(e.localizedDescription)
                 }
             })
+
+        case "profile":
+            switch input["op"] as? String ?? "get" {
+            case "baseline":
+                if let b = input["baseline"] as? [String: Any] { profile.baseline = b.mapValues(AnyCodable.init); profile.persist() }
+                send(["ok": true])
+            case "learn":
+                // Background: the profiler revises the characteristic tree from recent flows.
+                guard let profiler else { return fail("no-ai") }
+                let evidence: [String: Any] = [
+                    "tree": profile.overview(limit: 80),
+                    "flows": cache.overview(limit: 40),
+                    "utilities": utilities.overview([], limit: 20),
+                    "language": language,
+                    "behavior": input["behavior"] ?? [:],
+                ]
+                let data = (try? JSONSerialization.data(withJSONObject: evidence, options: [.prettyPrinted, .sortedKeys])) ?? Data()
+                profiler.next(prompt: "Update the user's characteristic tree from this evidence:\n```json\n\(String(decoding: data, as: UTF8.self))\n```",
+                              progress: { _ in }, done: { [weak self] r in
+                    guard let self else { return }
+                    switch r {
+                    case .success(let result): self.profile.merge(result); send(["traits": self.profile.overview()])
+                    case .failure(let e): fail(e.localizedDescription)
+                    }
+                })
+            case "tree":
+                send(profile.tree(at: input["path"] as? [String] ?? []))
+            case "remove":
+                profile.remove(input["path"] as? [String] ?? [])
+                send(profile.tree(at: Array((input["path"] as? [String] ?? []).dropLast())))
+            default:
+                send(["traits": profile.overview(), "baseline": profile.baseline.mapValues(\.value)])
+            }
 
         case "utilities":
             switch input["op"] as? String ?? "tree" {

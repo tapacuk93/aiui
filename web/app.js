@@ -6,7 +6,7 @@ const el = {
   path: $('#path'), title: $('#title'), message: $('#message'),
   circles: $('#circles'), view: $('#view'), write: $('#write'),
   status: $('#status'), go: $('#go'), toast: $('#toast'),
-  prev: $('#prev'), more: $('#more'), stage: $('#stage'), close: $('#close'), top: $('#top'),
+  prev: $('#prev'), more: $('#more'), stage: $('#stage'), close: $('#close'), top: $('#top'), who: $('#who'),
 };
 
 // Human capabilities, each backed by technical ones.
@@ -67,6 +67,7 @@ window.aiui = {
   back: () => back(),
   home: () => home(),
   setup: () => showSetup(),
+  profile: () => showProfile([]),
   get screen() { return current.screen; },
   _event(e) {
     if (e.type !== 'progress') return;
@@ -110,14 +111,18 @@ async function ask(evt, { label, replace = false, circle = null } = {}) {
   };
   const att = attentionSummary(current.screen);
   if (att.length) payload.attention = att;
+  if (who.guest) payload.guest = true;
+  if (who.suspect) payload.userCheck = { suspect: true, reasons: who.suspect };
   const my = ++seq;
   setBusy(true, circle);
   try {
     const { screen, cached, savedUtility } = await call('ai', payload);
     if (my !== seq) return; // cancelled or superseded
+    if (!cached) learnSoon();
     if (savedUtility) {
       setTimeout(() => flashStatus('🧰 ' + [...savedUtility.path, savedUtility.name].join(' › ')), 300);
       initLibrary();
+initUser();
     }
     if (cached) flashStatus(t('fromMemory'));
     const next = normalize(screen);
@@ -230,6 +235,11 @@ async function showLibrary(path = []) {
 
 async function localOpen(c) {
   const kind = current.screen.local;
+  if (kind === 'who') return whoOpen(c);
+  if (kind === 'profile') {
+    if (c.branch) return showProfile([...current.screen.profPath, c.label]);
+    return; // a trait: nothing to open (× forgets it)
+  }
   if (kind === 'library') {
     if (c.cat) return showLibrary([...current.screen.libPath, c.label]);
     try {
@@ -310,6 +320,7 @@ function render() {
   fitStage();
   layoutPages(typing());
   if (s.kind === 'circles') { initFocus(s); maybeRefine(s); }
+  shownAt = s.local ? 0 : performance.now();
   trail.length = 0;
 }
 
@@ -532,6 +543,7 @@ function circleEl(c, i) {
 // Opens a circle: the typed-text circle sends the text; any other circle opens with the
 // typed text (if any) as context.
 function openCircle(c, node) {
+  if (shownAt) { observe('decideMs', performance.now() - shownAt); shownAt = 0; }
   if (c.typed) return submitText();
   if (current.screen.local) return localOpen(c);
   if (c.id === 'utilities' && !stack.length) return showLibrary([]);
@@ -548,6 +560,13 @@ function toggleSelect(c, node) {
 }
 
 function minus(c, node) {
+  if (current.screen.local === 'profile' && c.trait) {
+    call('profile', { op: 'remove', path: c.trait }).catch(() => {});
+    c.removed = true;
+    node.classList.add('leaving');
+    node.addEventListener('animationend', () => { node.remove(); layoutPages(); }, { once: true });
+    return;
+  }
   if (current.screen.local === 'library' && c.util) {
     call('utilities', { op: 'delete', id: c.util, path: current.screen.libPath }).catch(() => {});
     c.removed = true;
@@ -836,6 +855,7 @@ function escapeWriting() {
   else stopWriting(true);
 }
 
+el.who.addEventListener('click', (e) => { e.stopPropagation(); showWhoScreen(); });
 el.close.addEventListener('mousedown', (e) => { e.preventDefault(); e.stopPropagation(); escapeWriting(); });
 
 function submitText() {
@@ -935,6 +955,11 @@ new ResizeObserver(fitStage).observe(el.top);
 el.write.addEventListener('input', onInput);
 el.write.addEventListener('keydown', (e) => {
   const kind = current.screen.kind;
+  if (e.key.length === 1) {
+    const now = performance.now();
+    if (lastKeyAt && now - lastKeyAt < 1500) observe('typeGap', now - lastKeyAt);
+    lastKeyAt = now;
+  }
   // Option/Shift+Enter: new line (the input grows and pushes the circles down).
   if (e.key === 'Enter' && (e.altKey || e.shiftKey)) {
     e.preventDefault();
@@ -966,7 +991,7 @@ el.write.addEventListener('keydown', (e) => {
 document.addEventListener('pointerdown', (e) => {
   if (e.button !== 0 || e.pointerType === 'touch') return; // touch: handled as a tap below
   const t = e.target;
-  if (t === el.write || t.closest('.circle, #nav, #view iframe, #toast, #close')) return;
+  if (t === el.write || t.closest('.circle, #nav, #view iframe, #toast, #close, #who, #webnote')) return;
   if (current.screen.kind === 'html' && t.closest('#view')) return;
   e.preventDefault();
   startWriting();
@@ -999,7 +1024,7 @@ document.addEventListener('touchend', (e) => {
   }
   // A tap (no movement) on an empty place: start typing.
   if (Math.hypot(dx, dy) < 10 && dt < 400 && target.closest &&
-      !target.closest('.circle, #nav, #view, #toast, #close, #write, a, button')) {
+      !target.closest('.circle, #nav, #view, #toast, #close, #write, #who, a, button')) {
     startWriting();
   }
 }, { passive: true });
@@ -1078,6 +1103,11 @@ const STR = {
   go: 'Go', send: 'Send', back: '‹ Back', more: 'More ›', thinking: 'thinking', fromMemory: 'from memory',
   ready: 'ready', asTyped: 'as typed',
   typeHint: 'Type — Enter opens the highlighted circle, ⌥Enter new line, Esc closes',
+  guest: 'guest', whoTitle: 'Is it still you?',
+  whoMsg: 'This session looks different from how you usually use AI UI.',
+  whoGuestMsg: 'Guest mode: no personal history is used.',
+  itsMe: "It's me", itsMeHint: 'keep going, learn this', someoneElse: 'Someone else', someoneElseHint: 'guest mode',
+  aboutYou: 'About you', aboutYouEmpty: 'Nothing learned yet. It builds up as you use the app.',
 };
 STR['root.utilities'] = 'Utilities'; STR['root.utilities.hint'] = 'your saved tools';
 for (const c of ROOT.circles) { STR['root.' + c.id] = c.label; STR['root.' + c.id + '.hint'] = c.hint; }
@@ -1181,6 +1211,11 @@ document.addEventListener('pointermove', (e) => {
   if (e.clientX === lastPointer.x && e.clientY === lastPointer.y) return; // synthetic, no motion
   lastPointer = { x: e.clientX, y: e.clientY };
   lastPointerMove = now;
+  if (trail.length >= 3 && now - lastSpeedSample > 200) {
+    const a = trail[0], b = trail[trail.length - 1];
+    const v = Math.hypot(b.x - a.x, b.y - a.y) / ((b.t - a.t) || 1);
+    if (v > 0.05) { observe('pointerSpeed', v); lastSpeedSample = now; }
+  }
   trail.push({ x: e.clientX, y: e.clientY, t: now });
   while (trail.length > 10 || (trail.length && now - trail[0].t > 250)) trail.shift();
   if (current.screen.kind !== 'circles' || busy) return;
@@ -1280,6 +1315,139 @@ function maybeRefine(s) {
         if (n) { refresh(c, n); const m = [...el.circles.children].find((x) => x.dataset.id === c.id); if (m) m.classList.add('improved'); }
       }
     }).catch(() => {});
+}
+
+// ---------------------------------------------------------------- the user
+// A behavioral baseline (typing rhythm, pointer speed, decision time, active hours, language,
+// screen), measured quietly and stored locally. When this session clearly deviates on several
+// measures, the app suspects someone else is using it: a 👤? badge, the AI is told (and keeps
+// personal data out), and learning pauses. "It's me" clears it; "Someone else" is guest mode.
+// The characteristic tree (what the user is like) is written by a background profiler AI.
+
+const who = { base: null, session: {}, pending: {}, suspect: null, guest: false, turns: 0, dirty: false };
+let shownAt = 0, lastKeyAt = 0, lastSpeedSample = 0;
+const MIN_SESSION = { typeGap: 25, pointerSpeed: 30, decideMs: 5 };
+
+function welford(st, x) { st.n = (st.n || 0) + 1; const d = x - (st.mean || 0); st.mean = (st.mean || 0) + d / st.n; st.m2 = (st.m2 || 0) + d * (x - st.mean); }
+const sdOf = (st) => (st.n > 1 ? Math.sqrt(st.m2 / (st.n - 1)) : 0);
+// Combines two running summaries (parallel Welford).
+function combine(a, b) {
+  if (!b || !b.n) return a || {};
+  if (!a || !a.n) return { ...b };
+  const n = a.n + b.n, d = b.mean - a.mean;
+  return { n, mean: a.mean + d * b.n / n, m2: a.m2 + b.m2 + d * d * a.n * b.n / n };
+}
+const screenKey = () => Math.round(screen.width / 100) * 100 + 'x' + Math.round(screen.height / 100) * 100;
+
+function observe(f, x) {
+  if (!isFinite(x) || who.guest) return;
+  welford(who.session[f] || (who.session[f] = {}), x);
+  welford(who.pending[f] || (who.pending[f] = {}), x);
+  who.dirty = true;
+  checkUser();
+}
+
+function checkUser() {
+  const b = who.base;
+  if (!b || who.guest) return;
+  const reasons = [];
+  let weight = 0;
+  for (const f of Object.keys(MIN_SESSION)) {
+    const base = b[f], sess = who.session[f];
+    if (!base || base.n < 40 || !sess || sess.n < MIN_SESSION[f]) continue;
+    const d = Math.abs(sess.mean - base.mean) / Math.max(sdOf(base), base.mean * 0.15, 1e-6);
+    const name = { typeGap: ['typing', 'slower', 'faster'], pointerSpeed: ['pointer', 'faster', 'slower'], decideMs: ['choosing', 'slower', 'faster'] }[f];
+    if (d > 1.6) { reasons.push(`${name[0]} ${sess.mean > base.mean ? name[1] : name[2]} than usual`); weight += d > 2.5 ? 1.5 : 1; }
+  }
+  const hours = b.hours || [], total = hours.reduce((x, y) => x + y, 0), h = new Date().getHours();
+  if (total >= 60 && (hours[h] || 0) / total < 0.01) { reasons.push(`unusual hour (${h}:00)`); weight += 1; }
+  if (b.lang && b.lang !== LANG) { reasons.push(`different language (${LANG})`); weight += 1; }
+  if (b.screen && b.screen !== screenKey()) { reasons.push('different screen'); weight += 0.5; }
+  const suspect = weight >= 2 ? reasons : null;
+  if (suspect && !who.suspect) { who.suspect = suspect; showWho(); flashStatus('👤 ?'); }
+  else if (suspect) who.suspect = suspect;
+}
+
+// Merges this session's new samples into the baseline (only while it is trusted) and saves it.
+function absorb() {
+  if (who.suspect || who.guest || !who.base) return;
+  for (const [f, st] of Object.entries(who.pending)) who.base[f] = combine(who.base[f], st);
+  who.pending = {};
+  const hours = who.base.hours || (who.base.hours = Array(24).fill(0));
+  hours[new Date().getHours()] += who.turnsSinceAbsorb || 0;
+  who.turnsSinceAbsorb = 0;
+  who.base.lang = who.base.lang || LANG;
+  who.base.screen = who.base.screen || screenKey();
+  if (who.dirty) call('profile', { op: 'baseline', baseline: who.base }).catch(() => {});
+  who.dirty = false;
+}
+setInterval(absorb, 30000);
+document.addEventListener('visibilitychange', () => { if (document.hidden) absorb(); });
+
+// Every 8 AI turns (trusted user only), the profiler revises the characteristic tree.
+function learnSoon() {
+  if (who.guest) return;
+  who.turnsSinceAbsorb = (who.turnsSinceAbsorb || 0) + 1;
+  who.dirty = true;
+  if (who.suspect || ++who.turns % 8) return;
+  const behavior = {};
+  for (const [f, st] of Object.entries(who.base || {})) if (st && st.n) behavior[f] = { mean: Math.round(st.mean * 1000) / 1000, n: st.n };
+  call('profile', { op: 'learn', behavior }).catch(() => {});
+}
+
+async function initUser() {
+  try {
+    const r = await call('profile', { op: 'get' });
+    who.base = r.baseline && Object.keys(r.baseline).length ? r.baseline : { hours: Array(24).fill(0) };
+  } catch { who.base = { hours: Array(24).fill(0) }; }
+}
+
+function showWho() {
+  el.who.hidden = !(who.suspect || who.guest);
+  el.who.textContent = who.guest ? '👤 ' + t('guest') : '👤?';
+}
+
+function showWhoScreen() {
+  push({
+    kind: 'circles', local: 'who', more: false, back: true, title: t('whoTitle'),
+    message: who.guest ? t('whoGuestMsg') : t('whoMsg') + (who.suspect ? ' (' + who.suspect.join('; ') + ')' : ''),
+    circles: [
+      { id: 'me', icon: '🙂', label: t('itsMe'), hint: t('itsMeHint') },
+      ...(who.guest ? [] : [{ id: 'guest', icon: '👥', label: t('someoneElse'), hint: t('someoneElseHint') }]),
+    ],
+  }, '👤');
+}
+
+async function whoOpen(c) {
+  if (c.id === 'me') {
+    // Trusted again: this session's pattern becomes part of the baseline.
+    who.suspect = null; who.guest = false;
+    for (const [f, st] of Object.entries(who.session)) who.pending[f] = st;
+    who.session = {};
+    if (who.base) { who.base.lang = LANG; who.base.screen = screenKey(); }
+    who.dirty = true; absorb();
+  } else {
+    who.guest = true; who.suspect = null; who.session = {}; who.pending = {};
+    call('reset').catch(() => {}); // a fresh AI session for the guest
+  }
+  showWho();
+  back();
+}
+
+// "What AI UI knows about you": the characteristic tree, browsable; × forgets a trait.
+async function showProfile(path = []) {
+  let r;
+  try { r = await call('profile', { op: 'tree', path }); } catch (e) { return toast(e.message); }
+  push({
+    kind: 'circles', local: 'profile', profPath: path, more: false, back: true,
+    title: path.length ? path[path.length - 1] : t('aboutYou'),
+    message: r.total ? '' : t('aboutYouEmpty'),
+    circles: [
+      ...r.branches.map((b) => ({ id: 'b:' + b.name, icon: '📂', label: b.name, hint: String(b.count), branch: true })),
+      ...r.traits.map((tr) => ({ id: 't:' + tr.path.join('/'), icon: '•', label: tr.name, hint: tr.value,
+        trait: tr.path, value: Math.round(tr.confidence * 100) / 100 })),
+    ],
+  }, path.length ? path[path.length - 1] : t('aboutYou'));
 }
 
 render();
