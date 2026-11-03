@@ -10,10 +10,6 @@ protocol AIEngine: AnyObject {
     func reset()
 }
 
-extension Claude: AIEngine {
-    var label: String { "Claude Code" }
-}
-
 func aiError(_ s: String) -> NSError { NSError(domain: "aiui", code: 1, userInfo: [NSLocalizedDescriptionKey: s]) }
 
 // MARK: - Provider choice
@@ -25,7 +21,13 @@ enum Provider {
         ("claude", "Claude Code"), ("codex", "Codex CLI"), ("gemini", "Gemini CLI"),
     ]
 
-    static func detectedCLIs() -> [String] { clis.map(\.id).filter { Shell.which($0) != nil } }
+    static func detectedCLIs() -> [String] {
+        #if os(macOS)
+        return clis.map(\.id).filter { Shell.which($0) != nil }
+        #else
+        return []
+        #endif
+    }
 
     struct Key: Codable {
         var provider: String   // anthropic | openai-compatible
@@ -33,6 +35,8 @@ enum Provider {
         var key: String
         var base: String
         var model: String
+        /// Extra request headers (AICoin: `X-AI` names the provider behind the proxy).
+        var headers: [String: String]? = nil
     }
 
     /// Recognises the provider from the key itself; "<base-url> <key> [model]" for anything else.
@@ -75,6 +79,7 @@ enum Provider {
 
     private static func read(_ svc: String) -> Key? {
         let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: svc,
+                                kSecAttrSynchronizable as String: kSecAttrSynchronizableAny,
                                 kSecReturnData as String: true, kSecMatchLimit as String: kSecMatchLimitOne]
         var out: CFTypeRef?
         guard SecItemCopyMatching(q as CFDictionary, &out) == errSecSuccess, let data = out as? Data else { return nil }
@@ -84,117 +89,19 @@ enum Provider {
     static func saveKey(_ key: Key) -> Bool {
         deleteKey()
         guard let data = try? JSONEncoder().encode(key) else { return false }
-        let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
-                                kSecAttrAccount as String: key.name, kSecValueData as String: data]
+        // Synced through iCloud Keychain to the user's other devices; falls back to this device
+        // only where syncing is unavailable (e.g. an ad-hoc signed build).
+        var q: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
+                                kSecAttrAccount as String: key.name, kSecValueData as String: data,
+                                kSecAttrSynchronizable as String: true]
+        if SecItemAdd(q as CFDictionary, nil) == errSecSuccess { return true }
+        q[kSecAttrSynchronizable as String] = false
         return SecItemAdd(q as CFDictionary, nil) == errSecSuccess
     }
 
     static func deleteKey() {
-        SecItemDelete([kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service] as CFDictionary)
-    }
-}
-
-// MARK: - Other agent CLIs (Codex, Gemini)
-
-/// Drives a non-Claude agent CLI in full-auto mode. These CLIs have no schema flag here, so the
-/// prompt carries the schema and the reply's last JSON object is the screen. Context between calls
-/// is a short transcript the engine keeps itself.
-final class AgentCLI: AIEngine {
-    let id: String, label: String
-    let persistent: Bool, systemPrompt: String, schema: String
-    private var process: Process?
-    private var generation = 0
-    private var pendingDone: ((Swift.Result<[String: Any], Error>) -> Void)?
-    private var transcript: [String] = []
-
-    init(id: String, label: String, persistent: Bool, systemPrompt: String, schema: String) {
-        self.id = id; self.label = label
-        self.persistent = persistent; self.systemPrompt = systemPrompt; self.schema = schema
-    }
-
-    func reset() { cancel(); transcript = [] }
-
-    func cancel() {
-        generation += 1
-        if let d = pendingDone { pendingDone = nil; d(.failure(aiError("cancelled"))) }
-        if let p = process, p.isRunning { p.terminate() }
-        process = nil
-    }
-
-    func next(prompt: String, progress: @escaping (String) -> Void,
-              done: @escaping (Swift.Result<[String: Any], Error>) -> Void) {
-        cancel()
-        guard let exe = Shell.which(id) else { return done(.failure(aiError("\(id) not found on PATH"))) }
-        generation += 1
-        let gen = generation
-        pendingDone = done
-
-        let history = persistent && !transcript.isEmpty
-            ? "## Earlier in this session\n" + transcript.suffix(8).joined(separator: "\n") + "\n\n" : ""
-        let full = """
-        \(systemPrompt)
-
-        ## Output
-        Finish with ONLY one JSON object (no prose, no code fence) matching this JSON Schema:
-        \(schema)
-
-        \(history)\(prompt)
-        """
-        let outFile = FileManager.default.temporaryDirectory.appendingPathComponent("aiui-\(UUID().uuidString).txt")
-        var args: [String]
-        switch id {
-        case "codex":
-            args = ["exec", "--skip-git-repo-check", "--dangerously-bypass-approvals-and-sandbox",
-                    "--color", "never", "-o", outFile.path, "-"]
-        default: // gemini
-            args = ["--yolo", "-p", full]
-        }
-        if let m = ProcessInfo.processInfo.environment["AIUI_MODEL"], !m.isEmpty { args = ["-m", m] + args }
-
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: exe)
-        p.arguments = args
-        p.environment = Shell.loginEnvironment
-        p.currentDirectoryURL = URL(fileURLWithPath: NSHomeDirectory())
-        let out = Pipe(), err = Pipe(), inp = Pipe()
-        p.standardOutput = out; p.standardError = err; p.standardInput = inp
-        var stdout = Data()
-        let lock = NSLock()
-        out.fileHandleForReading.readabilityHandler = { h in
-            let d = h.availableData
-            guard !d.isEmpty else { return }
-            lock.lock(); stdout.append(d); lock.unlock()
-            if let line = String(data: d, encoding: .utf8)?.split(separator: "\n").last {
-                let s = String(line.prefix(120))
-                DispatchQueue.main.async { [weak self] in if self?.generation == gen { progress(s) } }
-            }
-        }
-        p.terminationHandler = { [weak self] proc in
-            out.fileHandleForReading.readabilityHandler = nil
-            let rest = out.fileHandleForReading.readDataToEndOfFile()
-            let errText = String(decoding: err.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
-            lock.lock(); stdout.append(rest); let all = String(decoding: stdout, as: UTF8.self); lock.unlock()
-            let last = (try? String(contentsOf: outFile, encoding: .utf8)) ?? all
-            try? FileManager.default.removeItem(at: outFile)
-            DispatchQueue.main.async {
-                guard let self, self.generation == gen else { return }
-                self.process = nil
-                self.pendingDone = nil
-                if let screen = Claude.extractJSON(last) ?? Claude.extractJSON(all) {
-                    if self.persistent {
-                        self.transcript.append("- event: \(prompt.prefix(400))\n  → screen: \(screen["note"] as? String ?? screen["title"] as? String ?? "")")
-                    }
-                    done(.success(screen))
-                } else {
-                    done(.failure(aiError(errText.isEmpty ? "\(self.id) exited \(proc.terminationStatus) without a screen" : String(errText.suffix(600)))))
-                }
-            }
-        }
-        do { try p.run() } catch { pendingDone = nil; return done(.failure(error)) }
-        process = p
-        if id == "codex" { inp.fileHandleForWriting.write(Data(full.utf8)) }
-        try? inp.fileHandleForWriting.close()
-        progress("thinking")
+        SecItemDelete([kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
+                       kSecAttrSynchronizable as String: kSecAttrSynchronizableAny] as CFDictionary)
     }
 }
 
@@ -290,6 +197,14 @@ final class APIEngine: AIEngine {
     private var screenTool: (name: String, description: String, schema: [String: Any]) {
         ("screen", "Show the next screen to the user. Ends your turn.", schema)
     }
+    /// The shell tool exists only where there is a shell (the Mac).
+    private var availableTools: [(name: String, description: String, schema: [String: Any])] {
+        #if os(macOS)
+        return [shellTool, screenTool]
+        #else
+        return [screenTool]
+        #endif
+    }
 
     // Anthropic Messages API (raw HTTP; Swift has no official SDK).
     private func anthropicLoop(_ convo: inout [[String: Any]], prompt: String, pendingScreen: String?,
@@ -298,7 +213,7 @@ final class APIEngine: AIEngine {
         if let id = pendingScreen { first.append(["type": "tool_result", "tool_use_id": id, "content": "Screen shown."]) }
         first.append(["type": "text", "text": prompt])
         convo.append(["role": "user", "content": first])
-        let tools: [[String: Any]] = [shellTool, screenTool].map {
+        let tools: [[String: Any]] = availableTools.map {
             ["name": $0.name, "description": $0.description, "input_schema": $0.schema]
         }
         let usesFallbacks = ["claude-opus-5-5", "claude-sonnet-5-5", "claude-opus-5", "claude-fable-5-1"].contains(key.model)
@@ -309,7 +224,7 @@ final class APIEngine: AIEngine {
                 "tools": tools, "tool_choice": ["type": "auto"], "messages": convo,
                 "output_config": ["effort": "medium"],
             ]
-            var headers = ["x-api-key": key.key, "anthropic-version": "2026-10-21"]
+            var headers = ["x-api-key": key.key, "anthropic-version": "2026-10-21"].merging(key.headers ?? [:]) { $1 }
             if usesFallbacks {
                 body["fallbacks"] = "default"
                 headers["anthropic-beta"] = "server-side-fallback-2026-07-01"
@@ -353,14 +268,14 @@ final class APIEngine: AIEngine {
                             progress: @escaping (String) -> Void) async throws -> (screen: [String: Any], callID: String?) {
         if let id = pendingScreen { convo.append(["role": "tool", "tool_call_id": id, "content": "Screen shown."]) }
         convo.append(["role": "user", "content": prompt])
-        let tools: [[String: Any]] = [shellTool, screenTool].map {
+        let tools: [[String: Any]] = availableTools.map {
             ["type": "function", "function": ["name": $0.name, "description": $0.description, "parameters": $0.schema]]
         }
         for _ in 0..<30 {
             try Task.checkCancellation()
             let body: [String: Any] = ["model": key.model, "tools": tools, "tool_choice": "auto",
                                        "messages": [["role": "system", "content": instructions]] + convo]
-            let res = try await post("\(key.base)/chat/completions", body, ["Authorization": "Bearer \(key.key)"])
+            let res = try await post("\(key.base)/chat/completions", body, ["Authorization": "Bearer \(key.key)"].merging(key.headers ?? [:]) { $1 })
             guard let msg = ((res["choices"] as? [[String: Any]])?.first)?["message"] as? [String: Any] else {
                 throw aiError("Unexpected response from \(key.name).")
             }
@@ -394,6 +309,7 @@ final class APIEngine: AIEngine {
     }
 
     private func runShell(_ cmd: String) async -> String {
+        #if os(macOS)
         await withCheckedContinuation { cont in
             Shell.run("/bin/zsh", ["-lc", cmd]) { r in
                 var s = "exit \(r.code)\n\(r.stdout)"
@@ -401,6 +317,9 @@ final class APIEngine: AIEngine {
                 cont.resume(returning: String(s.prefix(20000)))
             }
         }
+        #else
+        "No shell on this device."
+        #endif
     }
 
     private func post(_ url: String, _ body: [String: Any], _ headers: [String: String]) async throws -> [String: Any] {

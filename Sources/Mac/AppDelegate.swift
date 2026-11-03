@@ -12,7 +12,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.mainMenu = makeMenu()
         NSApp.setActivationPolicy(.regular)
+        // Other devices' changes arrive through iCloud: merge them in regularly.
+        Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in self?.api.syncNow() }
     }
+
+    func applicationDidBecomeActive(_ notification: Notification) { api.syncNow() }
 
     func openWindow() {
         let screen = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1280, height: 800)

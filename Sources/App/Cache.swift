@@ -59,7 +59,8 @@ final class Cache {
         self.dir = dir
         self.limitBytes = max(1, limitMB) * 1_048_576
         try? fm.createDirectory(at: entries, withIntermediateDirectories: true)
-        if let data = try? Data(contentsOf: indexJSON),
+        Storage.download(dir)
+        if let data = Storage.read(indexJSON),
            let rows = try? dec.decode([IndexRow].self, from: data) {
             for r in rows where r.v == Self.version && fm.fileExists(atPath: file(r.key).path) { index[r.key] = r }
         }
@@ -174,7 +175,7 @@ final class Cache {
         guard var data = try? enc.encode(entry) else { return }
         entry.size = data.count
         data = (try? enc.encode(entry)) ?? data
-        try? data.write(to: file(key), options: .atomic)
+        Storage.write(data, to: file(key))
         index[key] = IndexRow(v: Self.version, flow: flow, key: key, created: entry.created, lastUsed: now, hits: entry.hits,
                               description: description, cacheable: cacheable, size: data.count,
                               action: entry.action)
@@ -223,9 +224,30 @@ final class Cache {
         }
     }
 
+    /// Pulls in rows another device wrote (their entry files arrive through iCloud).
+    func reload() {
+        Storage.download(dir); Storage.download(entries)
+        mergeDisk()
+    }
+
+    private func mergeDisk() {
+        guard let data = Storage.read(indexJSON), let rows = try? dec.decode([IndexRow].self, from: data) else { return }
+        for r in rows where r.v == Self.version {
+            guard fm.fileExists(atPath: file(r.key).path) else { continue }
+            if let mine = index[r.key] {
+                if r.lastUsed > mine.lastUsed { var m = r; m.hits = max(r.hits, mine.hits); index[r.key] = m }
+            } else {
+                index[r.key] = r
+            }
+        }
+        // Rows whose entry was deleted (evicted or cleared on any device) go too.
+        for k in index.keys where !fm.fileExists(atPath: file(k).path) { index[k] = nil }
+    }
+
     private func saveIndex() {
+        mergeDisk()
         let rows = index.values.sorted { $0.lastUsed > $1.lastUsed }
-        if let data = try? enc.encode(rows) { try? data.write(to: indexJSON, options: .atomic) }
+        if let data = try? enc.encode(rows) { Storage.write(data, to: indexJSON) }
         let header = "# aiui memory index — user flows and outcomes, newest first.\n# when | hits | flow (earlier steps ⟶ this action) | outcome [key]. Full outcome: entries/<key>.json; reuse any by key.\n"
         let fmt = DateFormatter()
         fmt.dateFormat = "yyyy-MM-dd HH:mm"

@@ -19,16 +19,45 @@ final class Profile {
     var baseline: [String: AnyCodable] = [:]
     let limit = 300
 
-    private struct Stored: Codable { var traits: [Trait]; var baseline: [String: AnyCodable] }
+    private var removed: [String: Date] = [:]
+    private struct Stored: Codable { var traits: [Trait]; var baseline: [String: AnyCodable]; var removed: [String: Date]? }
 
     init(dir: URL) {
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         file = dir.appendingPathComponent("profile.json")
+        Storage.download(dir)
+        mergeDisk()
+    }
+
+    func reload() { Storage.download(file.deletingLastPathComponent()); mergeDisk() }
+
+    private func mergeDisk() {
         let dec = JSONDecoder(); dec.dateDecodingStrategy = .iso8601
-        if let data = try? Data(contentsOf: file), let s = try? dec.decode(Stored.self, from: data) {
-            for t in s.traits { traits[Self.key(t.path)] = t }
-            baseline = s.baseline
+        guard let data = Storage.read(file), let s = try? dec.decode(Stored.self, from: data) else { return }
+        for (k, at) in s.removed ?? [:] where (removed[k] ?? .distantPast) < at { removed[k] = at }
+        for t in s.traits {
+            let k = Self.key(t.path)
+            if let mine = traits[k], mine.updated >= t.updated { continue }
+            traits[k] = t
         }
+        for (k, at) in removed where (traits[k]?.updated ?? .distantPast) <= at { traits[k] = nil }
+        baseline = Self.mergeBaseline(baseline.mapValues(\.value), s.baseline.mapValues(\.value)).mapValues(AnyCodable.init)
+    }
+
+    /// Per measure, the summary with more samples wins; active hours take the larger count.
+    static func mergeBaseline(_ a: [String: Any], _ b: [String: Any]) -> [String: Any] {
+        var out = a
+        for (k, v) in b {
+            switch (out[k], v) {
+            case (nil, _): out[k] = v
+            case (let x as [String: Any], let y as [String: Any]):
+                if (y["n"] as? Double ?? 0) > (x["n"] as? Double ?? 0) { out[k] = y }
+            case (let x as [Any], let y as [Any]) where x.count == y.count:
+                out[k] = zip(x, y).map { max(($0 as? Double) ?? 0, ($1 as? Double) ?? 0) }
+            default: break
+            }
+        }
+        return out
     }
 
     private static func key(_ path: [String]) -> String { path.map { $0.lowercased() }.joined(separator: " › ") }
@@ -79,13 +108,14 @@ final class Profile {
         ]
     }
 
-    func remove(_ path: [String]) { traits[Self.key(path)] = nil; persist() }
+    func remove(_ path: [String]) { traits[Self.key(path)] = nil; removed[Self.key(path)] = Date(); persist() }
     func clear() { traits = [:]; baseline = [:]; persist() }
 
     func persist() {
+        mergeDisk()
         let enc = JSONEncoder(); enc.dateEncodingStrategy = .iso8601
-        if let data = try? enc.encode(Stored(traits: Array(traits.values), baseline: baseline)) {
-            try? data.write(to: file, options: .atomic)
+        if let data = try? enc.encode(Stored(traits: Array(traits.values), baseline: baseline, removed: removed)) {
+            Storage.write(data, to: file)
         }
     }
 }

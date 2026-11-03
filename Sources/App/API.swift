@@ -1,7 +1,12 @@
-import Cocoa
+import Foundation
 
-/// Native endpoints behind the page's fetch("/api/<name>").
-final class API: NSObject, AIUIHost {
+/// Native endpoints behind the page's /api/<name> calls (Mac: aiui:// scheme in CEF; iOS: the
+/// WebKit message bridge). Platform pieces live in Sources/Mac and Sources/iOS.
+final class API: NSObject {
+    /// HTTP-like reply: status, MIME type, body.
+    typealias Reply = (Int, String, Data) -> Void
+    /// Runs JavaScript in the page; set by the host (CEF on the Mac, WKWebView on iOS).
+    static var evalJS: (String) -> Void = { _ in }
     let cache: Cache
     let utilities: Utilities
     let profile: Profile
@@ -51,7 +56,7 @@ final class API: NSObject, AIUIHost {
         let env = ProcessInfo.processInfo.environment["AIUI_ENGINE"]
         let clis = Provider.detectedCLIs()
         if let want = env ?? saved, use(want) { return }
-        if let first = clis.first { _ = use(first) } else { _ = use("key") }
+        if let first = clis.first { _ = use(first) } else if !use("key") { _ = use("aicoin") }
     }
 
     /// Switches the AI to a detected CLI ("claude", "codex", "gemini") or the saved API key ("key").
@@ -59,6 +64,7 @@ final class API: NSObject, AIUIHost {
     func use(_ id: String) -> Bool {
         let make: (Bool, String, String) -> AIEngine
         switch id {
+        #if os(macOS)
         case "claude":
             guard Shell.which("claude") != nil else { return false }
             make = { Claude(persistent: $0, systemPrompt: $1, schema: $2) }
@@ -66,6 +72,10 @@ final class API: NSObject, AIUIHost {
             guard Shell.which(id) != nil else { return false }
             let name = Provider.clis.first { $0.id == id }?.name ?? id
             make = { AgentCLI(id: id, label: name, persistent: $0, systemPrompt: $1, schema: $2) }
+        #endif
+        case "aicoin":
+            guard let key = AICoin.shared.key() else { return false }
+            make = { APIEngine(key: key, persistent: $0, systemPrompt: $1, schema: $2) }
         case "key":
             guard let key = Provider.loadKey() else { return false }
             make = { APIEngine(key: key, persistent: $0, systemPrompt: $1, schema: $2) }
@@ -86,13 +96,24 @@ final class API: NSObject, AIUIHost {
     }
 
     func engineStatus() -> [String: Any] {
-        var options: [[String: Any]] = Provider.clis.filter { Shell.which($0.id) != nil }.map {
-            ["id": $0.id, "label": $0.name, "kind": "cli"]
+        var options: [[String: Any]] = Provider.detectedCLIs().map { id in
+            ["id": id, "label": Provider.clis.first { $0.id == id }?.name ?? id, "kind": "cli"]
+        }
+        if AICoin.available {
+            var o: [String: Any] = ["id": "aicoin", "label": "AICoin", "kind": "aicoin"]
+            if let b = AICoin.shared.lastBalance { o["balance"] = b }
+            options.append(o)
         }
         if let k = Provider.loadKey() { options.append(["id": "key", "label": "\(k.name) · \(k.model)", "kind": "key"]) }
         var out: [String: Any] = ["options": options]
         if let claude, let engineID { out["active"] = ["id": engineID, "label": claude.label] }
         return out
+    }
+
+    /// Pulls in what other devices wrote (called when the app becomes active, and every minute).
+    func syncNow() {
+        cache.reload(); utilities.reload(); profile.reload()
+        AICoin.shared.refreshBalance()
     }
 
     func resetSession() { pager?.cancel(); suggester?.cancel(); scout?.cancel(); refiner?.cancel(); claude?.reset() }
@@ -125,7 +146,7 @@ final class API: NSObject, AIUIHost {
     /// Screens shown from a prefetch since the main AI last heard from us.
     private var prefetched: [[String: Any]] = []
 
-    func handleAPI(_ path: String, body: Data, reply: @escaping AIUIReply) {
+    func handleAPI(_ path: String, body: Data, reply: @escaping Reply) {
         let input = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any] ?? [:]
         let send: ([String: Any]) -> Void = { obj in
             let data = (try? JSONSerialization.data(withJSONObject: obj)) ?? Data("{}".utf8)
@@ -152,6 +173,16 @@ final class API: NSObject, AIUIHost {
                 }
                 guard Provider.saveKey(key) else { return fail("Could not save the key to the Keychain.") }
                 use("key")
+            case "aicoin":
+                // Set up the AICoin wallet (create, claim free coins, token) and switch to it.
+                AICoin.shared.prepare { [weak self] result in
+                    guard let self else { return }
+                    switch result {
+                    case .success: self.use("aicoin"); send(self.engineStatus())
+                    case .failure(let e): fail(e.localizedDescription)
+                    }
+                }
+                return
             case "forget":
                 Provider.deleteKey()
                 if engineID == "key" { claude = nil; pager = nil; engineID = nil; UserDefaults.standard.removeObject(forKey: "engine") }
@@ -296,7 +327,10 @@ final class API: NSObject, AIUIHost {
         case "profile":
             switch input["op"] as? String ?? "get" {
             case "baseline":
-                if let b = input["baseline"] as? [String: Any] { profile.baseline = b.mapValues(AnyCodable.init); profile.persist() }
+                if let b = input["baseline"] as? [String: Any] {
+                    profile.baseline = Profile.mergeBaseline(b, profile.baseline.mapValues(\.value)).mapValues(AnyCodable.init)
+                    profile.persist()
+                }
                 send(["ok": true])
             case "learn":
                 // Background: the profiler revises the characteristic tree from recent flows.
@@ -393,7 +427,8 @@ final class API: NSObject, AIUIHost {
     /// Pushes an event into the page (window.aiui._event).
     static func emit(_ obj: [String: Any]) {
         guard let data = try? JSONSerialization.data(withJSONObject: obj) else { return }
-        AIUICef.evalJS("window.aiui && aiui._event(\(String(decoding: data, as: UTF8.self)))")
+        let js = "window.aiui && aiui._event(\(String(decoding: data, as: UTF8.self)))"
+        DispatchQueue.main.async { evalJS(js) }
     }
 
     static func prompt(for input: [String: Any]) -> String {
@@ -407,69 +442,4 @@ final class API: NSObject, AIUIHost {
         """
     }
 
-    // MARK: - System access for the page and AI-generated views
-
-    static func sys(_ input: [String: Any], send: @escaping ([String: Any]) -> Void, fail: @escaping (String) -> Void) {
-        let op = input["op"] as? String ?? ""
-        let shellResult: (Shell.Result) -> Void = { r in
-            send(["code": Int(r.code), "stdout": r.stdout, "stderr": r.stderr])
-        }
-        switch op {
-        case "shell":
-            guard let cmd = input["cmd"] as? String else { return fail("cmd required") }
-            Shell.run("/bin/zsh", ["-lc", cmd], completion: shellResult)
-        case "jxa":
-            guard let script = input["script"] as? String else { return fail("script required") }
-            Shell.run("/usr/bin/osascript", ["-l", "JavaScript", "-"], stdin: script, completion: shellResult)
-        case "applescript":
-            guard let script = input["script"] as? String else { return fail("script required") }
-            Shell.run("/usr/bin/osascript", ["-"], stdin: script, completion: shellResult)
-        case "open":
-            guard let target = input["target"] as? String else { return fail("target required") }
-            if let url = URL(string: target), url.scheme != nil, !target.hasPrefix("/") {
-                NSWorkspace.shared.open(url)
-            } else if FileManager.default.fileExists(atPath: (target as NSString).expandingTildeInPath) {
-                NSWorkspace.shared.open(URL(fileURLWithPath: (target as NSString).expandingTildeInPath))
-            } else {
-                Shell.run("/usr/bin/open", ["-a", target]) { r in
-                    if r.code != 0 { fail(r.stderr) } else { send(["ok": true]) }
-                }
-                return
-            }
-            send(["ok": true])
-        case "read":
-            guard let path = input["path"] as? String else { return fail("path required") }
-            let full = (path as NSString).expandingTildeInPath
-            guard let text = try? String(contentsOfFile: full, encoding: .utf8) else { return fail("cannot read \(path)") }
-            send(["text": text])
-        case "write":
-            guard let path = input["path"] as? String, let text = input["text"] as? String else {
-                return fail("path and text required")
-            }
-            do {
-                try text.write(toFile: (path as NSString).expandingTildeInPath, atomically: true, encoding: .utf8)
-                send(["ok": true])
-            } catch { fail(error.localizedDescription) }
-        case "clipboard":
-            let pb = NSPasteboard.general
-            if let text = input["text"] as? String {
-                pb.clearContents()
-                pb.setString(text, forType: .string)
-                send(["ok": true])
-            } else {
-                send(["text": pb.string(forType: .string) ?? ""])
-            }
-        case "notify":
-            let title = input["title"] as? String ?? "aiui"
-            let text = input["text"] as? String ?? ""
-            let script = "display notification \(appleQuote(text)) with title \(appleQuote(title))"
-            Shell.run("/usr/bin/osascript", ["-e", script]) { _ in send(["ok": true]) }
-        default:
-            fail("unknown op \(op)")
-        }
-    }
-
-    private static func appleQuote(_ s: String) -> String {
-        "\"" + s.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"") + "\""
-    }
 }

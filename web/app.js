@@ -350,6 +350,9 @@ function layoutPages(reflow) {
   const nodes = [...el.circles.children].filter((n) => !n.classList.contains('leaving'));
   if (reflow) s.frozen = null;
   const firstShown = nodes.find((n) => !n.hidden);
+  // Measuring hides and re-shows circles, which would replay their entrance: circles already
+  // on screen must stay still.
+  const wasShown = nodes.filter((n) => !n.hidden && n.dataset.shown != null);
 
   const byId = new Map(nodes.map((n) => [n.dataset.id, n]));
   const frozen = (s.frozen || []).map((ids) => ids.map((id) => byId.get(id)).filter(Boolean)).filter((p) => p.length);
@@ -362,6 +365,7 @@ function layoutPages(reflow) {
     if (i >= 0) s.page = i;
   }
   s.page = Math.max(0, Math.min(s.page || 0, pages.length - 1));
+  for (const n of wasShown) n.style.animation = 'none';
   showPage();
 }
 

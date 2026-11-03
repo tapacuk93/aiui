@@ -58,8 +58,8 @@ FRAMEWORKS=(-framework AppKit -framework Cocoa -framework IOSurface)
 echo "• compiling Swift"
 swiftc -O -swift-version 5 -target arm64-apple-macos$MINOS \
   -import-objc-header Sources/Native/AIUICef.h \
-  Sources/App/*.swift "$BUILD/obj/AIUICef.o" "$WRAP" \
-  -lc++ "${FRAMEWORKS[@]}" -Xlinker -ObjC \
+  Sources/App/*.swift Sources/Mac/*.swift "$BUILD/obj/AIUICef.o" "$WRAP" \
+  -lc++ "${FRAMEWORKS[@]}" -framework Security -Xlinker -ObjC \
   -o "$BUILD/aiui"
 
 clang++ -arch arm64 -mmacosx-version-min=$MINOS "$BUILD/obj/Helper.o" "$WRAP" -lc++ "${FRAMEWORKS[@]}" -o "$BUILD/aiui-helper"

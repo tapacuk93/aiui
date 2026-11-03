@@ -2,9 +2,12 @@ import Cocoa
 
 // CEF needs its NSApplication subclass to be the shared application.
 let app = AIUIApplication.shared
+// Local data (CEF cache) stays on this Mac; the AI's memory, utilities and profile live in
+// Storage.root, which is the iCloud container when available.
 let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
     .appendingPathComponent("aiui", isDirectory: true)
 try? FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
+API.evalJS = { AIUICef.evalJS($0) }
 
 // Settings saved under the app's earlier bundle identifier (dev.aiui.app) carry over once.
 if UserDefaults.standard.string(forKey: "engine") == nil,
@@ -12,7 +15,7 @@ if UserDefaults.standard.string(forKey: "engine") == nil,
     UserDefaults.standard.set(old, forKey: "engine")
 }
 
-let delegate = AppDelegate(support: support)
+let delegate = AppDelegate(support: Storage.root(local: support))
 app.delegate = delegate
 
 // AIUI_WEB=/path/to/web serves the UI straight from a source tree (live edits + Cmd-R).

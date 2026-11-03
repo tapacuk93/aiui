@@ -18,16 +18,32 @@ final class Utilities {
 
     private let file: URL
     private var items: [String: Item] = [:]
+    /// Tombstones: deleted ids and when, so a deletion on one device isn't undone by another.
+    private var deleted: [String: Date] = [:]
+    private struct Stored: Codable { var items: [Item]; var deleted: [String: Date] }
     let limitBytes = 32 * 1_048_576
     let limitCount = 500
 
     init(dir: URL) {
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         file = dir.appendingPathComponent("utilities.json")
+        Storage.download(dir)
+        mergeDisk()
+    }
+
+    func reload() { Storage.download(file.deletingLastPathComponent()); mergeDisk() }
+
+    private func mergeDisk() {
         let dec = JSONDecoder(); dec.dateDecodingStrategy = .iso8601
-        if let data = try? Data(contentsOf: file), let list = try? dec.decode([Item].self, from: data) {
-            for i in list { items[i.id] = i }
+        guard let data = Storage.read(file) else { return }
+        let disk = (try? dec.decode(Stored.self, from: data))
+            ?? Stored(items: (try? dec.decode([Item].self, from: data)) ?? [], deleted: [:])
+        for (id, at) in disk.deleted where (deleted[id] ?? .distantPast) < at { deleted[id] = at }
+        for i in disk.items {
+            if let mine = items[i.id], mine.lastUsed >= i.lastUsed { continue }
+            items[i.id] = i
         }
+        for (id, at) in deleted where (items[id]?.lastUsed ?? .distantPast) <= at { items[id] = nil }
     }
 
     /// Saves (or updates, by category path + name) the utility a screen declares in `utility`.
@@ -45,6 +61,7 @@ final class Utilities {
                         screen: stored.mapValues(AnyCodable.init), created: items[id]?.created ?? now,
                         lastUsed: now, uses: items[id]?.uses ?? 0)
         items[item.id] = item
+        deleted[item.id] = nil
         trim()
         persist()
         return item
@@ -57,7 +74,7 @@ final class Utilities {
         return i.screen.mapValues(\.value)
     }
 
-    func delete(_ id: String) { items[id] = nil; persist() }
+    func delete(_ id: String) { items[id] = nil; deleted[id] = Date(); persist() }
 
     /// Children of `path`: sub-categories (with counts and total uses) and utilities directly in it,
     /// each sorted by use, then name.
@@ -106,7 +123,8 @@ final class Utilities {
     }
 
     private func persist() {
+        mergeDisk()
         let enc = JSONEncoder(); enc.dateEncodingStrategy = .iso8601
-        if let data = try? enc.encode(Array(items.values)) { try? data.write(to: file, options: .atomic) }
+        if let data = try? enc.encode(Stored(items: Array(items.values), deleted: deleted)) { Storage.write(data, to: file) }
     }
 }
