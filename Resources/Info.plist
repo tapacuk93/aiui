@@ -3,11 +3,12 @@
 <plist version="1.0">
 <dict>
   <key>CFBundleDevelopmentRegion</key><string>en</string>
-  <key>CFBundleDisplayName</key><string>aiui</string>
+  <key>CFBundleDisplayName</key><string>AI UI</string>
   <key>CFBundleExecutable</key><string>aiui</string>
   <key>CFBundleIdentifier</key><string>dev.aiui.app</string>
   <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
-  <key>CFBundleName</key><string>aiui</string>
+  <key>CFBundleName</key><string>AI UI</string>
+  <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>0.1.0</string>
   <key>CFBundleVersion</key><string>1</string>
@@ -15,11 +16,11 @@
   <key>NSPrincipalClass</key><string>AIUIApplication</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>NSSupportsAutomaticGraphicsSwitching</key><true/>
-  <key>NSAppleEventsUsageDescription</key><string>aiui controls other apps when you ask it to.</string>
-  <key>NSCalendarsUsageDescription</key><string>aiui reads and creates events when you ask it to.</string>
-  <key>NSRemindersUsageDescription</key><string>aiui reads and creates reminders when you ask it to.</string>
-  <key>NSContactsUsageDescription</key><string>aiui looks up contacts when you ask it to.</string>
-  <key>NSMicrophoneUsageDescription</key><string>aiui listens when you ask it to.</string>
-  <key>NSCameraUsageDescription</key><string>aiui uses the camera when you ask it to.</string>
+  <key>NSAppleEventsUsageDescription</key><string>AI UI controls other apps when you ask it to.</string>
+  <key>NSCalendarsUsageDescription</key><string>AI UI reads and creates events when you ask it to.</string>
+  <key>NSRemindersUsageDescription</key><string>AI UI reads and creates reminders when you ask it to.</string>
+  <key>NSContactsUsageDescription</key><string>AI UI looks up contacts when you ask it to.</string>
+  <key>NSMicrophoneUsageDescription</key><string>AI UI listens when you ask it to.</string>
+  <key>NSCameraUsageDescription</key><string>AI UI uses the camera when you ask it to.</string>
 </dict>
 </plist>

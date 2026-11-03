@@ -21,11 +21,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             contentRect: NSRect(origin: .zero, size: size),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered, defer: false)
-        w.title = "aiui"
+        w.title = "AI UI"
         w.titleVisibility = .hidden
         w.titlebarAppearsTransparent = true
-        w.appearance = NSAppearance(named: .darkAqua)
-        w.backgroundColor = NSColor(red: 11 / 255, green: 11 / 255, blue: 15 / 255, alpha: 1)
+        // Follows the system appearance; matches the page's --bg in both themes.
+        w.backgroundColor = NSColor(name: nil) { appearance in
+            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+                ? NSColor(red: 11 / 255, green: 11 / 255, blue: 15 / 255, alpha: 1)
+                : NSColor(red: 245 / 255, green: 245 / 255, blue: 248 / 255, alpha: 1)
+        }
         w.minSize = NSSize(width: 520, height: 420)
         w.delegate = self
         w.setFrameAutosaveName("aiui.main")
@@ -69,11 +73,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         let appItem = NSMenuItem()
         let appMenu = NSMenu()
-        appMenu.addItem(withTitle: "About aiui", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        appMenu.addItem(withTitle: "About AI UI", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
         appMenu.addItem(.separator())
-        appMenu.addItem(withTitle: "Hide aiui", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
+        appMenu.addItem(withTitle: "Hide AI UI", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
         appMenu.addItem(.separator())
-        appMenu.addItem(withTitle: "Quit aiui", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        appMenu.addItem(withTitle: "Quit AI UI", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         appItem.submenu = appMenu
         main.addItem(appItem)
 

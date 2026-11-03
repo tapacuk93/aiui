@@ -5,7 +5,11 @@ import Foundation
 /// and a one-line index description of each. Doubles as a screen cache for stable outcomes
 /// and as long-term memory the AI can search (index.txt).
 final class Cache {
+    static let version = 2
+
     struct Entry: Codable {
+        var v: Int
+        var flow: [String]
         var key: String
         var created: Date
         var lastUsed: Date
@@ -19,6 +23,8 @@ final class Cache {
 
     /// Index row: everything but the outcome itself.
     struct IndexRow: Codable {
+        var v: Int
+        var flow: [String]
         var key: String
         var created: Date
         var lastUsed: Date
@@ -55,7 +61,12 @@ final class Cache {
         try? fm.createDirectory(at: entries, withIntermediateDirectories: true)
         if let data = try? Data(contentsOf: indexJSON),
            let rows = try? dec.decode([IndexRow].self, from: data) {
-            for r in rows where fm.fileExists(atPath: file(r.key).path) { index[r.key] = r }
+            for r in rows where r.v == Self.version && fm.fileExists(atPath: file(r.key).path) { index[r.key] = r }
+        }
+        // Drop entry files the index no longer knows (older formats, interrupted writes).
+        for f in (try? fm.contentsOfDirectory(at: entries, includingPropertiesForKeys: nil)) ?? []
+        where index[f.deletingPathExtension().lastPathComponent] == nil {
+            try? fm.removeItem(at: f)
         }
     }
 
@@ -104,19 +115,55 @@ final class Cache {
         return entry.outcome.mapValues { $0.value }
     }
 
-    func store(key: String, action: [String: Any], outcome: [String: Any]) {
+    /// Any stored outcome by key (for AI `reuse`), cacheable or not.
+    func outcome(_ key: String) -> [String: Any]? {
+        guard var row = index[key], let data = try? Data(contentsOf: file(key)),
+              let entry = try? dec.decode(Entry.self, from: data) else { return nil }
+        row.hits += 1
+        row.lastUsed = Date()
+        index[key] = row
+        saveIndex()
+        return entry.outcome.mapValues { $0.value }
+    }
+
+    /// The flow index in brief: most recent and most used flows, one line each.
+    func overview(limit: Int = 16) -> [String] {
+        let recent = index.values.sorted { $0.lastUsed > $1.lastUsed }.prefix(limit * 2 / 3)
+        let frequent = index.values.sorted { $0.hits > $1.hits }.prefix(limit)
+        var seen = Set<String>(), rows: [IndexRow] = []
+        for r in Array(recent) + Array(frequent) where rows.count < limit && seen.insert(r.key).inserted { rows.append(r) }
+        return rows.map { "\(($0.flow + [Self.line($0)]).joined(separator: " ⟶ ")) | \($0.description) | ×\($0.hits) [\($0.key)]" }
+    }
+
+    /// Index rows most related to `words` (path, target, text), for the AI's context.
+    func related(_ words: [String], limit: Int = 8) -> [[String: Any]] {
+        let ws = Set(words.flatMap { $0.lowercased().split(whereSeparator: { !$0.isLetter && !$0.isNumber }) }
+            .map(String.init).filter { $0.count > 2 })
+        guard !ws.isEmpty else { return [] }
+        let scored = index.values.map { row -> (IndexRow, Int) in
+            let hay = (row.description + " " + Self.line(row) + " " + row.flow.joined(separator: " ")).lowercased()
+            return (row, ws.reduce(0) { $0 + (hay.contains($1) ? 1 : 0) })
+        }
+        return scored.filter { $0.1 > 0 }
+            .sorted { $0.1 != $1.1 ? $0.1 > $1.1 : $0.0.lastUsed > $1.0.lastUsed }
+            .prefix(limit)
+            .map { ["key": $0.0.key, "flow": ($0.0.flow + [Self.line($0.0)]).joined(separator: " ⟶ "),
+                    "outcome": $0.0.description, "hits": $0.0.hits] }
+    }
+
+    func store(key: String, action: [String: Any], flow: [String], outcome: [String: Any]) {
         var outcome = outcome
         let description = (outcome.removeValue(forKey: "note") as? String) ?? Self.describe(action, outcome)
         let cacheable = (outcome.removeValue(forKey: "cacheable") as? Bool) ?? false
         let now = Date()
-        var entry = Entry(key: key, created: index[key]?.created ?? now, lastUsed: now,
+        var entry = Entry(v: Self.version, flow: flow, key: key, created: index[key]?.created ?? now, lastUsed: now,
                           hits: (index[key]?.hits ?? 0) + 1, description: description, cacheable: cacheable,
                           size: 0, action: action.mapValues(AnyCodable.init), outcome: outcome.mapValues(AnyCodable.init))
         guard var data = try? enc.encode(entry) else { return }
         entry.size = data.count
         data = (try? enc.encode(entry)) ?? data
         try? data.write(to: file(key), options: .atomic)
-        index[key] = IndexRow(key: key, created: entry.created, lastUsed: now, hits: entry.hits,
+        index[key] = IndexRow(v: Self.version, flow: flow, key: key, created: entry.created, lastUsed: now, hits: entry.hits,
                               description: description, cacheable: cacheable, size: data.count,
                               action: entry.action)
         evict()
@@ -167,17 +214,21 @@ final class Cache {
     private func saveIndex() {
         let rows = index.values.sorted { $0.lastUsed > $1.lastUsed }
         if let data = try? enc.encode(rows) { try? data.write(to: indexJSON, options: .atomic) }
-        let header = "# aiui memory index — newest first. Columns: when | hits | action | description. Entry files: entries/<key>.json\n"
+        let header = "# aiui memory index — user flows and outcomes, newest first.\n# when | hits | flow (earlier steps ⟶ this action) | outcome [key]. Full outcome: entries/<key>.json; reuse any by key.\n"
         let fmt = DateFormatter()
         fmt.dateFormat = "yyyy-MM-dd HH:mm"
-        let lines = rows.map { "\(fmt.string(from: $0.lastUsed)) | \($0.hits) | \(Self.line($0)) | \($0.description) [\($0.key)]" }
+        let lines = rows.map {
+            "\(fmt.string(from: $0.lastUsed)) | \($0.hits) | \(($0.flow + [Self.line($0)]).joined(separator: " ⟶ ")) | \($0.description) [\($0.key)]"
+        }
         try? (header + lines.joined(separator: "\n") + "\n").write(to: indexText, atomically: true, encoding: .utf8)
     }
 
     private func file(_ key: String) -> URL { entries.appendingPathComponent("\(key).json") }
 
-    private static func line(_ row: IndexRow) -> String {
-        let a = row.action.mapValues { $0.value }
+    private static func line(_ row: IndexRow) -> String { line(action: row.action.mapValues { $0.value }) }
+
+    /// One readable line for an action: event, path, target, selections, text.
+    static func line(action a: [String: Any]) -> String {
         var parts = [a["event"] as? String ?? "?"]
         if let path = a["path"] as? [Any], !path.isEmpty { parts.append(path.map { "\($0)" }.joined(separator: " › ")) }
         if let t = a["target"] { parts.append("→ \(t)") }

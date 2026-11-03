@@ -6,13 +6,14 @@ const el = {
   path: $('#path'), title: $('#title'), message: $('#message'),
   circles: $('#circles'), view: $('#view'), write: $('#write'),
   status: $('#status'), go: $('#go'), toast: $('#toast'),
-  prev: $('#prev'), more: $('#more'), stage: $('#stage'),
+  prev: $('#prev'), more: $('#more'), stage: $('#stage'), close: $('#close'),
 };
 
 // Human capabilities, each backed by technical ones.
 const ROOT = {
   kind: 'circles',
-  more: true, // infinite things to do: further pages come from the AI pager
+  more: true,     // expandable: shows More
+  infinite: true, // infinite things to do: never runs out, further pages come from the AI pager
   circles: [
     { id: 'create',   icon: '✨', label: 'Create',   hint: 'docs, images, code' },
     { id: 'search',   icon: '🔍', label: 'Search',   hint: 'files, web, mail' },
@@ -39,7 +40,7 @@ let busy = false;
 let writing = false;
 let pendingCircle = null;
 let seq = 0;                          // id of the AI turn currently wanted
-const paging = { loading: false, token: 0, n: 0 };
+const paging = { loading: false, failed: false, token: 0, n: 0 };
 
 // ---------------------------------------------------------------- API bridge
 
@@ -121,7 +122,15 @@ async function ask(evt, { label, replace = false, circle = null } = {}) {
 function normalize(s) {
   s = s && typeof s === 'object' ? s : {};
   if (!s.kind) s.kind = s.html ? 'html' : s.circles ? 'circles' : 'text';
-  if (s.circles) s.circles = s.circles.map((c, i) => ({ id: c.id || 'c' + i, ...c }));
+  if (s.circles) {
+    const ids = new Set();
+    s.circles = s.circles.map((c, i) => {
+      let id = String(c.id || 'c' + i);
+      while (ids.has(id)) id += '_';
+      ids.add(id);
+      return { ...c, id };
+    });
+  }
   return s;
 }
 
@@ -167,6 +176,7 @@ function render() {
   const s = current.screen;
   paging.token++;
   paging.loading = false;
+  paging.failed = false;
   wantNext = false;
   const labels = [...stack.map((e) => e.label), current.label].filter(Boolean);
   el.path.innerHTML = labels.map((l) => `<span>${esc(l)}</span>`).join('');
@@ -200,37 +210,22 @@ function renderCircles(s) {
 let pages = [];      // arrays of circle nodes
 let wantNext = false; // More was pressed while the next page was still loading
 
-function layoutPages() {
+// Pages the user has seen are frozen: circles loaded later never slip into them, they
+// always start a new page behind More. A window resize re-flows everything.
+function layoutPages(reflow) {
   const s = current.screen;
   if (s.kind !== 'circles') { pages = []; return updatePager(); }
   const nodes = [...el.circles.children].filter((n) => !n.classList.contains('leaving'));
+  if (reflow) s.frozen = null;
   const firstShown = nodes.find((n) => !n.hidden);
-  nodes.forEach((n) => { n.hidden = false; });
 
-  const cs = getComputedStyle(el.stage);
-  const avail = el.stage.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom) - 48;
-  const gap = parseFloat(getComputedStyle(el.circles).rowGap) || 0;
+  const byId = new Map(nodes.map((n) => [n.dataset.id, n]));
+  const frozen = (s.frozen || []).map((ids) => ids.map((id) => byId.get(id)).filter(Boolean)).filter((p) => p.length);
+  const taken = new Set(frozen.flat());
+  const rest = nodes.filter((n) => !taken.has(n));
 
-  const rows = [];
-  for (const n of nodes) {
-    const last = rows[rows.length - 1];
-    if (last && Math.abs(n.offsetTop - last.top) < 3) {
-      last.nodes.push(n);
-      last.h = Math.max(last.h, n.offsetHeight);
-    } else rows.push({ top: n.offsetTop, h: n.offsetHeight, nodes: [n] });
-  }
-  pages = [];
-  let cur = [], used = 0;
-  for (const r of rows) {
-    const need = r.h + (cur.length ? gap : 0);
-    if (cur.length && used + need > avail) { pages.push(cur); cur = []; used = 0; }
-    cur.push(...r.nodes);
-    used += cur.length === r.nodes.length ? r.h : need;
-  }
-  if (cur.length) pages.push(cur);
-
-  // Keep the circles the user was looking at in view after a resize.
-  if (firstShown) {
+  pages = [...frozen, ...paginate(rest, nodes)];
+  if (reflow && firstShown) {
     const i = pages.findIndex((p) => p.includes(firstShown));
     if (i >= 0) s.page = i;
   }
@@ -238,13 +233,43 @@ function layoutPages() {
   showPage();
 }
 
+// Splits `subset` into pages by measuring rows with only that subset laid out.
+function paginate(subset, all) {
+  if (!subset.length) return [];
+  const keep = new Set(subset);
+  all.forEach((n) => { n.hidden = !keep.has(n); });
+  const cs = getComputedStyle(el.stage);
+  const avail = el.stage.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom) - 48;
+  const gap = parseFloat(getComputedStyle(el.circles).rowGap) || 0;
+  const rows = [];
+  for (const n of subset) {
+    const last = rows[rows.length - 1];
+    if (last && Math.abs(n.offsetTop - last.top) < 3) {
+      last.nodes.push(n);
+      last.h = Math.max(last.h, n.offsetHeight);
+    } else rows.push({ top: n.offsetTop, h: n.offsetHeight, nodes: [n] });
+  }
+  const out = [];
+  let cur = [], used = 0;
+  for (const r of rows) {
+    if (cur.length && used + gap + r.h > avail) { out.push(cur); cur = []; used = 0; }
+    used += (cur.length ? gap : 0) + r.h;
+    cur.push(...r.nodes);
+  }
+  if (cur.length) out.push(cur);
+  return out;
+}
+
 function showPage() {
   const s = current.screen;
   pages.forEach((p, i) => p.forEach((n, j) => {
     const on = i === s.page;
-    if (on && n.hidden) n.style.setProperty('--i', j); // stagger the entrance
+    if (on && n.dataset.shown !== String(s.page)) n.style.setProperty('--i', j); // stagger the entrance
     n.hidden = !on;
+    if (on) n.dataset.shown = String(s.page);
   }));
+  // Freeze every page up to the one shown.
+  s.frozen = pages.slice(0, (s.page || 0) + 1).map((p) => p.map((n) => n.dataset.id));
   updatePager();
 }
 
@@ -272,6 +297,7 @@ function nextPage() {
   if ((s.page || 0) < lastPage()) { s.page = (s.page || 0) + 1; showPage(); return; }
   if (!s.more) return;
   wantNext = true;
+  paging.failed = false;
   if (!paging.loading) loadMore(); else updatePager();
 }
 
@@ -287,7 +313,7 @@ function prevPage() {
 // Keep one full page ready beyond the one shown.
 function maybePreload() {
   const s = current.screen;
-  if (s.kind !== 'circles' || !s.more || paging.loading || busy) return;
+  if (s.kind !== 'circles' || !s.more || paging.loading || paging.failed || busy) return;
   const page = s.page || 0, last = lastPage();
   const capacity = Math.max(...pages.map((p) => p.length), 1);
   const nextReady = last > page + 1 || (last === page + 1 && pages[last].length >= capacity);
@@ -314,11 +340,13 @@ async function loadMore() {
       node.hidden = true;
       el.circles.appendChild(node);
     });
-    screen.more = page.more !== false && fresh.length > 0;
+    if (!screen.infinite && page.more === false && !fresh.length) screen.more = false;
+    else if (!fresh.length) paging.failed = true; // nothing new this time: wait for a More press
   } catch (e) {
+    // Keep More: a press retries. Only stop preloading in the background.
     if (tok === paging.token && e.message !== 'cancelled') {
-      screen.more = false;
-      toast(e.message);
+      paging.failed = true;
+      if (wantNext) toast(e.message);
     }
   } finally {
     if (tok === paging.token) {
@@ -333,11 +361,18 @@ async function loadMore() {
 
 el.prev.addEventListener('click', (e) => { e.stopPropagation(); if (!prevPage()) back(); });
 el.more.addEventListener('click', (e) => { e.stopPropagation(); nextPage(); });
-new ResizeObserver(() => layoutPages()).observe(el.stage);
+let lastStageSize = '';
+new ResizeObserver(() => {
+  const size = el.stage.clientWidth + 'x' + el.stage.clientHeight;
+  if (size === lastStageSize) return;
+  lastStageSize = size;
+  layoutPages(true);
+}).observe(el.stage);
 
 function circleEl(c, i) {
   const node = document.createElement('div');
   node.className = 'circle' + (c.selected ? ' selected' : '');
+  node.dataset.id = c.id;
   node.style.setProperty('--i', i);
   const size = Math.max(0.7, Math.min(1.5, Number(c.size) || 1));
   node.style.setProperty('--s', size);
@@ -396,10 +431,12 @@ function plus(c, node) {
 }
 
 function refresh(c, node) {
-  const i = node.style.getPropertyValue('--i');
-  const fresh = circleEl(c, i);
+  const fresh = circleEl(c, 0);
   fresh.style.animation = 'none';
+  fresh.dataset.shown = node.dataset.shown || '';
+  fresh.hidden = node.hidden;
   node.replaceWith(fresh);
+  pages = pages.map((p) => p.map((n) => (n === node ? fresh : n)));
   updateGo();
 }
 
@@ -407,10 +444,11 @@ function renderHTML(s) {
   const frame = document.createElement('iframe');
   frame.setAttribute('allow', 'clipboard-read; clipboard-write; autoplay; fullscreen; microphone; camera; geolocation');
   const base = `<meta charset="utf-8"><style>
-    html,body{margin:0;background:transparent;color:#e8e8ee;font:15px/1.55 -apple-system,system-ui,sans-serif;-webkit-font-smoothing:antialiased}
+    :root{${themeVars()}}
+    html,body{margin:0;background:transparent;color:var(--fg);font:15px/1.55 -apple-system,system-ui,sans-serif;-webkit-font-smoothing:antialiased}
     body{padding:${s.title ? 120 : 64}px 48px 120px;max-width:1100px;margin:0 auto}
-    a{color:#7c9cff} ::selection{background:rgba(124,156,255,.35)}
-    ::-webkit-scrollbar{width:8px}::-webkit-scrollbar-thumb{background:rgba(255,255,255,.12);border-radius:4px}
+    a{color:var(--accent)} ::selection{background:var(--accent-soft)}
+    ::-webkit-scrollbar{width:8px}::-webkit-scrollbar-thumb{background:var(--line);border-radius:4px}
   </style><script>window.aiui = parent.aiui;<\/script>`;
   let html = String(s.html || '');
   if (/<head[^>]*>/i.test(html)) html = html.replace(/<head[^>]*>/i, (m) => m + base);
@@ -466,7 +504,7 @@ function startWriting(x, y, text) {
   el.write.style.setProperty('--px', px + 'px');
   el.write.style.setProperty('--py', py + 'px');
   if (text != null) el.write.value = text;
-  el.write.placeholder = current.screen.kind === 'text' ? '' : 'Type anything — Enter to send';
+  el.write.placeholder = current.screen.kind === 'text' ? '' : 'Type anything — Enter to send, Esc to close';
   document.body.classList.add('writing');
   el.write.focus();
   updateGo();
@@ -479,6 +517,16 @@ function stopWriting(clear) {
   el.write.blur();
   updateGo();
 }
+
+// Esc always gets out of typing: cancels a pending send, closes and clears the text area
+// (on an AI text screen it leaves the screen).
+function escapeWriting() {
+  if (busy) cancel();
+  if (current.screen.kind === 'text') { stopWriting(true); back(); }
+  else stopWriting(true);
+}
+
+el.close.addEventListener('mousedown', (e) => { e.preventDefault(); e.stopPropagation(); escapeWriting(); });
 
 function submitText() {
   const text = el.write.value.trim();
@@ -493,9 +541,7 @@ el.write.addEventListener('keydown', (e) => {
     submitText();
   } else if (e.key === 'Escape') {
     e.preventDefault();
-    if (busy) cancel();
-    else if (current.screen.kind === 'text') back();
-    else stopWriting();
+    escapeWriting();
   } else if (e.key === 'Backspace' && !el.write.value && current.screen.kind !== 'text') {
     e.preventDefault();
     stopWriting();
@@ -507,7 +553,7 @@ el.write.addEventListener('keydown', (e) => {
 document.addEventListener('mousedown', (e) => {
   if (e.button !== 0) return;
   const t = e.target;
-  if (t === el.write || t.closest('.circle, #nav, #view iframe, #toast')) return;
+  if (t === el.write || t.closest('.circle, #nav, #view iframe, #toast, #close')) return;
   if (current.screen.kind === 'html' && t.closest('#view')) return;
   e.preventDefault();
   startWriting(e.clientX, e.clientY);
@@ -520,6 +566,7 @@ function isEditable(t) {
 }
 
 function onKey(e) {
+  if (e.key === 'Escape' && writing) { e.preventDefault(); return escapeWriting(); }
   if (isEditable(e.target)) return;
   if (e.key === 'Backspace' || (e.metaKey && e.key === '[')) {
     e.preventDefault();

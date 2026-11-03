@@ -52,6 +52,15 @@ id<AIUIHost> g_host = nil;
 NSString *g_web_root = nil;
 bool g_quit_requested = false;
 
+// Page background before the first paint, matching the system appearance (light or dark).
+cef_color_t AppearanceBackground() {
+  NSAppearanceName name = [NSApp.effectiveAppearance
+      bestMatchFromAppearancesWithNames:@[ NSAppearanceNameDarkAqua, NSAppearanceNameAqua ]];
+  return [name isEqualToString:NSAppearanceNameDarkAqua]
+             ? CefColorSetARGB(255, 11, 11, 15)
+             : CefColorSetARGB(255, 245, 245, 248);
+}
+
 std::string MimeFor(NSString *path) {
   NSString *ext = path.pathExtension.lowercaseString;
   NSDictionary *map = @{
@@ -266,7 +275,7 @@ class AIUIClient : public CefClient,
   CefMainArgs main_args(argc, argv);
   CefSettings settings;
   settings.no_sandbox = true;
-  settings.background_color = CefColorSetARGB(255, 11, 11, 15);
+  settings.background_color = AppearanceBackground();
   CefString(&settings.root_cache_path) = cachePath.UTF8String;
   CefString(&settings.cache_path) =
       [cachePath stringByAppendingPathComponent:@"default"].UTF8String;
@@ -285,7 +294,7 @@ class AIUIClient : public CefClient,
   info.SetAsChild((__bridge void *)view,
                   CefRect(0, 0, (int)b.size.width, (int)b.size.height));
   CefBrowserSettings bs;
-  bs.background_color = CefColorSetARGB(255, 11, 11, 15);
+  bs.background_color = AppearanceBackground();
   CefBrowserHost::CreateBrowser(info, new AIUIClient(), url.UTF8String, bs,
                                 nullptr, nullptr);
 }

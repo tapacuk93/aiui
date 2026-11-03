@@ -40,12 +40,17 @@ enum Prompts {
         `await aiui.memory.search("words")` → past actions/outcomes from the memory index
         `aiui.next(data)` → ask you for the next screen with `data` (object) as context
         `aiui.back()` → previous screen
-      Style it to match the app: background transparent (app is #0b0b0f), text #e8e8ee, muted #8a8a99, \
-      accent #7c9cff, system-ui font, generous spacing, rounded 14px surfaces of rgba(255,255,255,.05). \
+      The app follows the system light/dark appearance, so never hard-code colors: use the CSS \
+      variables already defined in the view — var(--fg), var(--muted), var(--faint), var(--accent), \
+      var(--on-accent), var(--surface), var(--line), var(--chip), var(--danger), var(--accent-soft). \
+      Background stays transparent. System-ui font, generous spacing, rounded 14px var(--surface) panels. \
       Keep the bottom 90px free (the Go button may live there).
 
     The app never scrolls. Bottom row: [Back] [Go] [More].
-    - `more: true` marks a screen as expandable and shows the More button. For circles, the app \
+    - `more` (always set it) marks a screen as expandable and shows the More button. Default to \
+      true: any open-ended category — games, apps, ideas, places, recipes, files, results, people, \
+      things to do — is expandable. Use false only for closed sets (yes/no, a fixed list of options, \
+      settings, a finished result). For circles, the app \
       pages through what doesn't fit and fetches further pages from a background pager, so return the \
       most useful first page (about 8–16 circles). For text/html screens, More asks you (event "more") \
       to extend the content. Leave `more` unset when the screen is complete.
@@ -68,9 +73,16 @@ enum Prompts {
         """
 
         ## Memory
-        The app keeps a size-limited cache of the user's actions, their outcomes, and a one-line \
-        index description of each. The index is `\(index)` (newest first: when | hits | action | \
-        description [key]); full entries are `entries/<key>.json` next to it. Search it (grep) when \
+        The app keeps a size-limited cache indexing the user's flows (the chain of actions that led \
+        somewhere), their outcomes, and a one-line description of each. The index is `\(index)` \
+        (newest first: when | hits | flow | outcome [key]); full entries are `entries/<key>.json` \
+        next to it. Every planning call — each screen and each pager page — carries the index: \
+        `flows` (the user's most recent and most used flows, one line each: flow | outcome | ×hits \
+        [key]), `memory` (past flows and outcomes related to this screen, with keys) and, for screens, \
+        `flow` (the steps that led here). Plan with them: put what this user actually does first, \
+        continue their habits, skip what they ignore. You may reuse anything: set `reuse` to a key to show that \
+        stored outcome (optionally overriding title/message/go/more/back) instead of rebuilding it, \
+        or read an entry file and adapt it. Search it (grep) when \
         the user's history or preferences would make a screen better: what they open often, what they \
         searched, what they made. Every screen you return must carry `note` (a one-line index \
         description of what the user did and what came out, specific enough to find later) and \
@@ -85,7 +97,8 @@ enum Prompts {
 
     ## Paging mode
     You are now the pager, a separate background call. You get the current screen (path, title, \
-    message, the circles already shown) and return only the NEXT page of circles via StructuredOutput: \
+    message, the circles already shown) plus the user's flow index (`flows`, `memory`) — use it to \
+    favour what this user is likely to want next and return only the NEXT page of circles via StructuredOutput: \
     8–12 new circles that continue the set, never repeating an existing label or idea, ordered by \
     usefulness, getting gradually more specific, surprising or long-tail. Gather real data with tools \
     when the set is about real things (files, mail, results). Set `more: false` only when the set is \
@@ -129,6 +142,7 @@ enum Prompts {
             "more": ["type": "boolean", "description": "expandable: show the More button"],
             "back": ["type": "boolean", "description": "context needs a visible Back button"],
             "note": ["type": "string", "description": "one-line index description of this action and its outcome, for the memory index"],
+            "reuse": ["type": "string", "description": "key of a stored outcome (from memory/index) to show instead of building a new one"],
             "cacheable": ["type": "boolean", "description": "true if repeating the same action may reuse this screen (menus, categories); false for live data or performed actions"],
             "text": ["type": "string"],
             "html": ["type": "string"],

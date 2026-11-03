@@ -1,5 +1,5 @@
 #!/bin/zsh
-# Builds build/aiui.app: Swift/AppKit shell + CEF (Blink) + helper apps.
+# Builds "build/AI UI.app": Swift/AppKit shell + CEF (Blink) + helper apps.
 #   ./build.sh          build
 #   ./build.sh run      build and launch (serving web/ live from the source tree)
 #   ./build.sh clean    remove build/ (keeps vendor/)
@@ -9,7 +9,7 @@ cd "${0:A:h}"
 ROOT=$PWD
 CEF=$ROOT/vendor/cef
 BUILD=$ROOT/build
-APP=$BUILD/aiui.app
+APP="$BUILD/AI UI.app"
 MINOS=13.0
 CEF_FILE='cef_binary_156.0.15+gcf671c0+chromium-156.0.8078.80_macosarm64_minimal.tar.bz2'
 
@@ -65,11 +65,12 @@ swiftc -O -swift-version 5 -target arm64-apple-macos$MINOS \
 clang++ -arch arm64 -mmacosx-version-min=$MINOS "$BUILD/obj/Helper.o" "$WRAP" -lc++ "${FRAMEWORKS[@]}" -o "$BUILD/aiui-helper"
 
 # 5. Bundle
-echo "• assembling aiui.app"
+echo "• assembling AI UI.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Frameworks" "$APP/Contents/Resources"
 cp "$BUILD/aiui" "$APP/Contents/MacOS/aiui"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
+cp Resources/icon/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 cp -R web "$APP/Contents/Resources/web"
 ditto "$CEF/Release/Chromium Embedded Framework.framework" "$APP/Contents/Frameworks/Chromium Embedded Framework.framework"
 

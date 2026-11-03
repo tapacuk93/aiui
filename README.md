@@ -1,4 +1,4 @@
-# aiui
+# AI UI
 
 A native macOS app whose whole UI is one Blink webview (CEF), driven by the `claude` CLI.
 
@@ -25,7 +25,7 @@ A native macOS app whose whole UI is one Blink webview (CEF), driven by the `cla
 
 ## Build
 
-    ./build.sh          # downloads CEF 156 (arm64) into vendor/ the first time, builds build/aiui.app
+    ./build.sh          # downloads CEF 156 (arm64) into vendor/ the first time, builds build/AI UI.app
     ./build.sh run      # build and launch, serving web/ live from the source tree (Cmd-R reloads)
 
 Environment variables: `AIUI_CACHE_MB` (memory cache limit), `AIUI_MODEL` (passed to `claude --model`), `AIUI_WEB` (web root override),

@@ -8,6 +8,17 @@ final class API: NSObject, AIUIHost {
     let pager: Claude
     /// Actions answered from the cache since the AI last heard from us.
     private var replayed: [[String: Any]] = []
+    /// The user's current flow: earlier actions along the path to the current screen.
+    private var flow: [(depth: Int, line: String)] = []
+
+    /// Updates the flow for a new action and returns the steps that led to it. An action taken
+    /// on a screen at depth d (path length) follows the earlier steps at depths < d.
+    private func advanceFlow(_ action: [String: Any]) -> [String] {
+        let depth = (action["path"] as? [Any])?.count ?? 0
+        let before = flow.filter { $0.depth < depth }
+        flow = before + [(depth, Cache.line(action: action))]
+        return before.suffix(10).map(\.line)
+    }
 
     init(support: URL) {
         let mb = Int(ProcessInfo.processInfo.environment["AIUI_CACHE_MB"] ?? "") ?? 64
@@ -42,6 +53,7 @@ final class API: NSObject, AIUIHost {
             pager.cancel()
             let action = Cache.action(from: input)
             let key = Cache.key(for: action)
+            let steps = advanceFlow(action)
             if (input["fresh"] as? Bool) != true, let screen = cache.lookup(key) {
                 replayed.append(action)
                 if replayed.count > 20 { replayed.removeFirst(replayed.count - 20) }
@@ -50,6 +62,15 @@ final class API: NSObject, AIUIHost {
             }
             var event = input
             if !replayed.isEmpty { event["replayed"] = replayed }
+            if !steps.isEmpty { event["flow"] = steps }
+            // Related past flows and outcomes; the AI may reuse any by key.
+            var words = (input["path"] as? [String]) ?? []
+            if let t = (input["target"] as? [String: Any])?["label"] as? String { words.append(t) }
+            if let t = input["text"] as? String { words.append(t) }
+            let memory = cache.related(words)
+            if !memory.isEmpty { event["memory"] = memory }
+            let flows = cache.overview()
+            if !flows.isEmpty { event["flows"] = flows }
             let prompt = Self.prompt(for: event)
             claude.next(prompt: prompt, progress: { line in
                 Self.emit(["type": "progress", "text": line])
@@ -58,7 +79,16 @@ final class API: NSObject, AIUIHost {
                 case .success(let screen):
                     guard let self else { return }
                     self.replayed.removeAll()
-                    self.cache.store(key: key, action: action, outcome: screen)
+                    var screen = screen
+                    // `reuse`: the AI picked a stored outcome instead of rebuilding it.
+                    if let rk = screen.removeValue(forKey: "reuse") as? String, !rk.isEmpty,
+                       var stored = self.cache.outcome(rk) {
+                        for k in ["title", "message", "go", "more", "back", "note", "cacheable"] {
+                            if let v = screen[k] { stored[k] = v }
+                        }
+                        screen = stored
+                    }
+                    self.cache.store(key: key, action: action, flow: steps, outcome: screen)
                     var clean = screen
                     clean["note"] = nil
                     clean["cacheable"] = nil
@@ -75,6 +105,13 @@ final class API: NSObject, AIUIHost {
             }
 
         case "more":
+            var input = input
+            var words = (input["path"] as? [String]) ?? []
+            if let t = (input["screen"] as? [String: Any])?["title"] as? String { words.append(t) }
+            let related = cache.related(words)
+            if !related.isEmpty { input["memory"] = related }
+            let flows = cache.overview()
+            if !flows.isEmpty { input["flows"] = flows }
             let data = (try? JSONSerialization.data(withJSONObject: input, options: [.prettyPrinted, .sortedKeys])) ?? Data()
             let prompt = """
             The user scrolled past the end of this screen. Continue its circles:
