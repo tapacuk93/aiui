@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>aiui</title>
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <header id="top">
+    <nav id="path"></nav>
+    <h1 id="title"></h1>
+    <p id="message"></p>
+  </header>
+
+  <main id="stage">
+    <div id="circles"></div>
+    <div id="view"></div>
+  </main>
+
+  <div id="pager">
+    <button id="up" type="button" title="Previous (↑)">↑</button>
+    <button id="down" type="button" title="More (↓)">↓</button>
+  </div>
+
+  <textarea id="write" spellcheck="false" placeholder=""></textarea>
+
+  <footer id="bottom">
+    <div id="status"></div>
+    <button id="go" type="button">Go</button>
+  </footer>
+
+  <div id="toast"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
