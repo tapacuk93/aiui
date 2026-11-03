@@ -1032,8 +1032,10 @@ el.write.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') { e.preventDefault(); return escapeWriting(); }
   if (kind === 'circles') {
     const empty = !el.write.value;
-    const map = { ArrowUp: 'up', ArrowDown: 'down', Tab: e.shiftKey ? 'prev' : 'next' };
-    if (empty) Object.assign(map, { ArrowLeft: 'left', ArrowRight: 'right' });
+    // Plain arrows move between the circles; with ⌥/⌘/Shift they edit the text as usual.
+    const plain = !e.altKey && !e.metaKey && !e.ctrlKey && !e.shiftKey;
+    const map = { Tab: e.shiftKey ? 'prev' : 'next' };
+    if (plain) Object.assign(map, { ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right' });
     if (map[e.key]) { e.preventDefault(); moveFocus(map[e.key]); return; }
     if (e.key === 'Backspace' && empty) { e.preventDefault(); return stopWriting(true); }
   }
@@ -1156,7 +1158,7 @@ function toast(msg) {
 const STR = {
   go: 'Go', send: 'Send', back: '‹ Back', more: 'More ›', thinking: 'thinking', fromMemory: 'from memory',
   ready: 'ready', asTyped: 'as typed',
-  typeHint: 'Type — Enter opens the highlighted circle, ⌥Enter new line, Esc closes',
+  typeHint: 'Type — arrows pick a circle, Enter opens it, ⌥Enter new line, Esc closes',
   guest: 'guest', whoTitle: 'Is it still you?',
   whoMsg: 'This session looks different from how you usually use AI UI.',
   whoGuestMsg: 'Guest mode: no personal history is used.',
