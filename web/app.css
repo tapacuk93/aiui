@@ -30,7 +30,7 @@
     --fg: #17171e;
     --muted: #6b6b7b;
     --faint: #a6a6b4;
-    --accent: #4a6cf7;
+    --accent: #4263eb;
     --on-accent: #ffffff;
     --surface: rgba(0, 0, 0, .04);
     --line: rgba(0, 0, 0, .08);
@@ -40,7 +40,7 @@
     --face-shadow: 0 1px 2px rgba(20, 20, 40, .06), 0 8px 24px rgba(20, 20, 40, .06);
     --chip: #ffffff;
     --veil: rgba(245, 245, 248, .9);
-    --danger: #e0445a;
+    --danger: #c2334a;
     --toast-bg: #fff0f2;
     --toast-fg: #8a1f2e;
   }

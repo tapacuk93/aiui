@@ -119,6 +119,9 @@
     return m;
   }
 
+  // Inputs that only take a formatted value get a valid one (free text would be rejected).
+  const TYPED = { number: '3', color: '#336699', date: '2026-01-02', time: '12:30', 'datetime-local': '2026-01-02T12:30', month: '2026-01', week: '2026-W01' };
+
   // ---- interactions (lab only)
   async function interactions(issues) {
     const controls = [...document.querySelectorAll('button, a[href], input, select, textarea, summary, [onclick], [role=button], [tabindex]:not([tabindex="-1"])')];
@@ -138,7 +141,7 @@
       const before = errors.length, calls = window.__mockCalls, act = window.__activity;
       try {
         if (el.matches('input:not([type=button]):not([type=submit]):not([type=checkbox]):not([type=radio]):not([type=range]), textarea')) {
-          el.focus(); el.value = el.type === 'number' ? '3' : 'test';
+          el.focus(); el.value = TYPED[el.type] || 'test';
           el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true }));
           el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
         } else if (el.tagName === 'SELECT') {
@@ -167,7 +170,8 @@
     const record = (name, ok, note, area = 'ux') => { results.push({ case: name, ok, note }); if (!ok) issues.push([area, `${name}: ${note}`]); };
     const errs = () => errors.length;
     const controls = () => [...document.querySelectorAll('button, [role=button], a[href], summary')].filter((el) => visible(el) && !el.disabled).slice(0, 15);
-    const inputs = () => [...document.querySelectorAll('input:not([type=hidden]):not([type=button]):not([type=submit]):not([type=checkbox]):not([type=radio]):not([type=range]):not([type=file]), textarea')].filter(visible).slice(0, 6);
+    const inputs = () => [...document.querySelectorAll('input:not([type=hidden]):not([type=button]):not([type=submit]):not([type=checkbox]):not([type=radio]):not([type=range]):not([type=file]), textarea')]
+      .filter((i) => visible(i) && (i.type === 'number' || !(i.type in TYPED))).slice(0, 6); // free text only
     const overflowNote = () => {
       const W = document.documentElement.clientWidth;
       if (document.documentElement.scrollWidth > W + 4) return `content ${document.documentElement.scrollWidth}px wide in ${W}px`;

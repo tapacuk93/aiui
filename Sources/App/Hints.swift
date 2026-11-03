@@ -123,9 +123,10 @@ final class Hints {
     private func mergeDisk() {
         let dec = JSONDecoder(); dec.dateDecodingStrategy = .iso8601
         guard let data = Storage.read(file), let d = try? dec.decode(Stored.self, from: data) else { return }
-        let known = Set(journal.map { "\($0.at.timeIntervalSince1970)\($0.detail)" })
-        journal += d.journal.filter { !known.contains("\($0.at.timeIntervalSince1970)\($0.detail)") }
-        journal.sort { $0.at < $1.at }
+        // Whole seconds: the file keeps ISO-8601 dates without fractions, memory keeps them exact.
+        let key = { (i: Incident) in "\(Int(i.at.timeIntervalSince1970))|\(i.kind)|\(i.detail)" }
+        var seen = Set<String>()
+        journal = (journal + d.journal).sorted { $0.at < $1.at }.filter { seen.insert(key($0)).inserted }
         if journal.count > 300 { journal.removeFirst(journal.count - 300) }
         for (id, at) in d.retired where (retired[id] ?? .distantPast) < at { retired[id] = at }
         for h in d.hints {

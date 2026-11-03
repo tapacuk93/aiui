@@ -927,9 +927,9 @@ const PALETTES = {
   dark: { 'color-scheme': 'dark', '--bg': '#0b0b0f', '--fg': '#e8e8ee', '--muted': '#8a8a99', '--faint': '#4a4a58', '--accent': '#7c9cff',
     '--on-accent': '#0b0b0f', '--surface': 'rgba(255,255,255,.05)', '--line': 'rgba(255,255,255,.09)', '--line-strong': 'rgba(255,255,255,.22)',
     '--chip': '#15151c', '--danger': '#ff7c8a', '--accent-soft': 'rgba(124,156,255,.16)', '--accent-glow': 'rgba(124,156,255,.22)' },
-  light: { 'color-scheme': 'light', '--bg': '#f5f5f8', '--fg': '#17171e', '--muted': '#6b6b7b', '--faint': '#a6a6b4', '--accent': '#4a6cf7',
+  light: { 'color-scheme': 'light', '--bg': '#f5f5f8', '--fg': '#17171e', '--muted': '#6b6b7b', '--faint': '#a6a6b4', '--accent': '#4263eb',
     '--on-accent': '#ffffff', '--surface': 'rgba(0,0,0,.04)', '--line': 'rgba(0,0,0,.08)', '--line-strong': 'rgba(0,0,0,.2)',
-    '--chip': '#ffffff', '--danger': '#e0445a', '--accent-soft': 'rgba(74,108,247,.14)', '--accent-glow': 'rgba(74,108,247,.2)' },
+    '--chip': '#ffffff', '--danger': '#c2334a', '--accent-soft': 'rgba(66,99,235,.14)', '--accent-glow': 'rgba(66,99,235,.2)' },
 };
 // The theme variables: the current appearance's, or a given one (dark = true/false).
 function themeVars(dark) {
@@ -1350,7 +1350,7 @@ async function selfFix(s, reason) {
     entry.screen = fixed;
     if (current === entry && !typing()) { render(); flashStatus(t('fixed')); }
   } catch (e) {
-    if (current === entry) toast(t('couldNotFix') + ' ' + e.message);
+    if (current === entry && e.message !== 'cancelled') toast(t('couldNotFix') + ' ' + e.message);
   } finally {
     s.fixing = false;
     document.body.classList.remove('updating');
