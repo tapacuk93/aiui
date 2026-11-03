@@ -668,7 +668,7 @@ function circleEl(c, i) {
 // typed text (if any) as context.
 function openCircle(c, node) {
   if (shownAt) { observe('decideMs', performance.now() - shownAt); shownAt = 0; }
-  if (c.typed) return submitText();
+  if (c.typed) return submitText(node);
   if (current.screen.local) return localOpen(c);
   const text = typing() ? el.write.value.trim() : '';
   const evt = { event: 'open', target: circleSummary(c) };
@@ -1090,11 +1090,14 @@ function escapeWriting() {
 el.who.addEventListener('click', (e) => { e.stopPropagation(); showWhoScreen(); });
 el.close.addEventListener('mousedown', (e) => { e.preventDefault(); e.stopPropagation(); escapeWriting(); });
 
-function submitText() {
+// Sends the typed text. The typed circle (when there is one) shows the same loading as any
+// other circle: pulsing ring and progress inside it.
+function submitText(node) {
   const text = el.write.value.trim();
   if (!text) return;
   if (current.screen.local === 'key') return connectKey(text);
-  ask({ event: 'text', text }, { label: text.length > 28 ? text.slice(0, 26) + '…' : text });
+  const circle = node || [...el.circles.children].find((n) => n.dataset.id === '__typed' && !n.hidden) || null;
+  ask({ event: 'text', text }, { label: text.length > 28 ? text.slice(0, 26) + '…' : text, circle });
 }
 
 function matchScore(c, q) {

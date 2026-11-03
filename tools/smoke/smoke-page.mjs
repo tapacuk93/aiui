@@ -37,6 +37,18 @@ const result = await ev(`(async () => {
   await step('fullscreen on/off', () => { setImmersive(true); setImmersive(false); });
   await step('text -> text screen (cached)', () => ask({ event: 'text', text: 'hi' }, { label: 'hi' }));
   await step('typing + suggest', async () => { back(); back(); startWriting('ab'); onInput(); await suggestFor('ab'); stopWriting(true); });
+  await step('typed circle shows loading like any circle', async () => {
+    const realCall = WebBackend.call;
+    WebBackend.call = async (name, body) => name === 'ai' ? (await new Promise(r => setTimeout(r, 600)), { screen: { kind: 'circles', title: 'R', circles: [] } }) : realCall(name, body);
+    home(); startWriting('hello'); onInput();
+    const n = [...el.circles.children].find((x) => x.dataset.id === '__typed');
+    const done = openCircle({ id: '__typed', typed: true, label: 'hello' }, n);
+    await new Promise(r => setTimeout(r, 150));
+    const pending = n.classList.contains('pending') && !!n.querySelector('.progress');
+    await done;
+    WebBackend.call = realCall;
+    if (!pending) throw new Error('typed circle not pending');
+  });
   await step('library screen', () => showLibrary([]));
   await step('profile screen', () => showProfile([]));
   await step('setup screen', () => showSetup());
