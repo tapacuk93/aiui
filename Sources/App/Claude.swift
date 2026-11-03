@@ -177,7 +177,7 @@ final class Claude {
         progress("thinking")
     }
 
-    private func err(_ s: String) -> NSError {
+    func err(_ s: String) -> NSError {
         NSError(domain: "aiui", code: 1, userInfo: [NSLocalizedDescriptionKey: s])
     }
 

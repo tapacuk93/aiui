@@ -61,6 +61,7 @@ window.aiui = {
   next: (data) => ask({ event: 'html', data }, { label: data && data.label }),
   back: () => back(),
   home: () => home(),
+  setup: () => showSetup(),
   get screen() { return current.screen; },
   _event(e) {
     if (e.type === 'progress') el.status.textContent = e.text;
@@ -113,7 +114,10 @@ async function ask(evt, { label, replace = false, circle = null } = {}) {
     stopWriting(true);
     render();
   } catch (e) {
-    if (my === seq) toast(e.message);
+    if (my === seq) {
+      if (e.message === 'no-ai') { setBusy(false); return showSetup(); }
+      toast(e.message);
+    }
   } finally {
     if (my === seq) setBusy(false);
   }
@@ -149,6 +153,64 @@ function setBusy(on, circle) {
   if (pendingCircle) pendingCircle.classList.add('pending');
   if (on) el.status.textContent = 'thinking';
   else updatePager();
+}
+
+// ---------------------------------------------------------------- AI provider setup
+// Local screens (no AI involved): pick a detected agent CLI, or paste an API key of any provider.
+
+function push(screen, label) {
+  stack.push(current);
+  current = { screen, label };
+  stopWriting(true);
+  render();
+}
+
+async function showSetup() {
+  let st;
+  try { st = await call('engine', { op: 'status' }); } catch (e) { return toast(e.message); }
+  const circles = (st.options || []).map((o) => ({
+    id: 'use:' + o.id, label: o.label, icon: o.kind === 'cli' ? '⌨️' : '🔑',
+    hint: o.kind === 'cli' ? 'agent CLI on this Mac' : 'saved API key',
+    selected: !!(st.active && st.active.id === o.id),
+  }));
+  circles.push({ id: 'key', label: 'API Key', icon: '🔑', hint: 'any provider', size: 1.1 });
+  if ((st.options || []).some((o) => o.kind === 'key')) circles.push({ id: 'forget', label: 'Forget Key', icon: '🗑️', size: 0.8 });
+  push({
+    kind: 'circles', local: 'setup', more: false, back: stack.length > 0,
+    title: st.active ? 'AI' : 'Connect an AI',
+    message: st.active
+      ? `Using ${st.active.label}. Pick another, or add an API key.`
+      : 'No AI command-line tool was found on this Mac. Paste an API key from any provider to continue.',
+    circles,
+  }, 'AI');
+}
+
+async function localOpen(c) {
+  const kind = current.screen.local;
+  if (kind !== 'setup') return;
+  if (c.id === 'key') {
+    return push({
+      kind: 'text', local: 'key', go: 'Connect', title: 'Paste an API key',
+      message: 'Anthropic, OpenAI, Google, OpenRouter, Groq or xAI is recognised from the key. ' +
+        'Any other OpenAI-compatible provider: <base-url> <key> [model]. Stored in the macOS Keychain.',
+      text: '',
+    }, 'API Key');
+  }
+  try {
+    if (c.id === 'forget') await call('engine', { op: 'forget' });
+    else await call('engine', { op: 'use', id: c.id.slice(4) });
+  } catch (e) { return toast(e.message); }
+  if (c.id === 'forget') { stack.pop(); return showSetup(); }
+  home();
+  flashStatus('Using ' + c.label);
+}
+
+async function connectKey(text) {
+  try {
+    const st = await call('engine', { op: 'key', text });
+    home();
+    flashStatus('Connected: ' + (st.active ? st.active.label : 'AI'));
+  } catch (e) { toast(e.message); }
 }
 
 // ---------------------------------------------------------------- navigation
@@ -313,7 +375,7 @@ function prevPage() {
 // Keep one full page ready beyond the one shown.
 function maybePreload() {
   const s = current.screen;
-  if (s.kind !== 'circles' || !s.more || paging.loading || paging.failed || busy) return;
+  if (s.kind !== 'circles' || !s.more || s.local || paging.loading || paging.failed || busy) return;
   const page = s.page || 0, last = lastPage();
   const capacity = Math.max(...pages.map((p) => p.length), 1);
   const nextReady = last > page + 1 || (last === page + 1 && pages[last].length >= capacity);
@@ -394,6 +456,7 @@ function circleEl(c, i) {
     e.stopPropagation();
     // Shift/Cmd-click selects instead of opening.
     if (e.shiftKey || e.metaKey) return toggleSelect(c, node);
+    if (current.screen.local) return localOpen(c);
     ask({ event: 'open', target: circleSummary(c) }, { label: c.label, circle: node });
   });
   return node;
@@ -507,6 +570,7 @@ function updateGo() {
 el.go.addEventListener('click', (e) => {
   e.stopPropagation();
   if (writing && el.write.value.trim()) return submitText();
+  if (current.screen.local) return;
   ask({ event: 'go' }, { label: current.screen.go || 'Go' });
 });
 
@@ -547,6 +611,7 @@ el.close.addEventListener('mousedown', (e) => { e.preventDefault(); e.stopPropag
 function submitText() {
   const text = el.write.value.trim();
   if (!text) return;
+  if (current.screen.local === 'key') return connectKey(text);
   ask({ event: 'text', text }, { label: text.length > 28 ? text.slice(0, 26) + '…' : text });
 }
 
@@ -628,3 +693,5 @@ function toast(msg) {
 }
 
 render();
+// No AI available yet: ask for one.
+call('engine', { op: 'status' }).then((st) => { if (!st.active) showSetup(); }).catch(() => {});

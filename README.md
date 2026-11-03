@@ -23,6 +23,15 @@ A native macOS app whose whole UI is one Blink webview (CEF), driven by the `cla
 - The app gives the AI full system access: `claude` runs with `--permission-mode bypassPermissions`, and
   `aiui.sys` exposes shell, JXA/AppleScript (every Cocoa API), open, file read/write, clipboard and notifications.
 
+## AI provider
+
+At launch the app looks for an agent CLI on the login PATH: `claude` (Claude Code), then `codex`, then `gemini`.
+If none is found, it asks for an API key from any provider. Anthropic, OpenAI, Google, OpenRouter, Groq and xAI are
+recognised from the key's prefix; any other OpenAI-compatible provider takes `<base-url> <key> [model]`. Keys are
+kept in the macOS Keychain. With a key, the app runs its own agent loop: a `shell` tool for system access, and a
+`screen` tool that ends the turn. View › AI Provider… switches between what's available. `AIUI_ENGINE` forces
+one (`claude`, `codex`, `gemini`, `key`).
+
 ## Build
 
     ./build.sh          # downloads CEF 156 (arm64) into vendor/ the first time, builds build/AI UI.app

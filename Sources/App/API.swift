@@ -3,9 +3,13 @@ import Cocoa
 /// Native endpoints behind the page's fetch("/api/<name>").
 final class API: NSObject, AIUIHost {
     let cache: Cache
-    let claude: Claude
-    /// Stateless pager: fetches more circles for the current screen in the background.
-    let pager: Claude
+    /// The AI behind screens (persistent session) and the stateless background pager.
+    /// nil until a CLI is detected or an API key is given.
+    private(set) var claude: AIEngine?
+    private(set) var pager: AIEngine?
+    private(set) var engineID: String?   // cli id, or "key"
+    private let systemPrompt: String
+    private let pagerPrompt: String
     /// Actions answered from the cache since the AI last heard from us.
     private var replayed: [[String: Any]] = []
     /// The user's current flow: earlier actions along the path to the current screen.
@@ -24,13 +28,56 @@ final class API: NSObject, AIUIHost {
         let mb = Int(ProcessInfo.processInfo.environment["AIUI_CACHE_MB"] ?? "") ?? 64
         cache = Cache(dir: support.appendingPathComponent("cache", isDirectory: true), limitMB: mb)
         let memory = Prompts.memory(index: cache.indexText.path)
-        claude = Claude(persistent: true, systemPrompt: Prompts.system + memory, schema: Prompts.screenSchema)
-        pager = Claude(persistent: false, systemPrompt: Prompts.system + memory + Prompts.pager, schema: Prompts.pageSchema)
+        systemPrompt = Prompts.system + memory
+        pagerPrompt = Prompts.system + memory + Prompts.pager
         super.init()
+        // Saved choice, else the first agent CLI found, else a saved API key.
+        let saved = UserDefaults.standard.string(forKey: "engine")
+        let env = ProcessInfo.processInfo.environment["AIUI_ENGINE"]
+        let clis = Provider.detectedCLIs()
+        if let want = env ?? saved, use(want) { return }
+        if let first = clis.first { _ = use(first) } else { _ = use("key") }
     }
 
-    func resetSession() { pager.cancel(); claude.reset() }
-    func shutdown() { pager.cancel(); claude.cancel() }
+    /// Switches the AI to a detected CLI ("claude", "codex", "gemini") or the saved API key ("key").
+    @discardableResult
+    func use(_ id: String) -> Bool {
+        let main: AIEngine, page: AIEngine
+        switch id {
+        case "claude":
+            guard Shell.which("claude") != nil else { return false }
+            main = Claude(persistent: true, systemPrompt: systemPrompt, schema: Prompts.screenSchema)
+            page = Claude(persistent: false, systemPrompt: pagerPrompt, schema: Prompts.pageSchema)
+        case "codex", "gemini":
+            guard Shell.which(id) != nil else { return false }
+            let name = Provider.clis.first { $0.id == id }?.name ?? id
+            main = AgentCLI(id: id, label: name, persistent: true, systemPrompt: systemPrompt, schema: Prompts.screenSchema)
+            page = AgentCLI(id: id, label: name, persistent: false, systemPrompt: pagerPrompt, schema: Prompts.pageSchema)
+        case "key":
+            guard let key = Provider.loadKey() else { return false }
+            main = APIEngine(key: key, persistent: true, systemPrompt: systemPrompt, schema: Prompts.screenSchema)
+            page = APIEngine(key: key, persistent: false, systemPrompt: pagerPrompt, schema: Prompts.pageSchema)
+        default:
+            return false
+        }
+        claude?.cancel(); pager?.cancel()
+        claude = main; pager = page; engineID = id
+        UserDefaults.standard.set(id, forKey: "engine")
+        return true
+    }
+
+    func engineStatus() -> [String: Any] {
+        var options: [[String: Any]] = Provider.clis.filter { Shell.which($0.id) != nil }.map {
+            ["id": $0.id, "label": $0.name, "kind": "cli"]
+        }
+        if let k = Provider.loadKey() { options.append(["id": "key", "label": "\(k.name) · \(k.model)", "kind": "key"]) }
+        var out: [String: Any] = ["options": options]
+        if let claude, let engineID { out["active"] = ["id": engineID, "label": claude.label] }
+        return out
+    }
+
+    func resetSession() { pager?.cancel(); claude?.reset() }
+    func shutdown() { pager?.cancel(); claude?.cancel() }
 
     func handleAPI(_ path: String, body: Data, reply: @escaping AIUIReply) {
         let input = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any] ?? [:]
@@ -46,10 +93,28 @@ final class API: NSObject, AIUIHost {
         switch path {
         case "info":
             send(["home": NSHomeDirectory(), "user": NSFullUserName(),
-                  "session": claude.sessionID, "engine": "CEF/Blink",
+                  "ai": claude?.label ?? "none", "engine": "CEF/Blink",
                   "macos": ProcessInfo.processInfo.operatingSystemVersionString])
 
+        case "engine":
+            switch input["op"] as? String ?? "status" {
+            case "use":
+                if !use(input["id"] as? String ?? "") { return fail("That AI is not available.") }
+            case "key":
+                guard let key = Provider.parse(input["text"] as? String ?? "") else {
+                    return fail("Unrecognised key. Paste a key from Anthropic, OpenAI, Google, OpenRouter, Groq or xAI, or: <base-url> <key> [model]")
+                }
+                guard Provider.saveKey(key) else { return fail("Could not save the key to the Keychain.") }
+                use("key")
+            case "forget":
+                Provider.deleteKey()
+                if engineID == "key" { claude = nil; pager = nil; engineID = nil; UserDefaults.standard.removeObject(forKey: "engine") }
+            default: break
+            }
+            send(engineStatus())
+
         case "ai":
+            guard let claude, let pager else { return fail("no-ai") }
             pager.cancel()
             let action = Cache.action(from: input)
             let key = Cache.key(for: action)
@@ -105,6 +170,7 @@ final class API: NSObject, AIUIHost {
             }
 
         case "more":
+            guard let pager else { return fail("no-ai") }
             var input = input
             var words = (input["path"] as? [String]) ?? []
             if let t = (input["screen"] as? [String: Any])?["title"] as? String { words.append(t) }
@@ -127,12 +193,12 @@ final class API: NSObject, AIUIHost {
             })
 
         case "cancel":
-            if (input["pager"] as? Bool) == true { pager.cancel() } else { claude.cancel() }
+            if (input["pager"] as? Bool) == true { pager?.cancel() } else { claude?.cancel() }
             send(["ok": true])
 
         case "reset":
-            claude.reset()
-            send(["ok": true, "session": claude.sessionID])
+            resetSession()
+            send(["ok": true])
 
         case "sys":
             Self.sys(input, send: send, fail: fail)

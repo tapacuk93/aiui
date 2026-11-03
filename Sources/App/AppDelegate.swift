@@ -59,6 +59,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     @objc func showDevTools(_ sender: Any?) { AIUICef.showDevTools() }
     @objc func reloadPage(_ sender: Any?) { AIUICef.reload() }
+    @objc func chooseAI(_ sender: Any?) {
+        AIUICef.evalJS("window.aiui && aiui.setup()")
+    }
+
     @objc func clearCache(_ sender: Any?) {
         api.cache.clear()
     }
@@ -96,6 +100,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let viewItem = NSMenuItem()
         let view = NSMenu(title: "View")
         view.addItem(withTitle: "New Session", action: #selector(newSession(_:)), keyEquivalent: "n").target = self
+        view.addItem(withTitle: "AI Provider…", action: #selector(chooseAI(_:)), keyEquivalent: "").target = self
         view.addItem(withTitle: "Clear Memory Cache", action: #selector(clearCache(_:)), keyEquivalent: "").target = self
         view.addItem(withTitle: "Reload", action: #selector(reloadPage(_:)), keyEquivalent: "r").target = self
         let dev = view.addItem(withTitle: "Developer Tools", action: #selector(showDevTools(_:)), keyEquivalent: "i")
