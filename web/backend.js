@@ -253,6 +253,61 @@ const WebBackend = (() => {
     } catch {} finally { reviewing = false; }
   }
 
+  // ------------------------------------------------------------- avoid record
+  // Hosts/URLs that failed, rechecked in the background with exponential backoff.
+
+  const AVOID = 'aiui.avoid', FIRST = 600000, MAXB = 7 * 86400000;
+  const loadAvoid = () => { try { return JSON.parse(localStorage.getItem(AVOID)) || {}; } catch { return {}; } };
+  const saveAvoid = (a) => { try { localStorage.setItem(AVOID, JSON.stringify(a)); } catch {} };
+  function avoidRecord(items) {
+    const a = loadAvoid(), now = Date.now();
+    for (const it of items || []) {
+      let host; try { host = new URL(it.url).host; } catch { continue; }
+      for (const [key, kind] of [[host, 'host'], [it.url, 'url']]) {
+        const e = a[key] || { key, kind, first: now, failures: 0, backoff: FIRST, nextCheck: now + FIRST, checks: 0 };
+        Object.assign(e, { sample: it.url, reason: it.reason || 'failed', last: now, failures: e.failures + 1 });
+        a[key] = e;
+      }
+    }
+    saveAvoid(a);
+  }
+  const avoidActive = (e) => e.kind === 'url' || e.failures >= 2 || ['401', '403', '451', 'dns'].includes(e.reason);
+  function avoidOverview(limit = 30) {
+    return Object.values(loadAvoid()).filter(avoidActive)
+      .sort((x, y) => (x.kind === y.kind ? y.failures - x.failures : x.kind === 'host' ? -1 : 1)).slice(0, limit)
+      .map((e) => `${e.key} — ${e.reason} ×${e.failures} since ${new Date(e.first).toISOString().slice(0, 10)}`);
+  }
+  // A browser can't read another site's status: an image probe for images, a no-cors fetch for
+  // the rest (it at least proves the host answers).
+  function probe(url) {
+    return new Promise((res) => {
+      const t = setTimeout(() => res(false), 15000);
+      if (/\.(jpe?g|png|gif|webp|svg)(\?|$)|\/iiif\//i.test(url)) {
+        const i = new Image(); i.onload = () => { clearTimeout(t); res(true); }; i.onerror = () => { clearTimeout(t); res(false); }; i.src = url;
+      } else {
+        fetch(url, { mode: 'no-cors' }).then(() => { clearTimeout(t); res(true); }, () => { clearTimeout(t); res(false); });
+      }
+    });
+  }
+  async function avoidRecheck() {
+    const now = Date.now();
+    for (const e of Object.values(loadAvoid()).filter((x) => x.nextCheck <= now)) {
+      const ok = await probe(e.sample);
+      const a = loadAvoid(), cur = a[e.key];
+      if (!cur) continue;
+      cur.checks++;
+      if (ok) {
+        delete a[e.key];
+        if (cur.kind === 'host') for (const [k, v] of Object.entries(a)) { try { if (v.kind === 'url' && new URL(k).host === cur.key) delete a[k]; } catch {} }
+      } else {
+        cur.backoff = Math.min(cur.backoff * 2, MAXB);
+        cur.nextCheck = Date.now() + cur.backoff;
+      }
+      saveAvoid(a);
+    }
+  }
+  setInterval(avoidRecheck, 60000);
+
   // ------------------------------------------------------------- user profile
   // Characteristic tree (from the profiler AI) + behavioral baseline, in localStorage.
 
@@ -412,6 +467,8 @@ const WebBackend = (() => {
     if (mem.length) event.memory = mem;
     const ov = overview();
     if (ov.length) event.flows = ov;
+    const av = avoidOverview();
+    if (av.length) event.avoid = av;
     const lo = libOverview(words);
     if (lo.length) { event.library = lo; event.libraryCategories = libCategories(); }
     const user = {};
@@ -552,6 +609,11 @@ const WebBackend = (() => {
         return libTree(body.path || []);
       }
       case 'window': return { ok: true };
+      case 'avoid':
+        if (body.op === 'record') { avoidRecord(body.items); return { ok: true }; }
+        if (body.op === 'clear') { localStorage.removeItem(AVOID); return { ok: true }; }
+        if (body.op === 'recheck') { avoidRecheck(); return { ok: true }; }
+        return { entries: Object.values(loadAvoid()), active: avoidOverview() };
       case 'cache': {
         if (body.op === 'likely') return { label: likely(body.path) };
         if (body.op === 'invalidate') {

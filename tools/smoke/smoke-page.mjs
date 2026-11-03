@@ -104,6 +104,24 @@ const result = await ev(`(async () => {
     const reported = fixEvent && fixEvent.problem.errors.some((e) => e.includes('invalid.invalid'));
     if (!fixEvent || !reported || aiui.screen.title !== 'Fixed') throw new Error(JSON.stringify({ fix: fixEvent && fixEvent.problem, now: aiui.screen.title }));
   });
+  await step('ready but images failing -> self-fix anyway; failures recorded to avoid', async () => {
+    const realCall = WebBackend.call;
+    let fixEvent = null;
+    const recorded = [];
+    WebBackend.call = async (name, body) => {
+      if (name === 'avoid') { recorded.push(...(body.items || [])); return { ok: true }; }
+      if (name === 'ai' && body.event === 'fix') { fixEvent = body; return { screen: { kind: 'circles', title: 'Fixed2', circles: [] } }; }
+      if (name === 'ai') return { screen: { kind: 'html', title: 'Gallery2',
+        html: '<script>aiui.ready(); for (let k = 0; k < 3; k++) { const i = new Image(); i.src = "https://blocked.invalid/" + k + ".jpg"; }<\/script>' } };
+      return realCall(name, body);
+    };
+    home();
+    await ask({ event: 'open', target: { label: 'Gallery2' } }, { label: 'Gallery2' });
+    await new Promise(r => setTimeout(r, 3500));
+    WebBackend.call = realCall;
+    if (!fixEvent || aiui.screen.title !== 'Fixed2' || !recorded.some((r) => r.url.includes('blocked.invalid')))
+      throw new Error(JSON.stringify({ fixed: !!fixEvent, now: aiui.screen.title, recorded }));
+  });
   await step('policy wait: no interim, full screen arrives', async () => {
     const r = await slowFull({ open: { seconds: 0.3, then: 'wait', label: 'searching' } });
     if (r.quickCalled || r.title !== 'Full') throw new Error(JSON.stringify(r));

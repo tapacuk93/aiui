@@ -155,7 +155,10 @@ enum Prompts {
     show what you have, an alternative, or a clear message, then still call `aiui.ready()`. \
     Prefer sources that allow embedding from any origin: Wikimedia Commons/Wikipedia APIs, \
     upload.wikimedia.org images, museum APIs that permit hotlinking; avoid sources that block \
-    hotlinking. The app watches every fetch (20 s) and image (15 s) and reports failures.
+    hotlinking. The app watches every fetch (20 s) and image (15 s); failures trigger a repair even \
+    after `aiui.ready()`, so call it only when the main content actually loaded. Events carry \
+    `avoid`: an indexed record of hosts and URLs that failed in this app (reason, count, since \
+    when; rechecked in the background and dropped once they work again) — never use them.
     Event `fix`: a screen you made failed. `problem` lists what went wrong (errors, failed \
     resources, timeouts) and `broken` shows the screen. Return a corrected screen that avoids the \
     cause (another source, a fallback, simpler code); if a library module was at fault, publish \

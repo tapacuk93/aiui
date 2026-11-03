@@ -12,6 +12,7 @@ final class API: NSObject {
     let cache: Cache
     let utilities: Utilities
     let profile: Profile
+    let avoid: Avoid
     /// The AI behind screens (persistent session) and the stateless background pager.
     /// nil until a CLI is detected or an API key is given.
     private(set) var claude: AIEngine?
@@ -52,6 +53,7 @@ final class API: NSObject {
         cache = Cache(dir: support.appendingPathComponent("cache", isDirectory: true), limitMB: mb)
         utilities = Utilities(dir: support.appendingPathComponent("utilities", isDirectory: true))
         profile = Profile(dir: support.appendingPathComponent("profile", isDirectory: true))
+        avoid = Avoid(dir: support.appendingPathComponent("avoid", isDirectory: true))
         cache.generation = Prompts.generation
         let memory = Prompts.memory(index: cache.indexText.path)
         systemPrompt = Prompts.system + memory
@@ -141,7 +143,8 @@ final class API: NSObject {
 
     /// Pulls in what other devices wrote (called when the app becomes active, and every minute).
     func syncNow() {
-        cache.reload(); utilities.reload(); profile.reload()
+        cache.reload(); utilities.reload(); profile.reload(); avoid.reload()
+        avoid.recheckDue()
         AICoin.shared.refreshBalance()
     }
 
@@ -163,6 +166,8 @@ final class API: NSObject {
         if !related.isEmpty { input["memory"] = related }
         let flows = cache.overview(limit: 10)
         if !flows.isEmpty { input["flows"] = flows }
+        let bad = avoid.overview(limit: 20)
+        if !bad.isEmpty { input["avoid"] = bad }
         let data = (try? JSONSerialization.data(withJSONObject: input, options: [.prettyPrinted, .sortedKeys])) ?? Data()
         engine.next(prompt: intro + "\n```json\n" + String(decoding: data, as: UTF8.self) + "\n```", progress: { _ in }, done: { r in
             switch r {
@@ -303,6 +308,8 @@ final class API: NSObject {
             if !memory.isEmpty { event["memory"] = memory }
             let flows = cache.overview()
             if !flows.isEmpty { event["flows"] = flows }
+            let bad = avoid.overview()
+            if !bad.isEmpty { event["avoid"] = bad }
             let lib = utilities.overview(words)
             if !lib.isEmpty {
                 event["library"] = lib
@@ -399,6 +406,14 @@ final class API: NSObject {
                 send(profile.tree(at: Array((input["path"] as? [String] ?? []).dropLast())))
             default:
                 send(["traits": profile.overview(), "baseline": profile.baseline.mapValues(\.value)])
+            }
+
+        case "avoid":
+            switch input["op"] as? String ?? "list" {
+            case "record": avoid.record(input["items"] as? [[String: Any]] ?? []); send(["ok": true])
+            case "clear": avoid.clear(); send(["ok": true])
+            case "recheck": avoid.recheckDue(); send(["ok": true])
+            default: send(["entries": avoid.list(), "active": avoid.overview()])
             }
 
         case "window":

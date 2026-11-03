@@ -804,6 +804,26 @@ function viewHealth(h) {
   if (s.kind !== 'html') return;
   (s.health || (s.health = [])).push(h.kind + ': ' + h.detail);
   if (s.health.length > 30) s.health.shift();
+  // Into the indexed avoid record (rechecked in the background with backoff).
+  const m = String(h.detail).match(/https?:\/\/\S+/);
+  if (m && h.kind !== 'error') reportFailure(m[0], h.kind === 'timeout' ? 'timeout' : (String(h.detail).match(/^(\d{3}) /) || [])[1] || 'failed');
+  // Failures matter even after ready(): once things go quiet, repair the view if they add up.
+  s.failures = (s.failures || 0) + (h.kind === 'error' || h.kind === 'fetch' ? 2 : 1);
+  clearTimeout(s.failTimer);
+  s.failTimer = setTimeout(() => {
+    if (current.screen === s && (s.failures || 0) >= 2) selfFix(s, `${s.health.length} failures reported`);
+  }, 2000);
+}
+
+// Failed resources go to the avoid record in small batches.
+let failQueue = [], failTimer = 0;
+function reportFailure(url, reason) {
+  failQueue.push({ url, reason });
+  clearTimeout(failTimer);
+  failTimer = setTimeout(() => {
+    const items = failQueue.splice(0);
+    if (items.length) call('avoid', { op: 'record', items }).catch(() => {});
+  }, 800);
 }
 
 function viewReady() {
@@ -859,7 +879,7 @@ const FRAME_SHIM = `<script>(() => {
   });
   const rpc = (m, a) => new Promise((res, rej) => { const id = ++n; pend[id] = { res, rej }; parent.postMessage({ aiuiCall: id, m, a }, '*'); });
   window.aiui = {
-  ready: () => viewReady(), sys: (o) => rpc('sys', o), next: (d) => rpc('next', d), back: () => rpc('back'), home: () => rpc('home'),
+    ready: () => rpc('ready'), sys: (o) => rpc('sys', o), next: (d) => rpc('next', d), back: () => rpc('back'), home: () => rpc('home'),
     memory: { search: (q) => rpc('memory.search', q), stats: () => rpc('memory.stats') } };
   addEventListener('keydown', (e) => {
     const t = e.target; if (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName)) return;
