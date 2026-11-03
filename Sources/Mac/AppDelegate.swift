@@ -107,6 +107,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTo
 
     @objc func showSystem(_ sender: Any?) { AIUICef.evalJS("window.aiui && aiui.menuUsed && aiui.menuUsed(), window.aiui && aiui.system()") }
     @objc func showNetwork(_ sender: Any?) { AIUICef.evalJS("window.aiui && aiui.menuUsed && aiui.menuUsed(), window.aiui && aiui.network()") }
+    @objc func showActions(_ sender: Any?) { AIUICef.evalJS("window.aiui && aiui.menuUsed && aiui.menuUsed(), window.aiui && aiui.actions()") }
     @objc func showActivity(_ sender: Any?) { AIUICef.evalJS("window.aiui && aiui.menuUsed && aiui.menuUsed(), window.aiui && aiui.activityScreen()") }
     @objc func showJSLibraries(_ sender: Any?) { AIUICef.evalJS("window.aiui && aiui.menuUsed && aiui.menuUsed(), window.aiui && aiui.jsLibraries()") }
     @objc func showNativeLibraries(_ sender: Any?) { AIUICef.evalJS("window.aiui && aiui.menuUsed && aiui.menuUsed(), window.aiui && aiui.nativeLibraries()") }
@@ -163,6 +164,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTo
         let view = NSMenu(title: "View")
         view.addItem(withTitle: "Connect to Network…", action: #selector(showNetwork(_:)), keyEquivalent: "n").target = self
         view.addItem(withTitle: "Activity", action: #selector(showActivity(_:)), keyEquivalent: "i").target = self
+        view.addItem(withTitle: "Actions…", action: #selector(showActions(_:)), keyEquivalent: "k").target = self
         let newSession = view.addItem(withTitle: "New Session", action: #selector(newSession(_:)), keyEquivalent: "n")
         newSession.keyEquivalentModifierMask = [.command, .shift]
         newSession.target = self

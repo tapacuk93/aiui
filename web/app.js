@@ -158,7 +158,8 @@ window.aiui = {
   },
   next: (data) => ask({ event: 'html', data }, { label: data && data.label }),
   // A scene's own activity in the app's list, with quick actions: [{ icon, label, run }].
-  menuUsed: () => menuShortcut(),   // every native menu action (its ⌘ was not a lone press)
+  menuUsed: () => menuShortcut(),
+  actions: () => showInstant(),   // every native menu action (its ⌘ was not a lone press)
   network: () => showNetwork(),
   activityScreen: () => toggleActivityScreen(),
   activity: (id, title, actions) => sceneActivity(id, title, (actions || []).map((a) => ({ icon: a.icon, label: a.label, run: a.run }))),
@@ -517,6 +518,7 @@ async function localOpen(c) {
   const kind = current.screen.local;
   if (kind === 'who') return whoOpen(c);
   if (kind === 'network') return networkOpen(c);
+  if (kind === 'instant') return instantOpen(c);
   if (kind === 'profile') {
     if (c.branch) return showProfile([...current.screen.profPath, c.label]);
     return; // a trait: nothing to open (× forgets it)
@@ -1539,7 +1541,7 @@ const FRAME_SHIM = `<script>(() => {
   addEventListener('keydown', (e) => {
     const t = e.target; if (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName)) return;
     if (e.key === 'Backspace' || e.key === 'Escape' || e.key === '\`') { e.preventDefault(); parent.postMessage({ aiuiKey: e.key }, '*'); }
-    if ((e.metaKey || e.ctrlKey) && /^[fp=\\-0\\[\\]rtni]$/i.test(e.key)) { e.preventDefault(); parent.postMessage({ aiuiKey: e.key, meta: true, shift: e.shiftKey }, '*'); }
+    if ((e.metaKey || e.ctrlKey) && /^[fp=\\-0\\[\\]rtnik]$/i.test(e.key)) { e.preventDefault(); parent.postMessage({ aiuiKey: e.key, meta: true, shift: e.shiftKey }, '*'); }
   });
   addEventListener('click', (e) => {
     const a = e.target.closest && e.target.closest('a[href]'); if (!a) return;
@@ -1899,6 +1901,75 @@ function visibleCircles(s) {
   return [typed, ...matches, ...known, ...sugg];
 }
 
+// ---------------------------------------------------------------- instant circles
+// Predefined actions of the app that need no AI, in one registry: each says when it applies (the
+// context: the scene on display, an applet, the root…) and what it does. They are proposed while
+// typing and listed on the Actions screen (⌘K). Other parts register theirs with registerInstant.
+const INSTANT = [];
+function registerInstant(a) {
+  const i = INSTANT.findIndex((x) => x.id === a.id);
+  if (i >= 0) INSTANT[i] = a; else INSTANT.push(a);
+}
+function instantContext(entry) {
+  const s = (entry && entry.screen) || {};
+  return { entry, s, html: s.kind === 'html' && !s.local, applet: s.kind === 'html' && !s.local && entry.key ? entry.key : null,
+    deep: entry === current ? stack.length > 0 : true, local: s.local || null };
+}
+function instantFor(ctx) { return INSTANT.filter((a) => { try { return !a.when || a.when(ctx); } catch { return false; } }); }
+async function runInstant(a, ctx) {
+  stopWriting(true);
+  // An action about a scene runs with that scene on display.
+  if (a.scene && ctx.entry && current !== ctx.entry) {
+    const i = stack.indexOf(ctx.entry);
+    if (i >= 0) { forwardStack = []; current = ctx.entry; stack = stack.slice(0, i); render(); }
+  }
+  try { await a.run(ctx); } catch (e) { toast(e.message); }
+}
+const improveState = new Map(); // applet key → paused (as last seen)
+[
+  // This scene
+  { id: 'improveNow', scene: true, icon: '↻', label: () => t('qaImproveNow'), when: (c) => !!c.applet,
+    run: async (c) => { await callRaw('usage', { op: 'improve', key: c.applet }); flashStatus('↻ ' + t('qaImproveNow')); } },
+  { id: 'pauseImprove', scene: true, icon: '⏸', label: () => t('qaPauseImprove'), when: (c) => !!c.applet && improveState.get(c.applet) !== true,
+    run: async (c) => { await callRaw('usage', { op: 'pause', key: c.applet, on: true }); improveState.set(c.applet, true); flashStatus('⏸ ' + t('improvesPaused')); } },
+  { id: 'resumeImprove', scene: true, icon: '▶', label: () => t('qaResumeImprove'), when: (c) => !!c.applet && improveState.get(c.applet) === true,
+    run: async (c) => { await callRaw('usage', { op: 'pause', key: c.applet, on: false }); improveState.set(c.applet, false); flashStatus('▶ ' + t('qaResumeImprove')); } },
+  { id: 'reloadScene', scene: true, icon: '⟳', label: () => t('reloadScene'), when: (c) => c.html, run: () => reloadScene() },
+  { id: 'find', scene: true, icon: '🔍', label: () => t('find'), when: (c) => c.html, run: () => find() },
+  { id: 'print', scene: true, icon: '🖨', label: () => t('printScene'), when: (c) => c.html, run: () => printScene() },
+  { id: 'fullscreen', scene: true, icon: '⛶', label: () => t('fullscreen'), when: (c) => c.html && !!c.s.fullscreen, run: () => setImmersive(true) },
+  { id: 'backToCircles', scene: true, icon: '◎', label: () => t('backToCircles'), when: (c) => c.deep && c.s.kind !== 'circles', run: () => backToCircles() },
+  { id: 'home', icon: '⌂', label: () => t('appName'), when: (c) => c.deep, run: () => home() },
+  // The app
+  { id: 'network', icon: '📶', label: () => t('network'), run: () => showNetwork() },
+  { id: 'activity', icon: 'ⓘ', label: () => t('actScreen'), run: () => toggleActivityScreen(true) },
+  { id: 'system', icon: '⚙️', label: () => t('system'), run: () => showSystem() },
+  { id: 'jsLibs', icon: '📦', label: () => t('jsLibs'), run: () => showJSLibraries() },
+  { id: 'nativeLibs', icon: '🛠', label: () => t('nativeLibs'), when: () => NATIVE && typeof showNativeLibraries === 'function', run: () => showNativeLibraries() },
+  { id: 'utilities', icon: '🧰', label: () => t('utilityLibrary'), run: () => showLibrary() },
+  { id: 'profile', icon: '👤', label: () => t('profileTitle'), run: () => showProfile() },
+  { id: 'ai', icon: '🤖', label: () => t('aiProvider'), run: () => showSetup() },
+  { id: 'pauseAll', icon: '⏸', label: () => t('pause'), when: () => !paused, run: () => setPaused(true) },
+  { id: 'resumeAll', icon: '▶', label: () => t('resume'), when: () => paused, run: () => setPaused(false) },
+  { id: 'console', icon: '›_', label: () => t('consoleWord'), run: () => toggleConsole(true) },
+  { id: 'newSession', icon: '✦', label: () => t('newSession'), run: async () => { await callRaw('reset').catch(() => {}); home(); flashStatus('✦ ' + t('newSession')); } },
+].forEach(registerInstant);
+
+// The Actions screen (⌘K): every instant circle that applies to the scene it was opened from.
+function showInstant() {
+  if (current.screen.local === 'instant') return;
+  const from = current, ctx = instantContext(from);
+  push({ kind: 'circles', local: 'instant', more: false, back: true, title: t('actions'), instantFrom: from,
+    circles: instantFor(ctx).map((a) => ({ id: 'i:' + a.id, instant: a.id, icon: a.icon, label: a.label(), hint: a.scene ? t('thisScene') : t('appName'), size: a.scene ? 1 : 0.9 })) }, t('actions'));
+}
+function instantOpen(c) {
+  const from = current.screen.instantFrom, a = INSTANT.find((x) => x.id === c.instant);
+  if (!a) return;
+  current = stack.pop();           // leave the Actions screen first: actions apply to the scene below
+  render();
+  runInstant(a, instantContext(from));
+}
+
 // Circles that already exist somewhere the user can go: proposed while typing, opened directly.
 let knownApplets = [], knownAppletsAt = 0;
 function refreshKnownApplets() {
@@ -1909,10 +1980,8 @@ function refreshKnownApplets() {
 function knownCircles() {
   const out = [];
   const add = (c, open) => out.push({ ...c, id: 'k~' + out.length, known: true, open, size: 0.9 });
-  const appScreens = [['📶', t('network'), () => showNetwork()], ['ⓘ', t('actScreen'), () => toggleActivityScreen(true)],
-    ['⚙️', t('system'), () => showSystem()], ['📦', t('jsLibs'), () => showJSLibraries()], ['🧰', t('utilityLibrary') , () => showLibrary()],
-    ['👤', t('profileTitle'), () => showProfile()], ['🤖', 'AI', () => showSetup()]];
-  for (const [icon, label, open] of appScreens) add({ icon, label, hint: t('appName') }, open);
+  const ctx = instantContext(current);
+  for (const a of instantFor(ctx)) add({ icon: a.icon, label: a.label(), hint: a.scene ? t('thisScene') : t('appName') }, () => runInstant(a, ctx));
   if (stack.length) for (const c of ROOT.circles) add({ icon: c.icon, label: c.label, hint: t('appName') }, () => openKnown(null, c));
   const where = (labels) => labels.filter(Boolean).slice(-2).join(' › ');
   stack.forEach((entry, i) => { for (const c of (entry.screen.circles || []).filter((x) => !x.removed && !x.typed))
@@ -2128,7 +2197,7 @@ function onKey(e) {
     const k = e.key.toLowerCase();
     const acts = { f: find, '=': () => zoom(1), '+': () => zoom(1), '-': () => zoom(-1), '0': () => zoom(0), p: printScene,
       ']': forward, r: () => (e.shiftKey ? location.reload() : reloadScene()), t: () => typeFromScene(''),
-      ...(NATIVE ? {} : { n: () => showNetwork(), i: () => toggleActivityScreen() }) }; // the Mac app's menu has them
+      ...(NATIVE ? {} : { n: () => showNetwork(), i: () => toggleActivityScreen(), k: () => showInstant() }) }; // the Mac app's menu has them
     if (acts[k]) { e.preventDefault(); return acts[k](); }
   }
   if (!isEditable(e.target) && current.screen.kind === 'circles' && (e.key === 'Home' || e.key === 'End')) {
@@ -2252,6 +2321,8 @@ const STR = {
   qaPauseImprove: 'Pause improvements', qaResumeImprove: 'Resume improvements', qaImproveNow: 'Improve now',
   scheduled: 'Scheduled', nextImprove: 'next improvement', improvesPaused: 'improvements paused', dueNow: 'due now',
   nothingRunning: 'Nothing running', versionWord: 'version', utilityLibrary: 'Utility Library', profileTitle: 'What AI UI knows about you',
+  actions: 'Actions', thisScene: 'this scene', reloadScene: 'Reload scene', printScene: 'Print', backToCircles: 'Back to the circles',
+  nativeLibs: 'Native libraries', aiProvider: 'AI provider', consoleWord: 'Console', newSession: 'New session',
   network: 'Network', netScan: 'Looking for networks…', netHidden: 'macOS shows network names only with Location access: allow AI UI in System Settings › Privacy & Security › Location Services.',
   netPassword: 'Password for', netConnected: 'connected', netJoining: 'joining', netOn: 'Turn Wi-Fi on', netOff: 'Turn Wi-Fi off',
   netRescan: 'Scan again', netKnown: 'saved', netSecured: 'secured', netOpen: 'open', netNone: 'No networks found',
