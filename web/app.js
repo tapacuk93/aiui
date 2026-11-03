@@ -43,7 +43,13 @@ const paging = { loading: false, failed: false, token: 0, n: 0 };
 
 // ---------------------------------------------------------------- API bridge
 
+// Inside the Mac app the page is served from aiui:// and /api/* is native. Anywhere else this is
+// the web version, answered by WebBackend (backend.js) in the browser.
+const NATIVE = location.protocol === 'aiui:';
+document.documentElement.classList.toggle('web', !NATIVE);
+
 async function call(name, body) {
+  if (!NATIVE) return WebBackend.call(name, body || {}, (text) => aiui._event({ type: 'progress', text }));
   const r = await fetch('/api/' + name, { method: 'POST', body: JSON.stringify(body || {}) });
   const data = await r.json().catch(() => ({ error: 'bad response' }));
   if (!r.ok || data.error) throw new Error(data.error || ('HTTP ' + r.status));
@@ -177,9 +183,12 @@ async function showSetup() {
   push({
     kind: 'circles', local: 'setup', more: false, back: stack.length > 0,
     title: st.active ? 'AI' : 'Connect an AI',
-    message: st.active
-      ? `Using ${st.active.label}. Pick another, or add an API key.`
-      : 'No AI command-line tool was found on this Mac. Paste an API key from any provider to continue.',
+    message: !NATIVE
+      ? (st.active ? `Using ${st.active.label}. ` : '') +
+        'Web version: your API key stays in this browser and goes only to its provider. No system access here — the AI UI Mac app has it.'
+      : st.active
+        ? `Using ${st.active.label}. Pick another, or add an API key.`
+        : 'No AI command-line tool was found on this Mac. Paste an API key from any provider to continue.',
     circles,
   }, 'AI');
 }
@@ -191,7 +200,8 @@ async function localOpen(c) {
     return push({
       kind: 'text', local: 'key', go: 'Connect', title: 'Paste an API key',
       message: 'Anthropic, OpenAI, Google, OpenRouter, Groq or xAI is recognised from the key. ' +
-        'Any other OpenAI-compatible provider: <base-url> <key> [model]. Stored in the macOS Keychain.',
+        'Any other OpenAI-compatible provider: <base-url> <key> [model]. ' +
+        (NATIVE ? 'Stored in the macOS Keychain.' : 'Stored only in this browser.'),
       text: '',
     }, 'API Key');
   }
@@ -556,8 +566,47 @@ matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
   }
 });
 
+// On the web, AI-written views run in a sandboxed frame (no access to this page or the stored key);
+// they reach `aiui` through postMessage.
+const FRAME_SHIM = `<script>(() => {
+  let n = 0; const pend = {};
+  addEventListener('message', (e) => {
+    const d = e.data; if (!d || d.aiuiReply == null || !pend[d.aiuiReply]) return;
+    const p = pend[d.aiuiReply]; delete pend[d.aiuiReply];
+    d.error ? p.rej(new Error(d.error)) : p.res(d.value);
+  });
+  const rpc = (m, a) => new Promise((res, rej) => { const id = ++n; pend[id] = { res, rej }; parent.postMessage({ aiuiCall: id, m, a }, '*'); });
+  window.aiui = { sys: (o) => rpc('sys', o), next: (d) => rpc('next', d), back: () => rpc('back'), home: () => rpc('home'),
+    memory: { search: (q) => rpc('memory.search', q), stats: () => rpc('memory.stats') } };
+  addEventListener('keydown', (e) => {
+    const t = e.target; if (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName)) return;
+    if (e.key === 'Backspace' || e.key === 'Escape') { e.preventDefault(); parent.postMessage({ aiuiKey: e.key }, '*'); }
+  });
+  addEventListener('click', (e) => {
+    const a = e.target.closest && e.target.closest('a[href]'); if (!a) return;
+    if (/^(https?:|mailto:|tel:)/i.test(a.getAttribute('href'))) { e.preventDefault(); rpc('sys', { op: 'open', target: a.href }); }
+  });
+})();<\/script>`;
+
+window.addEventListener('message', async (e) => {
+  const frame = el.view.querySelector('iframe');
+  if (!frame || e.source !== frame.contentWindow) return;
+  const d = e.data || {};
+  if (d.aiuiKey) return onKey(new KeyboardEvent('keydown', { key: d.aiuiKey }));
+  if (d.aiuiCall == null) return;
+  const fns = { sys: (a) => aiui.sys(a), next: (a) => aiui.next(a), back: () => aiui.back(), home: () => aiui.home(),
+    'memory.search': (q) => aiui.memory.search(q), 'memory.stats': () => aiui.memory.stats() };
+  try {
+    const value = await (fns[d.m] ? fns[d.m](d.a) : Promise.reject(new Error('unknown call')));
+    e.source.postMessage({ aiuiReply: d.aiuiCall, value: value === undefined ? null : JSON.parse(JSON.stringify(value)) }, '*');
+  } catch (err) {
+    e.source.postMessage({ aiuiReply: d.aiuiCall, error: err.message }, '*');
+  }
+});
+
 function renderHTML(s) {
   const frame = document.createElement('iframe');
+  if (!NATIVE) frame.setAttribute('sandbox', 'allow-scripts allow-forms allow-popups allow-modals');
   frame.setAttribute('allow', 'clipboard-read; clipboard-write; autoplay; fullscreen; microphone; camera; geolocation');
   const base = `<meta charset="utf-8"><style>
     :root{${themeVars()}}
@@ -565,12 +614,13 @@ function renderHTML(s) {
     body{padding:${s.title ? 120 : 64}px 48px 120px;max-width:1100px;margin:0 auto}
     a{color:var(--accent)} ::selection{background:var(--accent-soft)}
     ::-webkit-scrollbar{width:8px}::-webkit-scrollbar-thumb{background:var(--line);border-radius:4px}
-  </style><script>window.aiui = parent.aiui;<\/script>`;
+  </style>${NATIVE ? '<script>window.aiui = parent.aiui;<\/script>' : FRAME_SHIM}`;
   let html = String(s.html || '');
   if (/<head[^>]*>/i.test(html)) html = html.replace(/<head[^>]*>/i, (m) => m + base);
   else html = `<!doctype html><html><head>${base}</head><body>${html}</body></html>`;
   frame.srcdoc = html;
   frame.addEventListener('load', () => {
+    if (!NATIVE) return; // sandboxed: the shim handles keys and links
     const doc = frame.contentDocument;
     if (!doc) return;
     doc.addEventListener('keydown', onKey);

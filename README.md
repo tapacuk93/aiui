@@ -32,6 +32,20 @@ kept in the macOS Keychain. With a key, the app runs its own agent loop: a `shel
 `screen` tool that ends the turn. View › AI Provider… switches between what's available. `AIUI_ENGINE` forces
 one (`claude`, `codex`, `gemini`, `key`).
 
+## Web version
+
+`web/` also runs in an ordinary browser (https://aiui.oeaio.com). There is no Mac backend there:
+`web/backend.js` answers the same `/api/*` calls in the page. The visitor's own API key is kept in
+localStorage and goes only to its provider. The memory cache lives in localStorage (3 MB, least
+recently used entries evicted first). Anthropic keys also get web search. There is no system access,
+and AI-written views run in a sandboxed iframe that reaches `aiui` through postMessage, so they can't
+read the key. The prompts come from `Sources/App/Prompts.swift`, with a web section in place of the
+Mac one (`tools/export-prompts`).
+
+Deploy: run `deploy/request-cert.sh` once and wait for ISSUED, then `deploy/deploy-web.sh`. This uses a
+CloudFormation stack `aiui-web` (private S3 bucket, CloudFront with origin access control, Route 53
+alias in the `oeaio.com` zone).
+
 ## Build
 
     ./build.sh          # downloads CEF 156 (arm64) into vendor/ the first time, builds build/AI UI.app

@@ -422,3 +422,18 @@ body.busy #go { opacity: .4; pointer-events: none; }
   user-select: text;
 }
 #toast.on { opacity: 1; transform: translateX(-50%); pointer-events: auto; }
+
+/* ---------- web version note ---------- */
+
+#webnote { display: none; }
+html.web #webnote {
+  display: block;
+  position: fixed;
+  left: 18px;
+  bottom: 14px;
+  z-index: 4;
+  font-size: 11px;
+  color: var(--faint);
+  text-decoration: none;
+}
+html.web #webnote:hover { color: var(--accent); }
