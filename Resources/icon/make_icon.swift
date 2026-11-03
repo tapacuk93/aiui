@@ -62,10 +62,11 @@ ctx.restoreGState()
 ctx.setStrokeColor(rgb(255, 255, 255, 0.9)); ctx.setLineWidth(14)
 ctx.strokeEllipse(in: CGRect(x: c.x - R - 34, y: c.y - R - 34, width: 2 * (R + 34), height: 2 * (R + 34)))
 
-// Inside: a small cluster of dots — circles within the circle.
+// Inside: a 2×2 grid of circles — the app's grid, one of them focused.
 let ink = rgb(110, 92, 245)
-for (dx, dy, r, a) in [(-62.0, 30.0, 34.0, 1.0), (54.0, 46.0, 26.0, 0.75), (8.0, -58.0, 30.0, 0.55)] as [(CGFloat, CGFloat, CGFloat, CGFloat)] {
-    circle(CGPoint(x: c.x + dx, y: c.y + dy), r, fill: ink.copy(alpha: a)!)
+let g: CGFloat = 58, rr: CGFloat = 40
+for (dx, dy, a) in [(-g, g, 1.0), (g, g, 0.45), (-g, -g, 0.45), (g, -g, 0.45)] as [(CGFloat, CGFloat, CGFloat)] {
+    circle(CGPoint(x: c.x + dx, y: c.y + dy), rr, fill: ink.copy(alpha: a)!)
 }
 
 // Ears at ~45° up-left (×) and up-right (+).
