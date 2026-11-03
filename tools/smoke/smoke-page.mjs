@@ -76,6 +76,22 @@ const result = await ev(`(async () => {
     toasts.length = before; // expected toasts are not failures
     return { title: aiui.screen.title, quickCalled, toast: newToasts.join(' ') };
   };
+  await step('stuck view: failed image, no ready -> self-fix replaces it', async () => {
+    const realCall = WebBackend.call;
+    let fixEvent = null;
+    WebBackend.call = async (name, body) => {
+      if (name === 'ai' && body.event === 'fix') { fixEvent = body; return { screen: { kind: 'circles', title: 'Fixed', circles: [{ id: 'z', label: 'Z' }] } }; }
+      if (name === 'ai') return { screen: { kind: 'html', title: 'Gallery', timeouts: { render: { seconds: 4, then: 'interim' } },
+        html: '<p>Loading…</p><script>const i = new Image(); i.src = "https://invalid.invalid/x.jpg";<\/script>' } };
+      return realCall(name, body);
+    };
+    home();
+    await ask({ event: 'open', target: { label: 'Gallery' } }, { label: 'Gallery' });
+    await new Promise(r => setTimeout(r, 5500));
+    WebBackend.call = realCall;
+    const reported = fixEvent && fixEvent.problem.errors.some((e) => e.includes('invalid.invalid'));
+    if (!fixEvent || !reported || aiui.screen.title !== 'Fixed') throw new Error(JSON.stringify({ fix: fixEvent && fixEvent.problem, now: aiui.screen.title }));
+  });
   await step('policy wait: no interim, full screen arrives', async () => {
     const r = await slowFull({ open: { seconds: 0.3, then: 'wait', label: 'searching' } });
     if (r.quickCalled || r.title !== 'Full') throw new Error(JSON.stringify(r));

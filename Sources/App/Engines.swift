@@ -332,7 +332,7 @@ final class APIEngine: AIEngine {
     }
 
     private func post(_ url: String, _ body: [String: Any], _ headers: [String: String]) async throws -> [String: Any] {
-        var req = URLRequest(url: URL(string: url)!, timeoutInterval: 600)
+        var req = URLRequest(url: URL(string: url)!, timeoutInterval: persistent ? 180 : 100)
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "content-type")
         for (k, v) in headers { req.setValue(v, forHTTPHeaderField: k) }

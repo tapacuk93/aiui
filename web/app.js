@@ -51,7 +51,29 @@ const IOS_BRIDGE = NATIVE && window.webkit && window.webkit.messageHandlers && w
 document.documentElement.classList.toggle('web', !NATIVE);
 document.documentElement.classList.toggle('ios', !!IOS_BRIDGE);
 
-async function call(name, body) {
+// Every expectation has a timed listener: each kind of call has a deadline (the AI turn itself
+// is governed by its screen's timeouts and the hard limit). A missed deadline rejects with
+// "timeout" and cancels that background channel.
+const DEADLINES = {
+  ai: 160000, quick: 45000, more: 90000, suggest: 25000, prefetch: 90000, refine: 90000,
+  translate: 90000, profile: 180000, utilities: 10000, engine: 60000, cache: 10000, sys: 60000,
+  info: 10000, adopt: 10000, cancel: 10000, reset: 10000, window: 10000,
+};
+const CHANNEL = { more: 'pager', suggest: 'suggest', prefetch: 'scout', refine: 'refine', quick: 'quick' };
+
+function call(name, body) {
+  const ms = DEADLINES[name] || 30000;
+  let timer;
+  const deadline = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      if (CHANNEL[name]) rawCall('cancel', { [CHANNEL[name]]: true }).catch(() => {});
+      reject(new Error('timeout'));
+    }, ms);
+  });
+  return Promise.race([rawCall(name, body), deadline]).finally(() => clearTimeout(timer));
+}
+
+async function rawCall(name, body) {
   if (!NATIVE) return WebBackend.call(name, body || {}, (text) => aiui._event({ type: 'progress', text }));
   if (IOS_BRIDGE) {
     const r = await IOS_BRIDGE.postMessage({ name, body: body || {} });
@@ -66,6 +88,7 @@ async function call(name, body) {
 }
 
 window.aiui = {
+  ready: () => viewReady(),
   call,
   sys: (op) => call('sys', op),
   memory: {
@@ -183,7 +206,7 @@ async function ask(evt, { label, replace = false, circle = null, retried = false
       current.screen = next;
     } else {
       stack.push(current);
-      current = { screen: next, label: label || next.title || evt.event };
+      current = { screen: next, label: label || next.title || evt.event, evt: payload };
     }
     stopWriting(true);
     render();
@@ -392,7 +415,7 @@ function render() {
   el.view.innerHTML = '';
 
   if (s.kind === 'circles') renderCircles(s);
-  else if (s.kind === 'html') renderHTML(s);
+  else if (s.kind === 'html') { renderHTML(s); watchView(s); }
   else if (s.kind === 'text') startWriting(s.text || '');
   updateGo();
   fitStage();
@@ -738,6 +761,93 @@ matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
   }
 });
 
+// Health monitor injected first into every AI-written view: reports script errors, failed or
+// slow fetches (20 s) and images (15 s) to the app, which also expects aiui.ready().
+const HEALTH_SHIM = `<script>(() => {
+  const report = (kind, detail) => { try { parent.postMessage({ aiuiHealth: { kind, detail: String(detail).slice(0, 300) } }, '*'); } catch {} };
+  addEventListener('error', (e) => {
+    const t = e.target;
+    if (t && t !== window && (t.src || t.href)) report('resource', (t.tagName || '') + ' failed: ' + (t.src || t.href));
+    else report('error', (e.message || 'error') + (e.lineno ? ' (line ' + e.lineno + ')' : ''));
+  }, true);
+  addEventListener('unhandledrejection', (e) => report('error', 'unhandled: ' + ((e.reason && e.reason.message) || e.reason)));
+  const realFetch = window.fetch.bind(window);
+  window.fetch = (input, init = {}) => {
+    const url = (input && input.url) || String(input);
+    const ctl = new AbortController();
+    if (init.signal) init.signal.addEventListener('abort', () => ctl.abort());
+    const timer = setTimeout(() => { ctl.abort(); report('timeout', 'fetch over 20s: ' + url); }, 20000);
+    return realFetch(input, { ...init, signal: ctl.signal }).then((r) => {
+      if (!r.ok) report('fetch', r.status + ' ' + url);
+      return r;
+    }, (err) => { report('fetch', 'failed ' + url + ': ' + err.message); throw err; }).finally(() => clearTimeout(timer));
+  };
+  const RealImage = window.Image;
+  const watch = (img) => {
+    let t = null;
+    const arm = () => { clearTimeout(t); t = setTimeout(() => { if (img.src && !img.complete) report('timeout', 'image over 15s: ' + img.src); }, 15000); };
+    img.addEventListener('load', () => clearTimeout(t));
+    img.addEventListener('error', () => { clearTimeout(t); report('resource', 'IMG failed: ' + img.src); });
+    const desc = Object.getOwnPropertyDescriptor(HTMLImageElement.prototype, 'src');
+    Object.defineProperty(img, 'src', { get() { return desc.get.call(this); }, set(v) { desc.set.call(this, v); arm(); } });
+    return img;
+  };
+  window.Image = function (w, h) { return watch(new RealImage(w, h)); };
+  window.Image.prototype = RealImage.prototype;
+  new MutationObserver((ms) => { for (const m of ms) for (const n of m.addedNodes) if (n.tagName === 'IMG' && !n.__w) { n.__w = 1; watch(n); } })
+    .observe(document.documentElement, { childList: true, subtree: true });
+})();<\/script>`;
+
+// The view's health, its readiness, and the self-fix when it gets stuck.
+function viewHealth(h) {
+  const s = current.screen;
+  if (s.kind !== 'html') return;
+  (s.health || (s.health = [])).push(h.kind + ': ' + h.detail);
+  if (s.health.length > 30) s.health.shift();
+}
+
+function viewReady() {
+  const s = current.screen;
+  if (s.kind === 'html') s.ready = true;
+}
+
+function watchView(s) {
+  if (s.kind !== 'html' || s.fixed || s.local) return;
+  const budget = Math.max(4, Math.min(Number(s.timeouts && s.timeouts.render && s.timeouts.render.seconds) || 15, 90));
+  setTimeout(() => {
+    if (current.screen !== s || s.ready) return;
+    selfFix(s, `not ready after ${budget}s` + (s.health && s.health.length ? '' : ' (no errors reported)'));
+  }, budget * 1000);
+}
+
+// Asks the AI to repair a stuck or broken view; replaces it in place; drops the broken cached copy.
+async function selfFix(s, reason) {
+  if (s.fixing || (s.fixAttempts || 0) >= 1) return;
+  s.fixing = true; s.fixAttempts = (s.fixAttempts || 0) + 1;
+  const entry = current;
+  document.body.classList.add('updating');
+  flashStatus(t('fixing'));
+  try {
+    if (entry.evt) call('cache', { op: 'invalidate', action: entry.evt }).catch(() => {});
+    const { screen } = await call('ai', {
+      event: 'fix',
+      problem: { reason, errors: (s.health || []).slice(-15) },
+      broken: { title: s.title, kind: s.kind, uses: s.uses, html: String(s.html || '').slice(0, 8000) },
+      path: [...stack.map((e) => e.label), current.label].filter(Boolean),
+      screen: summary(s), language: LANG,
+    });
+    const fixed = normalize(screen);
+    fixed.fixed = true;
+    entry.screen = fixed;
+    if (current === entry && !typing()) { render(); flashStatus(t('fixed')); }
+  } catch (e) {
+    if (current === entry) toast(t('couldNotFix') + ' ' + e.message);
+  } finally {
+    s.fixing = false;
+    document.body.classList.remove('updating');
+  }
+}
+
 // On the web, AI-written views run in a sandboxed frame (no access to this page or the stored key);
 // they reach `aiui` through postMessage.
 const FRAME_SHIM = `<script>(() => {
@@ -748,7 +858,8 @@ const FRAME_SHIM = `<script>(() => {
     d.error ? p.rej(new Error(d.error)) : p.res(d.value);
   });
   const rpc = (m, a) => new Promise((res, rej) => { const id = ++n; pend[id] = { res, rej }; parent.postMessage({ aiuiCall: id, m, a }, '*'); });
-  window.aiui = { sys: (o) => rpc('sys', o), next: (d) => rpc('next', d), back: () => rpc('back'), home: () => rpc('home'),
+  window.aiui = {
+  ready: () => viewReady(), sys: (o) => rpc('sys', o), next: (d) => rpc('next', d), back: () => rpc('back'), home: () => rpc('home'),
     memory: { search: (q) => rpc('memory.search', q), stats: () => rpc('memory.stats') } };
   addEventListener('keydown', (e) => {
     const t = e.target; if (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName)) return;
@@ -764,9 +875,12 @@ window.addEventListener('message', async (e) => {
   const frame = el.view.querySelector('iframe');
   if (!frame || e.source !== frame.contentWindow) return;
   const d = e.data || {};
+  if (d.aiuiHealth) return viewHealth(d.aiuiHealth);
   if (d.aiuiKey) return onKey(new KeyboardEvent('keydown', { key: d.aiuiKey }));
   if (d.aiuiCall == null) return;
+  if (d.aiuiHealth) return viewHealth(d.aiuiHealth);
   const fns = { sys: (a) => aiui.sys(a), next: (a) => aiui.next(a), back: () => aiui.back(), home: () => aiui.home(),
+    ready: () => viewReady(),
     'memory.search': (q) => aiui.memory.search(q), 'memory.stats': () => aiui.memory.stats() };
   try {
     const value = await (fns[d.m] ? fns[d.m](d.a) : Promise.reject(new Error('unknown call')));
@@ -796,7 +910,7 @@ function renderHTML(s) {
     body{padding:${s.title ? 120 : 64}px 48px 120px;max-width:1100px;margin:0 auto}
     a{color:var(--accent)} ::selection{background:var(--accent-soft)}
     ::-webkit-scrollbar{width:8px}::-webkit-scrollbar-thumb{background:var(--line);border-radius:4px}
-  </style>${NATIVE ? '<script>window.aiui = parent.aiui;<\/script>' : FRAME_SHIM}`;
+  </style>${HEALTH_SHIM}${NATIVE ? '<script>window.aiui = parent.aiui;<\/script>' : FRAME_SHIM}`;
   el.view.appendChild(frame);
   const screen = s;
   libraryFor(s).then((lib) => {
@@ -1232,7 +1346,8 @@ const STR = {
   whoGuestMsg: 'Guest mode: no personal history is used.',
   itsMe: "It's me", itsMeHint: 'keep going, learn this', someoneElse: 'Someone else', someoneElseHint: 'guest mode',
   aboutYou: 'About you', aboutYouEmpty: 'Nothing learned yet. It builds up as you use the app.',
-  tooLong: 'This took too long — try again, or ask differently.', stillWorking: 'still working', updated: 'updated', updating: 'updating…',
+  tooLong: 'This took too long — try again, or ask differently.',
+  fixing: 'this screen got stuck — fixing…', fixed: 'fixed', couldNotFix: 'Could not fix this screen:', stillWorking: 'still working', updated: 'updated', updating: 'updating…',
   library: 'Utility library', libraryMsg: 'Code the AI wrote once and reuses across screens. Reviewed now and then.',
   libraryEmpty: 'Empty so far: screens publish reusable code here as the AI builds them.',
   fullscreen: 'Full screen',

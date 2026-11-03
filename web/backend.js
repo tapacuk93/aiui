@@ -15,6 +15,14 @@ const WebBackend = (() => {
 
   const err = (m) => new Error(m);
   const loadPrompts = async () => prompts || (prompts = await (await fetch('prompts.json')).json());
+  // Prompt generation: cached screens from an older generation are not replayed (migration).
+  let generation = '';
+  async function gen() {
+    if (generation) return generation;
+    const p = await loadPrompts();
+    const h = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(p.system + p.screenSchema + p.pageSchema));
+    return (generation = [...new Uint8Array(h)].slice(0, 6).map((b) => b.toString(16).padStart(2, '0')).join(''));
+  }
 
   // ------------------------------------------------------------- provider key
 
@@ -114,7 +122,7 @@ const WebBackend = (() => {
     const c = loadCache();
     const { note, cacheable, ...outcome } = screen;
     const prev = c[key];
-    c[key] = { key, action, flow: steps, outcome, description: note || `${outcome.kind} ${outcome.title || ''}`.trim(),
+    c[key] = { key, action, flow: steps, outcome, gen: generation, description: note || `${outcome.kind} ${outcome.title || ''}`.trim(),
       cacheable: !!cacheable, hits: (prev ? prev.hits : 0) + 1, created: prev ? prev.created : Date.now(), lastUsed: Date.now() };
     saveCache(c);
     return outcome;
@@ -388,8 +396,9 @@ const WebBackend = (() => {
     flow = [...before, { depth, line: lineOf(action) }];
     const steps = before.slice(-10).map((f) => f.line);
 
+    const g = await gen();
     const hit = !input.fresh && loadCache()[key];
-    if (hit && hit.cacheable) {
+    if (hit && hit.cacheable && hit.gen === g) {
       touch(key);
       replayed = [...replayed, action].slice(-20);
       return { screen: hit.outcome, cached: true };
@@ -419,7 +428,8 @@ const WebBackend = (() => {
     convo = messages; openScreen = callId; replayed = []; prefetchedShown = [];
     let out = screen;
     if (out.reuse) {
-      const e = touch(out.reuse);
+      const old = loadCache()[out.reuse];
+      const e = old && (old.gen === generation || old.outcome.kind !== 'html') ? touch(out.reuse) : null;
       if (e) {
         const over = {};
         for (const f of ['title', 'message', 'go', 'more', 'back', 'note', 'cacheable']) if (out[f] != null) over[f] = out[f];
@@ -544,6 +554,11 @@ const WebBackend = (() => {
       case 'window': return { ok: true };
       case 'cache': {
         if (body.op === 'likely') return { label: likely(body.path) };
+        if (body.op === 'invalidate') {
+          const k = await keyOf(actionOf({ ...(body.action || {}) }));
+          const c = loadCache(); delete c[k]; saveCache(c);
+          return { ok: true };
+        }
         if (body.op === 'clear') { localStorage.removeItem(CACHE); return {}; }
         if (body.op === 'search') {
           const q = String(body.q || '').toLowerCase().split(/\s+/).filter(Boolean);

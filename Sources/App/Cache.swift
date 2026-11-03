@@ -24,6 +24,8 @@ final class Cache {
     /// Index row: everything but the outcome itself.
     struct IndexRow: Codable {
         var v: Int
+        /// The prompt/schema generation that produced the outcome (see `generation`).
+        var gen: String?
         var flow: [String]
         var key: String
         var created: Date
@@ -54,6 +56,11 @@ final class Cache {
     var indexText: URL { dir.appendingPathComponent("index.txt") }
     private var indexJSON: URL { dir.appendingPathComponent("index.json") }
     private var entries: URL { dir.appendingPathComponent("entries", isDirectory: true) }
+
+    /// Fingerprint of the prompts and screen schema in this build. Outcomes from another
+    /// generation stay in the index (memory, flows) but are not replayed or reused as screens:
+    /// that is how the cache migrates across app updates.
+    var generation = ""
 
     init(dir: URL, limitMB: Int) {
         self.dir = dir
@@ -108,7 +115,7 @@ final class Cache {
 
     /// A stored outcome for this action, if the AI marked it stable.
     func lookup(_ key: String) -> [String: Any]? {
-        guard var row = index[key], row.cacheable,
+        guard var row = index[key], row.cacheable, row.gen == generation,
               let data = try? Data(contentsOf: file(key)),
               let entry = try? dec.decode(Entry.self, from: data) else { return nil }
         row.hits += 1
@@ -122,6 +129,8 @@ final class Cache {
     func outcome(_ key: String) -> [String: Any]? {
         guard var row = index[key], let data = try? Data(contentsOf: file(key)),
               let entry = try? dec.decode(Entry.self, from: data) else { return nil }
+        // An HTML screen from an older generation may not work with this build: don't reuse it.
+        if row.gen != generation, (entry.outcome["kind"]?.value as? String) == "html" { return nil }
         row.hits += 1
         row.lastUsed = Date()
         index[key] = row
@@ -176,7 +185,7 @@ final class Cache {
         entry.size = data.count
         data = (try? enc.encode(entry)) ?? data
         Storage.write(data, to: file(key))
-        index[key] = IndexRow(v: Self.version, flow: flow, key: key, created: entry.created, lastUsed: now, hits: entry.hits,
+        index[key] = IndexRow(v: Self.version, gen: generation, flow: flow, key: key, created: entry.created, lastUsed: now, hits: entry.hits,
                               description: description, cacheable: cacheable, size: data.count,
                               action: entry.action)
         evict()
@@ -203,6 +212,13 @@ final class Cache {
             .prefix(limit)
             .map { ["key": $0.key, "description": $0.description, "when": ISO8601DateFormatter().string(from: $0.lastUsed),
                     "hits": $0.hits, "action": $0.action.mapValues { $0.value }] }
+    }
+
+    /// Drops one stored outcome (a screen that turned out broken).
+    func invalidate(_ key: String) {
+        try? fm.removeItem(at: file(key))
+        index[key] = nil
+        saveIndex()
     }
 
     func clear() {

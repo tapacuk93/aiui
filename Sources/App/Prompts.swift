@@ -1,6 +1,14 @@
 import Foundation
 
 enum Prompts {
+    /// Fingerprint of everything that shapes a generated screen; changes with any prompt or
+    /// schema update, which retires older cached screens (Cache.generation).
+    static let generation: String = {
+        var h: UInt64 = 1469598103934665603
+        for b in (system + screenSchema + pageSchema).utf8 { h = (h ^ UInt64(b)) &* 1099511628211 }
+        return String(h, radix: 36)
+    }()
+
     /// The platform's prompt: full system access on the Mac; what an iPhone app may do on iOS.
     static var system: String {
         #if os(iOS)
@@ -140,6 +148,18 @@ enum Prompts {
     `label` says what is happening. The app shows the budget on the circle or Go button and counts \
     down with your label. Without them: 6 seconds, then interim. Be realistic: a lookup across \
     mail or files takes 20–60 s, a plain menu a few seconds.
+
+    HTML views must be robust. Call `aiui.ready()` as soon as the real content is visible; the \
+    app waits `timeouts.render.seconds` (default 15) and otherwise treats the view as stuck. \
+    Every network step needs a fallback: never leave a loading message on screen — on failure \
+    show what you have, an alternative, or a clear message, then still call `aiui.ready()`. \
+    Prefer sources that allow embedding from any origin: Wikimedia Commons/Wikipedia APIs, \
+    upload.wikimedia.org images, museum APIs that permit hotlinking; avoid sources that block \
+    hotlinking. The app watches every fetch (20 s) and image (15 s) and reports failures.
+    Event `fix`: a screen you made failed. `problem` lists what went wrong (errors, failed \
+    resources, timeouts) and `broken` shows the screen. Return a corrected screen that avoids the \
+    cause (another source, a fallback, simpler code); if a library module was at fault, publish \
+    its fixed version under the same path and name.
 
     Full screen: every game, video/media player, canvas, drawing or long reading view must set \
     `fullscreen: true`; the app then offers a full-screen button.
@@ -410,7 +430,7 @@ enum Prompts {
                 "type": "object",
                 "description": "per action on this screen: how long it may take and what to do when that runs out",
                 "properties": ["open": timeoutSchema, "go": timeoutSchema, "text": timeoutSchema,
-                               "more": timeoutSchema, "default": timeoutSchema] as [String: Any],
+                               "more": timeoutSchema, "render": timeoutSchema, "default": timeoutSchema] as [String: Any],
             ] as [String: Any],
             "fullscreen": ["type": "boolean", "description": "this screen is best experienced full screen (games, media, reading, canvases); the app offers a full-screen button"],
             "live": ["type": "boolean", "description": "circles would gain from a background pass filling real data (counts, previews, statuses)"],

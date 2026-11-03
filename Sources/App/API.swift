@@ -52,6 +52,7 @@ final class API: NSObject {
         cache = Cache(dir: support.appendingPathComponent("cache", isDirectory: true), limitMB: mb)
         utilities = Utilities(dir: support.appendingPathComponent("utilities", isDirectory: true))
         profile = Profile(dir: support.appendingPathComponent("profile", isDirectory: true))
+        cache.generation = Prompts.generation
         let memory = Prompts.memory(index: cache.indexText.path)
         systemPrompt = Prompts.system + memory
         pagerPrompt = Prompts.system + memory + Prompts.pager
@@ -422,6 +423,11 @@ final class API: NSObject {
             switch input["op"] as? String ?? "stats" {
             case "search": send(["results": cache.search(input["q"] as? String ?? "")])
             case "likely": send(["label": cache.likely(path: input["path"] as? [String] ?? []) ?? NSNull()])
+            case "invalidate":
+                var a = input["action"] as? [String: Any] ?? [:]
+                a["language"] = language
+                cache.invalidate(Cache.key(for: Cache.action(from: a)))
+                send(["ok": true])
             case "clear": cache.clear(); send(cache.stats())
             default: send(cache.stats())
             }

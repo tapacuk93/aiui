@@ -172,6 +172,12 @@ final class Claude {
             return
         }
         process = p
+        // Watchdog: a call that runs past its deadline is ended (the page has its own limits too).
+        let deadline = persistent ? 180.0 : 100.0
+        DispatchQueue.main.asyncAfter(deadline: .now() + deadline) { [weak self, weak p] in
+            guard let self, let p, p.isRunning, self.generation == gen else { return }
+            p.terminate()
+        }
         inp.fileHandleForWriting.write(prompt.data(using: .utf8)!)
         try? inp.fileHandleForWriting.close()
         progress("thinking")
