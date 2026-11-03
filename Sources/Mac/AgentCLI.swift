@@ -16,6 +16,8 @@ final class AgentCLI: AIEngine {
     private var generation = 0
     private var pendingDone: ((Swift.Result<[String: Any], Error>) -> Void)?
     private var transcript: [String] = []
+    /// Read-only sandbox, no auto-approved tools (reviews of untrusted code).
+    var readOnly = false
 
     init(id: String, label: String, persistent: Bool, systemPrompt: String, schema: String) {
         self.id = id; self.label = label
@@ -54,10 +56,10 @@ final class AgentCLI: AIEngine {
         var args: [String]
         switch id {
         case "codex":
-            args = ["exec", "--skip-git-repo-check", "--dangerously-bypass-approvals-and-sandbox",
-                    "--color", "never", "-o", outFile.path, "-"]
+            args = ["exec", "--skip-git-repo-check"] + (readOnly ? ["--sandbox", "read-only"] : ["--dangerously-bypass-approvals-and-sandbox"]) +
+                   ["--color", "never", "-o", outFile.path, "-"]
         default: // gemini
-            args = ["--yolo", "-p", full]
+            args = readOnly ? ["-p", full] : ["--yolo", "-p", full]
         }
         if let m = ProcessInfo.processInfo.environment["AIUI_MODEL"], !m.isEmpty { args = ["-m", m] + args }
 

@@ -20,6 +20,8 @@ final class Claude {
     private var pendingDone: ((Swift.Result<[String: Any], Error>) -> Void)?
 
     var model: String? = ProcessInfo.processInfo.environment["AIUI_MODEL"]
+    /// No tools at all (reviews of untrusted code): only the structured answer.
+    var readOnly = false
 
     func reset() {
         cancel()
@@ -55,10 +57,9 @@ final class Claude {
         let gen = generation
         pendingDone = done
 
-        var args = ["-p", "--output-format", "stream-json", "--verbose",
-                    "--permission-mode", "bypassPermissions",
-                    "--append-system-prompt", systemPrompt,
-                    "--json-schema", schema]
+        var args = ["-p", "--output-format", "stream-json", "--verbose"]
+        args += readOnly ? ["--permission-mode", "dontAsk", "--tools", ""] : ["--permission-mode", "bypassPermissions"]
+        args += ["--append-system-prompt", systemPrompt, "--json-schema", schema]
         if let model, !model.isEmpty { args += ["--model", model] }
         if persistent { args += started ? ["--resume", sessionID] : ["--session-id", sessionID] }
 

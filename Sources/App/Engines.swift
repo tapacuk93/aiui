@@ -129,6 +129,8 @@ final class APIEngine: AIEngine {
 
     /// Thinking effort for Anthropic models ("low" for quick interim screens).
     var effort = "medium"
+    /// No shell tool (reviews of untrusted code): only the answer.
+    var noShell = false
     /// An image (JPEG) to send with the next call — e.g. a live screenshot for the improver.
     private var pendingImage: Data?
     func attachImage(_ data: Data) { pendingImage = data }
@@ -212,6 +214,7 @@ final class APIEngine: AIEngine {
     /// The shell tool exists only where there is a shell (the Mac).
     private var availableTools: [(name: String, description: String, schema: [String: Any])] {
         #if os(macOS)
+        if noShell { return [screenTool] }
         return [shellTool, screenTool]
         #else
         return [screenTool]

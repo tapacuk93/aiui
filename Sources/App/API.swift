@@ -24,6 +24,9 @@ final class API: NSObject {
     let hints: Hints
     let usage: Usage
     let appStore: AppStore
+    /// Global shared code (shared.aiui.oeaio.com) and people (users.aiui.oeaio.com).
+    let registry: SharedRegistry
+    let people: People
     /// The AI behind screens (persistent session) and the stateless background pager.
     /// nil until a CLI is detected or an API key is given.
     private(set) var claude: AIEngine?
@@ -46,6 +49,8 @@ final class API: NSObject {
     private(set) var retro: AIEngine?
     private(set) var improver: AIEngine?
     private(set) var componentImprover: AIEngine?
+    /// Reviews code another user shared before it is adopted (read-only).
+    private(set) var reviewer: AIEngine?
     /// The console's own conversation (` key).
     private(set) var console: AIEngine?
     private var improvingComponent: String?
@@ -90,6 +95,8 @@ final class API: NSObject {
         let local = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("aiui/vendor", isDirectory: true)
         libraries = Libraries(dir: local, catalogFile: API.webRoot?.appendingPathComponent("libraries.json"))
+        registry = SharedRegistry(dir: local.deletingLastPathComponent().appendingPathComponent("shared", isDirectory: true), utilities: utilities)
+        people = People(dir: local.deletingLastPathComponent().appendingPathComponent("people", isDirectory: true))
         let cache = self.cache
         libraries.cacheBytes = { cache.totalBytes }
         cache.generation = Prompts.generation
@@ -98,6 +105,7 @@ final class API: NSObject {
         pagerPrompt = Prompts.system + memory + Prompts.pager
         suggestPrompt = Prompts.system + memory + Prompts.suggest
         super.init()
+        wireShared()
         // Saved choice, else the first agent CLI found, else a saved API key.
         let saved = UserDefaults.standard.string(forKey: "engine")
         let env = ProcessInfo.processInfo.environment["AIUI_ENGINE"]
@@ -166,6 +174,7 @@ final class API: NSObject {
         retro = make(false, systemPrompt + Prompts.retro, Prompts.retroSchema)
         improver = make(false, systemPrompt + Prompts.improver, Prompts.screenSchema)
         componentImprover = make(false, systemPrompt + Prompts.componentImprover, Prompts.componentSchema)
+        reviewer = Self.readOnly(make(false, Prompts.sharedReview, Prompts.sharedReviewSchema))
         console = make(true, systemPrompt + Prompts.console, Prompts.consoleSchema)
         engineID = id
         UserDefaults.standard.set(id, forKey: "engine")
@@ -441,6 +450,12 @@ final class API: NSObject {
             }
             send(engineStatus())
 
+        case "shared":                            // global shared code: sync, browse, adopt, share (SharedRegistry.swift)
+            registry.handle(input, send: send, fail: fail)
+
+        case "people":                            // profile, find, contacts, router inbox (People.swift)
+            people.handle(input, send: send, fail: fail)
+
         case "aicoin":                            // link AI UI's wallet to the AICoin wallet app by QR (AICoin.swift)
             AICoin.shared.handle(input, use: { [weak self] in self?.use("aicoin") ?? false }, send: send, fail: fail)
 
@@ -572,6 +587,7 @@ final class API: NSObject {
                 event["library"] = lib
                 event["libraryCategories"] = utilities.categories
             }
+            if let g = registry.overview(words) { event["sharedByOthers"] = g }   // global level, adopt only
             // Who the user is (unless a guest is using the app) and the page's behavioral check.
             var user: [String: Any] = [:]
             let guest = (input["guest"] as? Bool) == true

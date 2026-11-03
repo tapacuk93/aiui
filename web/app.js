@@ -505,6 +505,7 @@ async function showLibrary(path = []) {
   let r;
   try { r = await call('utilities', { op: 'tree', path }); } catch (e) { return toast(e.message); }
   const circles = [
+    ...(!path.length && NATIVE && typeof sharedLibraryCircle === 'function' ? [sharedLibraryCircle()] : []),
     ...r.categories.map((c) => ({ id: 'cat:' + c.name, icon: '📁', label: c.name, hint: String(c.count), cat: true })),
     ...r.utilities.map((u) => ({ id: 'util:' + u.id, icon: u.icon || '🧩', label: u.name, hint: u.description,
       util: u.id, value: u.uses })),
@@ -516,6 +517,8 @@ async function showLibrary(path = []) {
 
 async function localOpen(c) {
   const kind = current.screen.local;
+  const ext = typeof LOCAL_SCREENS !== 'undefined' && LOCAL_SCREENS[kind];
+  if (ext && ext.open && ext.open(c) !== false) return;
   if (kind === 'who') return whoOpen(c);
   if (kind === 'network') return networkOpen(c);
   if (kind === 'instant') return instantOpen(c);
@@ -902,7 +905,7 @@ function circleEl(c, i) {
   node.style.setProperty('--i', i);
   const size = Math.max(0.7, Math.min(1.5, Number(c.size) || 1));
   node.style.setProperty('--s', size);
-  node.title = c.hint || '';
+  node.title = c.title || c.hint || '';
   const showValue = c.value != null && (c.plus === 'increment' || c.minus === 'decrement' || c.value > 1);
   node.innerHTML = `
     <div class="face">
@@ -946,6 +949,13 @@ function toggleSelect(c, node) {
 }
 
 function minus(c, node) {
+  const ext = typeof LOCAL_SCREENS !== 'undefined' && LOCAL_SCREENS[current.screen.local];
+  if (ext && ext.minus && ext.minus(c) !== false) {
+    c.removed = true;
+    node.classList.add('leaving');
+    node.addEventListener('animationend', () => { node.remove(); layoutPages(); }, { once: true });
+    return;
+  }
   if (current.screen.local === 'jslibs' && c.jslib) {
     call('libraries', { op: 'remove', id: c.jslib }).catch(() => {});
     c.removed = true;
@@ -1864,6 +1874,8 @@ function submitText(node) {
   rememberTyped(text);
   if (current.screen.local === 'key') return connectKey(text);
   if (current.screen.local === 'wifipass') return joinNetwork(current.screen.ssid, text);
+  const ext = typeof LOCAL_SCREENS !== 'undefined' && LOCAL_SCREENS[current.screen.local];
+  if (ext && ext.submit) return ext.submit(text);
   const circle = node || [...el.circles.children].find((n) => n.dataset.id === '__typed' && !n.hidden) || null;
   // Straight into the screen that does it, as understood.
   const u = live.understood && live.q === text ? live.understood.label : null;
@@ -2844,6 +2856,7 @@ async function showSystem() {
   try { d = await call('system'); } catch (e) { return toast(e.message); }
   try { d.scenes = (await callRaw('usage', { op: 'list' })).scenes; } catch {}
   if (NATIVE && !IOS_BRIDGE) try { d.native = await callRaw('native', { op: 'status' }); } catch {}
+  if (NATIVE) try { d.identity = await callRaw('people', { op: 'identity' }); } catch {}
   const row = (k, v) => `<tr><th>${esc(k)}</th><td>${v}</td></tr>`;
   const list = (a) => (a && a.length) ? '<ul>' + a.map((x) => `<li>${esc(x)}</li>`).join('') + '</ul>' : '<span class="m">—</span>';
   const sec = (title, rows) => `<section><h2>${esc(title)}</h2><table>${rows.join('')}</table></section>`;
@@ -2902,6 +2915,7 @@ async function showSystem() {
     row('Disk', esc(fmtBytes(l.usedBytes) + ' of ' + fmtBytes(l.budgetBytes))),
     row('Installing now', esc((l.installing || []).join(', ') || '—'))])}
   ${nativeSection(d.native, sec, row)}
+  ${typeof identitySection === 'function' ? identitySection(d.identity, sec, row) : ''}
   ${sec('Utility library', [row('Modules', esc(u.total ?? 0)), row('Last review', esc(u.lastReview || '—'))])}
   ${sec('You', [row('Traits learned', esc(p.traits ?? 0)), row('Most certain', list(p.top)),
     row('Session check', esc(who.guest ? 'guest mode' : who.suspect ? 'looks like someone else: ' + who.suspect.join('; ') : 'normal'))])}

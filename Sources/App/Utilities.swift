@@ -29,6 +29,9 @@ final class Utilities {
         var improves: Int?
         var firstUsed: Date?
         var nextImprove: Date?
+        // Adopted from the global registry (SharedRegistry): the shared item's id and version.
+        var origin: String?
+        var originVersion: Int?
     }
 
     private struct Stored: Codable {
@@ -275,7 +278,8 @@ final class Utilities {
                 .map { ["name": $0.key, "count": $0.value.count] as [String: Any] },
             "utilities": here.sorted { $0.uses != $1.uses ? $0.uses > $1.uses : $0.name < $1.name }
                 .map { ["id": $0.id, "name": $0.name, "icon": ($0.role ?? ($0.kind == "css" ? "component" : "util")) == "component" ? "🧩" : "🔧",
-                        "description": "v\($0.version) · " + $0.description, "uses": $0.uses, "version": $0.version,
+                        "description": "v\($0.version) · " + ($0.origin != nil ? "↓ global v\($0.originVersion ?? 0) · " : "") + $0.description,
+                        "origin": $0.origin ?? "", "uses": $0.uses, "version": $0.version,
                         "improves": $0.improves ?? 0, "findings": $0.findings?.count ?? 0] as [String: Any] },
             "total": modules.count,
             "lastReview": lastReview.map { ISO8601DateFormatter().string(from: $0) } ?? "",
@@ -283,6 +287,32 @@ final class Utilities {
     }
 
     func delete(_ id: String) { modules[id] = nil; deleted[id] = Date(); persist() }
+
+    // MARK: - Global level (SharedRegistry)
+
+    func module(_ ref: String) -> Module? { resolve(ref).flatMap { modules[$0] } }
+    var all: [Module] { Array(modules.values) }
+
+    /// Adds a module adopted from the global registry (after review and the user's confirmation),
+    /// marked with its origin; from then on it is local code. Returns its local id.
+    @discardableResult
+    func adopt(path: [String], name: String, kind: String, role: String?, description: String, usage: String,
+               code: String, origin: String, originVersion: Int) -> String {
+        let p = path.filter { !$0.isEmpty }.prefix(3).map { $0 }
+        let id = Self.id(path: p, name: name)
+        let now = Date()
+        let prev = modules[id]
+        var m = Module(id: id, path: p.isEmpty ? ["misc"] : p, name: name, kind: kind == "css" ? "css" : "js", role: role,
+                       description: description, usage: usage, code: code, version: (prev?.version ?? 0) + 1,
+                       uses: prev?.uses ?? 0, created: prev?.created ?? now, updated: now, lastUsed: now)
+        m.origin = origin
+        m.originVersion = originVersion
+        modules[id] = m
+        deleted[id] = nil
+        trim()
+        persist()
+        return id
+    }
 
     // MARK: - Storage
 
