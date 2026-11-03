@@ -60,10 +60,21 @@ enum Provider {
     }
 
     // Keychain (generic password).
-    private static let service = "dev.aiui.app.provider"
+    private static let service = "com.oeaio.aiui.provider"
+    private static let legacyService = "dev.aiui.app.provider"
 
     static func loadKey() -> Key? {
-        let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
+        if let k = read(service) { return k }
+        // Migrate a key saved under the app's earlier bundle identifier.
+        guard let old = read(legacyService) else { return nil }
+        if saveKey(old) {
+            SecItemDelete([kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: legacyService] as CFDictionary)
+        }
+        return old
+    }
+
+    private static func read(_ svc: String) -> Key? {
+        let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: svc,
                                 kSecReturnData as String: true, kSecMatchLimit as String: kSecMatchLimitOne]
         var out: CFTypeRef?
         guard SecItemCopyMatching(q as CFDictionary, &out) == errSecSuccess, let data = out as? Data else { return nil }

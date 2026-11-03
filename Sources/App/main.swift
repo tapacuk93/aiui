@@ -6,6 +6,12 @@ let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .u
     .appendingPathComponent("aiui", isDirectory: true)
 try? FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
 
+// Settings saved under the app's earlier bundle identifier (dev.aiui.app) carry over once.
+if UserDefaults.standard.string(forKey: "engine") == nil,
+   let old = UserDefaults(suiteName: "dev.aiui.app")?.string(forKey: "engine") {
+    UserDefaults.standard.set(old, forKey: "engine")
+}
+
 let delegate = AppDelegate(support: support)
 app.delegate = delegate
 

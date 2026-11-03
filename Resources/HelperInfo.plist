@@ -5,7 +5,7 @@
   <key>CFBundleDevelopmentRegion</key><string>en</string>
   <key>CFBundleDisplayName</key><string>${NAME}</string>
   <key>CFBundleExecutable</key><string>${NAME}</string>
-  <key>CFBundleIdentifier</key><string>dev.aiui.app.helper${SUFFIX}</string>
+  <key>CFBundleIdentifier</key><string>com.oeaio.aiui.helper${SUFFIX}</string>
   <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
   <key>CFBundleName</key><string>${NAME}</string>
   <key>CFBundlePackageType</key><string>APPL</string>
