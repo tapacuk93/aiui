@@ -38,13 +38,29 @@ final class Libraries {
             let have = Set(catalog.compactMap { $0["id"] as? String })
             catalog += extra.filter { !have.contains($0["id"] as? String ?? "") }
         }
+        catalog.removeAll { Self.isJunk("\($0["id"] ?? "") \($0["description"] ?? "")") }
         let dec = JSONDecoder(); dec.dateDecodingStrategy = .iso8601
         if let data = try? Data(contentsOf: stateFile), let list = try? dec.decode([Installed].self, from: data) {
-            for i in list where FileManager.default.fileExists(atPath: dir.appendingPathComponent(i.id).path) { installed[i.id] = i }
+            for i in list where FileManager.default.fileExists(atPath: dir.appendingPathComponent(Self.folder(i.id)).path) { installed[i.id] = i }
+        }
+        // Housekeeping: junk that got in earlier, leftovers from interrupted or scoped installs.
+        for id in installed.keys where entry(id) == nil { remove(id) }
+        for name in (try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? [] where name.hasPrefix(".") || name.hasPrefix("@") {
+            try? FileManager.default.removeItem(at: dir.appendingPathComponent(name))
         }
     }
 
     private func entry(_ id: String) -> [String: Any]? { catalog.first { $0["id"] as? String == id } }
+
+    /// Not for building screens: analytics, tracking, ads, consent, anti-devtools, fingerprinting,
+    /// monitoring and auth SDKs. Kept out of discovery and of the store.
+    static let junk = try! NSRegularExpression(pattern: #"analytic|track|metrica|telemetry|consent|onetrust|cookiebot|advert|\bads?\b|adsense|sidecar|statsig|segment|snowplow|permutive|hypelab|devtool|console-ban|fingerprint|thumbmark|rrweb|session-?replay|monitor|beacon|pixel|tag-?manager|gtm|launchdarkly|flagship|feature-?flag|optimizely|hotjar|clarity|sentry|bugsnag|datadog|newrelic|embrace|gumlet|recaptcha|captcha|sdk-analytics|isbot|bot-?detect|antibot|clerk|auth0|firebase"#, options: .caseInsensitive)
+    static func isJunk(_ text: String) -> Bool {
+        junk.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) != nil
+    }
+
+    /// The folder for a library: scoped names (@scope/name) flattened.
+    static func folder(_ id: String) -> String { id.replacingOccurrences(of: "/", with: "__") }
 
     // MARK: - Disk budget
 
@@ -81,8 +97,11 @@ final class Libraries {
 
     /// Installs the most useful libraries (catalog priority, then this user's use) while they fit
     /// in 80% of the budget, one at a time; evicts first if the disk got tighter.
+    private var lastDiscovery = Date.distantPast
+
     func maintain() {
-        discoverMore()
+        // Growing the catalog is a network walk: every 6 hours, not on every maintenance pass.
+        if lastDiscovery < Date().addingTimeInterval(-6 * 3600) { lastDiscovery = Date(); discoverMore() }
         evict()
         let room = Int(Double(budget) * 0.8) - used
         guard room > 0, installing.isEmpty else { return }
@@ -137,6 +156,7 @@ final class Libraries {
 
     /// A package qualifies when package.json names a plain .js browser bundle (jsdelivr/unpkg/browser).
     private static func examine(_ name: String, rank: Int) async -> [String: Any]? {
+        if isJunk(name) { return nil }
         guard let pj = URL(string: "https://cdn.jsdelivr.net/npm/\(name)/package.json"),
               let (data, _) = try? await URLSession.shared.data(from: pj),
               let pkg = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -157,6 +177,7 @@ final class Libraries {
             global = String(text[r]).components(separatedBy: CharacterSet(charactersIn: ". =")).filter { !$0.isEmpty }.first ?? global
         }
         let desc = String(((pkg["description"] as? String) ?? "").prefix(120))
+        if isJunk(desc) { return nil }
         return ["id": name, "package": name, "version": version, "global": global, "category": "npm",
                 "description": desc, "priority": max(1, 50 - rank / 60), "bytes": size,
                 "files": [["url": file.absoluteString, "name": (e as NSString).lastPathComponent, "type": "js", "bytes": size]]]
@@ -170,8 +191,8 @@ final class Libraries {
         waiters[id, default: []].append(done)
         guard !installing.contains(id) else { return }
         installing.insert(id)
-        let target = dir.appendingPathComponent(id, isDirectory: true)
-        let tmp = dir.appendingPathComponent(".\(id)-\(UUID().uuidString)", isDirectory: true)
+        let target = dir.appendingPathComponent(Self.folder(id), isDirectory: true)
+        let tmp = dir.appendingPathComponent(".\(Self.folder(id))-\(UUID().uuidString)", isDirectory: true)
         try? FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
         Task {
             var names: [String] = [], bytes = 0, ok = true
@@ -205,7 +226,7 @@ final class Libraries {
     }
 
     func remove(_ id: String) {
-        try? FileManager.default.removeItem(at: dir.appendingPathComponent(id))
+        try? FileManager.default.removeItem(at: dir.appendingPathComponent(Self.folder(id)))
         installed[id] = nil
         persist()
     }
@@ -234,7 +255,7 @@ final class Libraries {
                     i.uses += 1; i.lastUsed = Date(); self.installed[id] = i
                     for f in files {
                         let name = f["name"] as? String ?? ""
-                        tags.append(["type": f["type"] as? String ?? "js", "src": "aiui://app/vendor/\(id)/\(name)"])
+                        tags.append(["type": f["type"] as? String ?? "js", "src": "aiui://app/vendor/\(Self.folder(id))/\(name)"])
                     }
                 } else {
                     for f in files { tags.append(["type": f["type"] as? String ?? "js", "src": f["url"] as? String ?? ""]) }

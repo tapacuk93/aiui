@@ -32,8 +32,13 @@ GLOBAL = [re.compile(p) for p in [
     r"var\s+([A-Za-z_$][\w$]{1,40})\s*=\s*\(?function\s*\(",
 ]]
 
+# Not for building screens: analytics, tracking, ads, consent banners, anti-devtools,
+# fingerprinting, feature-flag/monitoring SDKs, auth/vendor SDKs.
+JUNK = re.compile(r"analytic|track|metrica|telemetry|consent|onetrust|cookiebot|advert|\bads?\b|adsense|sidecar|statsig|segment|snowplow|permutive|hypelab|devtool|console-ban|fingerprint|thumbmark|rrweb|session-?replay|monitor|beacon|pixel|tag-?manager|gtm|launchdarkly|flagship|feature-?flag|optimizely|hotjar|clarity|sentry|bugsnag|datadog|newrelic|embrace|gumlet|recaptcha|captcha|sdk-analytics|isbot|bot-?detect|antibot|clerk|auth0|firebase", re.I)
+
 def examine(item):
     name, rank = item
+    if JUNK.search(name): return None
     try:
         _, _, body = get(f"https://cdn.jsdelivr.net/npm/{name}/package.json")
         pkg = json.loads(body)
@@ -53,6 +58,7 @@ def examine(item):
             m = g.search(text)
             if m: glob = m.group(1); break
         desc = (pkg.get("description") or "").strip().replace("\n", " ")[:120]
+        if JUNK.search(desc): return None
         return {"id": name, "package": name, "version": version, "global": glob or "(UMD)", "category": "npm",
                 "description": desc, "priority": max(1, 50 - rank // 60), "bytes": size,
                 "files": [{"url": url, "name": os.path.basename(entry), "type": "js", "bytes": size}]}

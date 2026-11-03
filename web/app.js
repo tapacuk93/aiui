@@ -382,6 +382,14 @@ async function connectKey(text) {
 function back() {
   if (busy) return cancel();
   if (typing() && current.screen.kind !== 'text') return stopWriting(true);
+  const s = current.screen;
+  if (s.kind === 'html' && s.listens && s.listens.back) {
+    return invokeScene('back').then((handled) => { if (!handled && current.screen === s) leaveBack(); });
+  }
+  leaveBack();
+}
+
+function leaveBack() {
   if (!stack.length) return;
   current = stack.pop();
   stopWriting(true);
@@ -544,7 +552,9 @@ function updatePager() {
   const circles = s.kind === 'circles';
   const page = s.page || 0;
   el.prev.classList.toggle('on', (circles && page > 0) || (!!s.back && stack.length > 0));
-  el.more.classList.toggle('on', (circles && page < lastPage()) || !!s.more);
+  const listens = s.kind === 'html' && s.listens ? s.listens : {};
+  el.more.classList.toggle('on', (circles && page < lastPage()) || !!s.more || !!listens.more);
+  if (listens.back && stack.length) el.prev.classList.add('on');
   el.more.classList.toggle('loading', circles && page >= lastPage() && paging.loading && wantNext);
   maybePreload();
 }
@@ -552,7 +562,11 @@ function updatePager() {
 function nextPage() {
   const s = current.screen;
   if (s.kind !== 'circles') {
-    // Non-circle screens grow by asking the AI to extend them.
+    // A scene listening for More extends itself; otherwise the AI extends the screen.
+    if (s.kind === 'html' && s.listens && s.listens.more) {
+      invokeScene('more').then((handled) => { if (!handled && s.more && current.screen === s) ask({ event: 'more' }, { label: 'More' }); });
+      return;
+    }
     if (s.more) ask({ event: 'more' }, { label: 'More' });
     return;
   }
@@ -622,7 +636,27 @@ async function loadMore() {
   }
 }
 
-el.prev.addEventListener('click', (e) => { e.stopPropagation(); if (!prevPage()) back(); });
+el.prev.addEventListener('click', (e) => {
+  e.stopPropagation();
+  if (longPressed) { longPressed = false; return; } // the long press already acted
+  if (!prevPage()) back();
+});
+
+// Long press on Back (or holding Backspace): close the app/scene and return to the circles.
+let longTimer = 0, longPressed = false;
+function backToCircles() {
+  if (busy) cancel();
+  stopWriting(true);
+  while (stack.length && (current.screen.kind !== 'circles' || current.screen.local)) current = stack.pop();
+  render();
+  flashStatus('⟲');
+}
+el.prev.addEventListener('pointerdown', () => {
+  longPressed = false;
+  clearTimeout(longTimer);
+  longTimer = setTimeout(() => { longPressed = true; backToCircles(); }, 550);
+});
+for (const ev of ['pointerup', 'pointerleave', 'pointercancel']) el.prev.addEventListener(ev, () => clearTimeout(longTimer));
 el.more.addEventListener('click', (e) => { e.stopPropagation(); nextPage(); });
 let lastStageSize = '';
 new ResizeObserver(() => {
@@ -757,7 +791,17 @@ function refresh(c, node) {
 // The app's theme variables, resolved for the current appearance (light or dark).
 const THEME_VARS = ['color-scheme', '--bg', '--fg', '--muted', '--faint', '--accent', '--on-accent', '--surface',
   '--line', '--line-strong', '--chip', '--danger', '--accent-soft', '--accent-glow'];
-function themeVars() {
+const PALETTES = {
+  dark: { 'color-scheme': 'dark', '--bg': '#0b0b0f', '--fg': '#e8e8ee', '--muted': '#8a8a99', '--faint': '#4a4a58', '--accent': '#7c9cff',
+    '--on-accent': '#0b0b0f', '--surface': 'rgba(255,255,255,.05)', '--line': 'rgba(255,255,255,.09)', '--line-strong': 'rgba(255,255,255,.22)',
+    '--chip': '#15151c', '--danger': '#ff7c8a', '--accent-soft': 'rgba(124,156,255,.16)', '--accent-glow': 'rgba(124,156,255,.22)' },
+  light: { 'color-scheme': 'light', '--bg': '#f5f5f8', '--fg': '#17171e', '--muted': '#6b6b7b', '--faint': '#a6a6b4', '--accent': '#4a6cf7',
+    '--on-accent': '#ffffff', '--surface': 'rgba(0,0,0,.04)', '--line': 'rgba(0,0,0,.08)', '--line-strong': 'rgba(0,0,0,.2)',
+    '--chip': '#ffffff', '--danger': '#e0445a', '--accent-soft': 'rgba(74,108,247,.14)', '--accent-glow': 'rgba(74,108,247,.2)' },
+};
+// The theme variables: the current appearance's, or a given one (dark = true/false).
+function themeVars(dark) {
+  if (dark === true || dark === false) return Object.entries(PALETTES[dark ? 'dark' : 'light']).map(([k, v]) => `${k}:${v}`).join(';');
   const cs = getComputedStyle(document.documentElement);
   return THEME_VARS.map((v) => `${v}:${cs.getPropertyValue(v).trim()}`).join(';');
 }
@@ -807,54 +851,93 @@ const HEALTH_SHIM = `<script>(() => {
     .observe(document.documentElement, { childList: true, subtree: true });
 })();<\/script>`;
 
-// UI test run inside every view before it appears: after ready() (or 4 s), checks the real
-// layout and posts what is wrong. The tested render itself becomes the scene (no reload).
-const REVIEW_SHIM = `<script>(() => {
-  let done = false;
-  const desc = (el) => (el.tagName.toLowerCase() + (el.id ? '#' + el.id : '') + ' "' + (el.innerText || el.alt || '').trim().slice(0, 40) + '"');
-  const visible = (el) => { const r = el.getBoundingClientRect(); const cs = getComputedStyle(el);
-    return r.width > 1 && r.height > 1 && cs.visibility !== 'hidden' && cs.display !== 'none' && +cs.opacity > 0.05; };
-  const lum = (c) => { const m = String(c).match(/[\\d.]+/g); if (!m) return null; const [r, g, b, a = 1] = m.map(Number);
-    if (a < 0.5) return null; const f = (v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; };
-    return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b); };
-  const bgOf = (el) => { for (let e = el; e; e = e.parentElement) { const cs = getComputedStyle(e);
-    if (cs.backgroundImage !== 'none') return null; const l = lum(cs.backgroundColor); if (l != null) return l; }
-    // The page behind the frame: the parent's background, or the theme's --bg (sandboxed frames).
-    try { return lum(getComputedStyle(parent.document.body).backgroundColor) ?? 1; } catch {}
-    const hex = getComputedStyle(document.documentElement).getPropertyValue('--bg').trim().match(/^#?([\\da-f]{6})$/i);
-    if (!hex) return 1;
-    const n = parseInt(hex[1], 16);
-    return lum('rgb(' + (n >> 16) + ',' + ((n >> 8) & 255) + ',' + (n & 255) + ')'); };
-  function review() {
-    if (done) return; done = true;
-    const issues = [], W = innerWidth, doc = document.documentElement;
-    if (doc.scrollWidth > W + 4) issues.push('content wider than the screen (' + doc.scrollWidth + 'px > ' + W + 'px): horizontal overflow');
-    const texts = [...document.body.querySelectorAll('*')].filter((el) => visible(el) &&
-      [...el.childNodes].some((n) => n.nodeType === 3 && n.textContent.trim().length > 1)).slice(0, 200);
-    for (const el of texts) {
-      const r = el.getBoundingClientRect();
-      if (r.right > W + 4 || r.left < -4) issues.push(desc(el) + ' is cut off at the ' + (r.left < -4 ? 'left' : 'right') + ' edge');
-      const cs = getComputedStyle(el);
-      if ((el.scrollWidth > el.clientWidth + 2 || el.scrollHeight > el.clientHeight + 2) && /hidden|clip/.test(cs.overflow + cs.overflowX + cs.overflowY)
-          && cs.textOverflow !== 'ellipsis' && !cs.webkitLineClamp?.match(/\\d/)) issues.push(desc(el) + ' text is cropped by its box');
-      const fg = lum(cs.color), bg = bgOf(el);
-      if (fg != null && bg != null) { const ratio = (Math.max(fg, bg) + 0.05) / (Math.min(fg, bg) + 0.05);
-        if (ratio < 2.6) issues.push(desc(el) + ' has low contrast (' + ratio.toFixed(1) + ':1)'); }
-    }
-    for (let i = 0; i < texts.length; i++) for (let j = i + 1; j < texts.length; j++) {
-      const a = texts[i], b = texts[j]; if (a.contains(b) || b.contains(a)) continue;
-      const r1 = a.getBoundingClientRect(), r2 = b.getBoundingClientRect();
-      const ix = Math.max(0, Math.min(r1.right, r2.right) - Math.max(r1.left, r2.left)), iy = Math.max(0, Math.min(r1.bottom, r2.bottom) - Math.max(r1.top, r2.top));
-      if (ix * iy > 0.3 * Math.min(r1.width * r1.height, r2.width * r2.height)) issues.push(desc(a) + ' overlaps ' + desc(b));
-      if (issues.length > 14) break;
-    }
-    for (const img of document.images) if (img.complete && img.naturalWidth === 0 && img.src) issues.push('broken image ' + img.src.slice(0, 120));
-    if (!document.body.innerText.trim() && !document.querySelector('canvas,svg,img,video,iframe')) issues.push('the screen looks empty');
-    parent.postMessage({ aiuiReview: { issues: [...new Set(issues)].slice(0, 12), width: W, height: innerHeight } }, '*');
-  }
-  addEventListener('message', (e) => { if (e.data && e.data.aiuiReadySignal) setTimeout(review, 300); });
-  addEventListener('load', () => setTimeout(review, 4000));
+// Scene QA (web/qa.js): layout, readability, accessibility and UX scores, plus every
+// interaction in the lab clone. Loaded once; injected into each view.
+let QA_SRC = '';
+fetch('qa.js').then((r) => r.text()).then((t) => { QA_SRC = t.replace(/<\/script/gi, '<\\/script'); }).catch(() => {});
+const qaShim = (mode) => QA_SRC ? `<script>window.__qaMode = '${mode}';<\/script><script>${QA_SRC}<\/script>` : '';
+
+// Scene listeners: a view registers aiui.onBack(fn) / aiui.onMore(fn); the app's Back and More
+// (buttons, Backspace, swipes) go to the scene first. A handler returning false passes it on.
+const SCENE_SHIM = `<script>(() => {
+  const handlers = {};
+  const reg = (k) => (fn) => { handlers[k] = fn; parent.postMessage({ aiuiListen: k }, '*'); };
+  aiui.onBack = reg('back');
+  aiui.onMore = reg('more');
+  addEventListener('message', async (e) => {
+    const d = e.data || {};
+    if (!d.aiuiInvoke) return;
+    let handled = false;
+    try { const fn = handlers[d.aiuiInvoke]; if (fn) handled = (await fn()) !== false; } catch { handled = false; }
+    parent.postMessage({ aiuiInvoked: d.id, handled }, '*');
+  });
 })();<\/script>`;
+
+// The lab: a hidden clone of each view with every aiui call mocked (no system actions, no
+// navigation), where every interaction is exercised: each control is checked for being
+// reachable, then clicked / typed into / changed; errors and dead controls are reported, and
+// the scene's Back/More listeners are invoked too.
+const LAB_MOCK = `<script>(() => {
+  window.__mockCalls = 0; window.__activity = 0; window.__handlers = {};
+  window.__realSetTimeout = window.setTimeout.bind(window);
+  const mc = (v) => (...a) => { window.__mockCalls++; return Promise.resolve(v); };
+  window.aiui = { ready() { window.postMessage({ aiuiReadySignal: true }, '*'); },
+    sys: mc({ ok: true, code: 0, stdout: '', stderr: '', text: '' }), next: mc(null), back: mc(null), home: mc(null),
+    memory: { search: mc([]), stats: mc({}) },
+    onBack(fn) { window.__handlers.back = fn; }, onMore(fn) { window.__handlers.more = fn; } };
+  const of = window.fetch.bind(window); window.fetch = (...a) => { window.__activity++; return of(...a); };
+  for (const k of ['setTimeout', 'setInterval', 'requestAnimationFrame']) { const o = window[k].bind(window); window[k] = (...a) => { window.__activity++; return o(...a); }; }
+  const op = HTMLMediaElement.prototype.play; HTMLMediaElement.prototype.play = function () { window.__activity++; return op.call(this).catch(() => {}); };
+  addEventListener('click', (e) => { const a = e.target.closest && e.target.closest('a[href]'); if (a) { e.preventDefault(); window.__mockCalls++; } }, true);
+  addEventListener('submit', (e) => { e.preventDefault(); window.__mockCalls++; }, true);
+})();<\/script>`;
+
+// Starts the hidden lab clone for a view; reports interaction problems to the repair.
+function runLab(s, sharedHead, html) {
+  if (s.local || s.labbed) return;
+  s.labbed = true;
+  let lab = document.getElementById('lab');
+  if (!lab) { lab = document.createElement('div'); lab.id = 'lab'; document.body.appendChild(lab); }
+  // Another screen mode than the one on display: phone size, the other colour theme.
+  lab.style.width = '390px';
+  lab.style.height = '844px';
+  const f = document.createElement('iframe');
+  if (!NATIVE) f.setAttribute('sandbox', 'allow-scripts allow-forms allow-modals');
+  const otherTheme = `<style>:root{${themeVars(!matchMedia('(prefers-color-scheme: dark)').matches)}}</style>`;
+  const head = sharedHead.base + otherTheme + LAB_MOCK + qaShim('lab') + sharedHead.libs;
+  f.srcdoc = /<head[^>]*>/i.test(html) ? html.replace(/<head[^>]*>/i, (m) => m + head)
+    : `<!doctype html><html><head>${head}</head><body>${html}</body></html>`;
+  lab.appendChild(f);
+  labFor = { frame: f, screen: s };
+  setTimeout(() => { if (labFor && labFor.frame === f) { f.remove(); labFor = null; } }, 25000);
+}
+let labFor = null;
+
+function labResult(r) {
+  if (!labFor) return;
+  const { frame, screen: s } = labFor;
+  frame.remove(); labFor = null;
+  (s.quality || (s.quality = {})).lab = r;
+  lastQuality = { title: s.title, ...s.quality };
+  if (!qaFails(r) || s.fixed) return;
+  (s.health || (s.health = [])).push(...(r.issues || []).map((x) => 'phone/other theme: ' + x));
+  if (current.screen === s && !s.fixing) selfFix(s, qaReason(`interaction lab (${r.tested} controls, phone, other theme)`, r));
+}
+
+// Scene listeners from the real frame, and the round trip to invoke them.
+const sceneCalls = {};
+let sceneSeq = 0;
+function invokeScene(kind) {
+  const s = current.screen;
+  const f = el.view.querySelector('iframe');
+  if (s.kind !== 'html' || !s.listens || !s.listens[kind] || !f) return Promise.resolve(false);
+  const id = ++sceneSeq;
+  return new Promise((resolve) => {
+    sceneCalls[id] = resolve;
+    f.contentWindow.postMessage({ aiuiInvoke: kind, id }, '*');
+    setTimeout(() => { if (sceneCalls[id]) { delete sceneCalls[id]; resolve(false); } }, 1200);
+  });
+}
 
 // The view's health, its readiness, and the self-fix when it gets stuck.
 function viewHealth(h) {
@@ -893,16 +976,34 @@ function viewReady() {
 }
 
 // The in-frame UI test reported: reveal the tested render; repair it if anything is wrong.
+// Repair needed: hard failures (layout, broken interactions) or any score under 70.
+const QA_MIN = 70;
+function qaFails(r) {
+  const hard = (r.issues || []).some((x) => /^(layout|ux|security):/.test(x));
+  const low = Object.values(r.scores || {}).some((v) => v < QA_MIN);
+  return hard || low;
+}
+function qaReason(where, r) {
+  const sc = r.scores || {};
+  return `${where} at ${r.width}×${r.height} — UX ${sc.ux}, readability ${sc.readability}, accessibility ${sc.accessibility}` +
+    (sc.security != null ? `, security ${sc.security}` : '') +
+    ` (repair below ${QA_MIN}): ${(r.issues || []).length} issue(s)` +
+    (r.corners && r.corners.some((c) => !c.ok) ? '; corner cases failing: ' + r.corners.filter((c) => !c.ok).map((c) => c.case).join(', ') : '');
+}
+
 function viewReview(r) {
   const s = current.screen;
   if (s.kind !== 'html' || s.reviewed) return;
   s.reviewed = true;
   revealView();
-  if (r.issues && r.issues.length && !s.fixed && !s.local) {
-    (s.health || (s.health = [])).push(...r.issues.map((x) => 'ui: ' + x));
-    selfFix(s, `UI review at ${r.width}×${r.height}: ${r.issues.length} problem(s)`);
+  (s.quality || (s.quality = {})).screen = r;
+  lastQuality = { title: s.title, ...s.quality };
+  if (qaFails(r) && !s.fixed && !s.local) {
+    (s.health || (s.health = [])).push(...(r.issues || []));
+    selfFix(s, qaReason('UI test on screen', r));
   }
 }
+let lastQuality = null;
 
 function revealView() {
   const f = el.view.querySelector('iframe');
@@ -970,9 +1071,19 @@ const FRAME_SHIM = `<script>(() => {
 })();<\/script>`;
 
 window.addEventListener('message', async (e) => {
+  if (labFor && e.source === labFor.frame.contentWindow) {
+    if (e.data && e.data.aiuiInteract) labResult(e.data.aiuiInteract);
+    return;
+  }
   const frame = el.view.querySelector('iframe');
   if (!frame || e.source !== frame.contentWindow) return;
   const d = e.data || {};
+  if (d.aiuiListen) {
+    const s = current.screen;
+    (s.listens || (s.listens = {}))[d.aiuiListen] = true;
+    return updatePager();
+  }
+  if (d.aiuiInvoked != null) { const r = sceneCalls[d.aiuiInvoked]; delete sceneCalls[d.aiuiInvoked]; if (r) r(!!d.handled); return; }
   if (d.aiuiHealth) return viewHealth(d.aiuiHealth);
   if (d.aiuiReview) return viewReview(d.aiuiReview);
   if (d.aiuiKey) return onKey(new KeyboardEvent('keydown', { key: d.aiuiKey }));
@@ -1026,13 +1137,17 @@ function renderHTML(s) {
     body{padding:16px 48px 110px;max-width:1100px;margin:0 auto}
     a{color:var(--accent)} ::selection{background:var(--accent-soft)}
     ::-webkit-scrollbar{width:8px}::-webkit-scrollbar-thumb{background:var(--line);border-radius:4px}
-  </style>${HEALTH_SHIM}${s.local ? '' : REVIEW_SHIM}${NATIVE ? '<script>window.aiui = parent.aiui;<\/script>' : FRAME_SHIM}`;
+  </style>`;
+  const real = HEALTH_SHIM + (s.local ? '' : qaShim('review')) +
+    (NATIVE ? '<script>window.aiui = Object.create(parent.aiui);<\/script>' : FRAME_SHIM) + SCENE_SHIM;
   el.view.appendChild(frame);
   const screen = s;
   Promise.all([jsLibsFor(s), libraryFor(s)]).then(([libs, lib]) => {
     if (current.screen !== screen) return;
     let html = String(s.html || '');
-    const head = base + libs + lib;
+    const head = base + real + libs + lib;
+    // The interaction test runs in a hidden mocked clone alongside (the screen doesn't wait).
+    if (!s.local && !s.fixed) setTimeout(() => runLab(s, { base, libs: libs + lib }, String(s.html || '')), 50);
     if (/<head[^>]*>/i.test(html)) html = html.replace(/<head[^>]*>/i, (m) => m + head);
     else html = `<!doctype html><html><head>${head}</head><body>${html}</body></html>`;
     frame.srcdoc = html;
@@ -1398,6 +1513,13 @@ function onKey(e) {
   if (isEditable(e.target)) return;
   const circles = current.screen.kind === 'circles';
   const arrows = { ArrowLeft: 'left', ArrowRight: 'right', ArrowUp: 'up', ArrowDown: 'down', Tab: e.shiftKey ? 'prev' : 'next' };
+  if (e.key === 'Backspace' && e.repeat) {
+    // Held down: once it has repeated for ~half a second, back to the circles.
+    e.preventDefault();
+    if (!backspaceHeldAt) backspaceHeldAt = performance.now();
+    else if (performance.now() - backspaceHeldAt > 450 && !backspaceDone) { backspaceDone = true; backToCircles(); }
+    return;
+  }
   if (e.key === 'Backspace' || (e.metaKey && e.key === '[')) {
     e.preventDefault();
     if (!busy && prevPage()) return;
@@ -1430,6 +1552,8 @@ function onKey(e) {
   }
 }
 document.addEventListener('keydown', onKey);
+let backspaceHeldAt = 0, backspaceDone = false;
+document.addEventListener('keyup', (e) => { if (e.key === 'Backspace') { backspaceHeldAt = 0; backspaceDone = false; } });
 
 // ---------------------------------------------------------------- misc
 
@@ -1859,6 +1983,12 @@ async function showSystem() {
   ${sec('You', [row('Traits learned', esc(p.traits ?? 0)), row('Most certain', list(p.top)),
     row('Session check', esc(who.guest ? 'guest mode' : who.suspect ? 'looks like someone else: ' + who.suspect.join('; ') : 'normal'))])}
   ${sec('Avoid record', [row('Active', list(av.active)), row('All entries', esc(av.all ?? 0))])}
+  ${sec('Last scene quality', lastQuality ? [row('Scene', esc(lastQuality.title || '—')),
+    ...[['On screen', lastQuality.screen], ['Phone · other theme (lab)', lastQuality.lab]].filter(([, q]) => q).map(([k, q]) =>
+      row(k, esc(`UX ${q.scores.ux} · readability ${q.scores.readability} · accessibility ${q.scores.accessibility}` +
+        (q.scores.security != null ? ` · security ${q.scores.security}` : '')) + list(q.issues) +
+        (q.corners && q.corners.length ? '<ul>' + q.corners.map((c) => `<li>${c.ok ? '✓' : '✗'} ${esc(c.case)} — ${esc(c.note)}</li>`).join('') + '</ul>' : '')))]
+    : [row('Scene', '<span class="m">no AI scene yet</span>')])}
   </div><script>aiui.ready()<\/script>`;
   push({ kind: 'html', local: 'system', title: t('system'), back: true, html }, t('system'));
 }

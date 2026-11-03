@@ -160,6 +160,7 @@ final class API: NSObject {
     func syncNow() {
         cache.reload(); utilities.reload(); profile.reload(); avoid.reload()
         avoid.recheckDue()
+        libraries.maintain()      // keeps installing while there is room (no-op while busy)
         AICoin.shared.refreshBalance()
     }
 

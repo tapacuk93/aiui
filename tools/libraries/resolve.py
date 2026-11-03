@@ -44,7 +44,10 @@ for lid, _, err in results:
 disc = os.path.join(ROOT, "tools/libraries/discovered.json")
 if os.path.exists(disc):
     have = {r["id"] for r in catalog} | {r["package"] for r in catalog}
-    catalog += [r for r in json.load(open(disc)) if r["id"] not in have and r["package"] not in have]
+    import re
+    junk = re.compile(r"analytic|track|metrica|telemetry|consent|onetrust|cookiebot|advert|\bads?\b|adsense|sidecar|statsig|segment|snowplow|permutive|hypelab|devtool|console-ban|fingerprint|thumbmark|rrweb|session-?replay|monitor|beacon|pixel|tag-?manager|gtm|launchdarkly|flagship|feature-?flag|optimizely|hotjar|clarity|sentry|bugsnag|datadog|newrelic|embrace|gumlet|recaptcha|captcha|sdk-analytics|isbot|bot-?detect|antibot|clerk|auth0|firebase", re.I)
+    catalog += [r for r in json.load(open(disc)) if r["id"] not in have and r["package"] not in have
+                and not junk.search(r["id"] + " " + r.get("description", ""))]
 catalog.sort(key=lambda r: (-r["priority"], r["id"]))
 json.dump({"libraries": catalog}, open(os.path.join(ROOT, "web/libraries.json"), "w"), separators=(",", ":"))
 print(f"{len(catalog)} libraries, {sum(r['bytes'] for r in catalog) / 1e6:.1f} MB total")

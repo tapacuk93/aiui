@@ -122,7 +122,7 @@ const result = await ev(`(async () => {
     if (!fixEvent || aiui.screen.title !== 'Fixed2' || !recorded.some((r) => r.url.includes('blocked.invalid')))
       throw new Error(JSON.stringify({ fixed: !!fixEvent, now: aiui.screen.title, recorded }));
   });
-  const reviewRun = async (html) => {
+  const reviewRun = async (html, extraWait = 0) => {
     const realCall = WebBackend.call;
     let fixEvent = null;
     WebBackend.call = async (name, body) => {
@@ -134,6 +134,7 @@ const result = await ev(`(async () => {
     await ask({ event: 'open', target: { label: 'V' } }, { label: 'V' });
     await new Promise(r => setTimeout(r, 2500));
     const hidden = !!document.querySelector('#view iframe.testing');
+    await new Promise(r => setTimeout(r, extraWait));
     WebBackend.call = realCall;
     return { fixEvent, title: aiui.screen.title, hidden };
   };
@@ -145,6 +146,62 @@ const result = await ev(`(async () => {
   await step('ui test: clean view is revealed as is (no reload, no repair)', async () => {
     const r = await reviewRun('<section style="padding:20px"><h1>Hello</h1><p>All good here.</p></section><script>aiui.ready()<\/script>');
     if (r.fixEvent || r.title !== 'V' || r.hidden) throw new Error(JSON.stringify({ fixed: !!r.fixEvent, title: r.title, hidden: r.hidden }));
+  });
+  await step('interaction lab: a dead button is caught and repaired', async () => {
+    const r = await reviewRun('<section style="padding:20px"><h1>Panel</h1><button id="dead">Start</button></section><script>aiui.ready()<\\/script>', 10000);
+    const issues = r.fixEvent ? r.fixEvent.problem.errors.join(' ') + ' ' + r.fixEvent.problem.reason : '';
+    if (!/does nothing/.test(issues) || r.title !== 'Reviewed') throw new Error(issues || 'no interaction issue');
+  });
+  await step('corner cases: HTML injection through an input is caught', async () => {
+    const r = await reviewRun('<section style="padding:20px"><label>Name <input id="n"></label><div id="out"></div></section><script>document.getElementById("n").addEventListener("input", (e) => { document.getElementById("out").innerHTML = e.target.value; }); aiui.ready()<\\/script>', 12000);
+    const all = r.fixEvent ? r.fixEvent.problem.errors.join(' ') + ' ' + r.fixEvent.problem.reason : '';
+    if (!/injection/.test(all)) throw new Error(all.slice(0, 400) || 'no fix requested');
+  });
+  const sceneRun = async (html) => {
+    const realCall = WebBackend.call;
+    WebBackend.call = async (name, body) => name === 'ai' ? { screen: { kind: 'html', title: 'Scene', html } } : realCall(name, body);
+    home();
+    await ask({ event: 'open', target: { label: 'Scene' } }, { label: 'Scene' });
+    await new Promise(r => setTimeout(r, 1200));
+    WebBackend.call = realCall;
+  };
+  await step('scene Back listener handles Back (stays), then passes it on', async () => {
+    await sceneRun('<p id="p">detail open</p><script>let open = true; aiui.onBack(() => { if (open) { open = false; document.getElementById("p").textContent = "closed"; return true; } return false; }); aiui.ready()<\\/script>');
+    back(); await new Promise(r => setTimeout(r, 400));
+    const stayed = aiui.screen.title === 'Scene';
+    back(); await new Promise(r => setTimeout(r, 400));
+    if (!stayed || aiui.screen.title === 'Scene') throw new Error('stayed=' + stayed + ' now=' + aiui.screen.title);
+  });
+  await step('scene More listener shows More and is invoked', async () => {
+    await sceneRun('<p id="n">0</p><script>aiui.onMore(() => { document.getElementById("n").textContent = "1"; window.parent.postMessage({ moreHit: 1 }, "*"); }); aiui.ready()<\\/script>');
+    let hit = false; const h = (e) => { if (e.data && e.data.moreHit) hit = true; }; addEventListener('message', h);
+    const shown = el.more.classList.contains('on');
+    nextPage(); await new Promise(r => setTimeout(r, 400));
+    removeEventListener('message', h);
+    if (!shown || !hit) throw new Error('shown=' + shown + ' hit=' + hit);
+  });
+  await step('long press on Back returns to the circles', async () => {
+    await sceneRun('<p>app</p><script>aiui.onBack(() => true); aiui.ready()<\\/script>');
+    el.prev.dispatchEvent(new PointerEvent('pointerdown'));
+    await new Promise(r => setTimeout(r, 700));
+    el.prev.dispatchEvent(new PointerEvent('pointerup'));
+    if (current.screen.kind !== 'circles') throw new Error('still on ' + current.screen.kind);
+  });
+  await step('app interactions: arrows, Space select, + / × ears, Enter opens', async () => {
+    home();
+    current = { screen: normalize({ kind: 'circles', circles: [{ id: 'a', label: 'A' }, { id: 'b', label: 'B' }, { id: 'c', label: 'C' }] }), label: null };
+    render(); await new Promise(r => setTimeout(r, 200));
+    const key = (k) => onKey(new KeyboardEvent('keydown', { key: k, cancelable: true }));
+    key('ArrowRight'); const f1 = focusedId();
+    key(' '); const sel = current.screen.circles.find((c) => c.id === f1).selected;
+    const nodeC = [...el.circles.children].find((n) => n.dataset.id === 'c');
+    nodeC.querySelector('.plus').click(); const cSel = current.screen.circles.find((c) => c.id === 'c').selected;
+    const nodeA = [...el.circles.children].find((n) => n.dataset.id === 'a');
+    nodeA.querySelector('.minus').click(); await new Promise(r => setTimeout(r, 400));
+    const aGone = current.screen.circles.find((c) => c.id === 'a').removed;
+    let opened = null; const realOpen = openCircle; openCircle = (c) => { opened = c.id; };
+    key('Enter'); openCircle = realOpen;
+    if (f1 !== 'b' || !sel || !cSel || !aGone || !opened) throw new Error(JSON.stringify({ f1, sel, cSel, aGone, opened }));
   });
   await step('policy wait: no interim, full screen arrives', async () => {
     const r = await slowFull({ open: { seconds: 0.3, then: 'wait', label: 'searching' } });

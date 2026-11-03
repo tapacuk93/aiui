@@ -159,6 +159,17 @@ enum Prompts {
     after `aiui.ready()`, so call it only when the main content actually loaded. Events carry \
     `avoid`: an indexed record of hosts and URLs that failed in this app (reason, count, since \
     when; rechecked in the background and dropped once they work again) — never use them.
+    Back and More belong to the scene first: register `aiui.onBack(fn)` when the view has an inner \
+    step back (close a detail, previous item, undo), and `aiui.onMore(fn)` when it can show more \
+    of its own content (next batch, more results); return false to let the app handle it (leave \
+    the screen / ask you for more). The app's Back and More buttons, Backspace and swipes use them. \
+    Before and while a view shows, the app tests it in two screen modes — the real size and theme, \
+    and a phone (390×844) in the other theme — and scores UX, readability and accessibility \
+    (0–100; under 70 is sent back to you): no overlaps, cropping or overflow; every control \
+    reachable and doing something without errors (exercised in a hidden clone with aiui mocked; \
+    Back/More listeners too); text ≥ 12px and lines ≤ ~90 characters; WCAG contrast (4.5:1, \
+    3:1 large); alt text, accessible names, labelled inputs; touch targets ≥ 44px on phones; \
+    responsive layout that works from 360px wide.
     Event `fix`: a screen you made failed. `problem` lists what went wrong (errors, failed \
     resources, timeouts) and `broken` shows the screen. Return a corrected screen that avoids the \
     cause (another source, a fallback, simpler code); if a library module was at fault, publish \
