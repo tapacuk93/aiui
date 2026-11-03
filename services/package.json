@@ -1,0 +1,16 @@
+{
+  "name": "aiui-services",
+  "private": true,
+  "description": "shared.aiui.oeaio.com and users.aiui.oeaio.com (docs/shared-and-users.md)",
+  "type": "module",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "start": "node local-server.mjs --mirror",
+    "test": "node --test test/*.test.mjs"
+  },
+  "devDependencies": {
+    "@aws-sdk/client-dynamodb": "^3.600.0",
+    "@aws-sdk/client-s3": "^3.600.0",
+    "@aws-sdk/client-secrets-manager": "^3.600.0"
+  }
+}

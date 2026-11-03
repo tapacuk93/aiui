@@ -1,0 +1,373 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  aiui-services - shared.aiui.oeaio.com (global shared components, GitHub mirror) and
+  users.aiui.oeaio.com (finding users, mutual ids), per docs/shared-and-users.md: one HTTP API with
+  both custom domains, one Lambda for the API and one for the mirror, DynamoDB on demand, a private
+  S3 bucket for payloads, an EventBridge schedule. Deploy with deploy/deploy-services.sh.
+
+Parameters:
+  CertificateArn:
+    Type: String
+    Description: ISSUED ACM certificate in this stack's region for shared.aiui.oeaio.com and users.aiui.oeaio.com.
+  HostedZoneId:
+    Type: String
+    Default: Z045476435MPIV39UVMCZ
+    Description: The oeaio.com hosted zone.
+  Runtime:
+    Type: String
+    Default: nodejs24.x
+    AllowedValues: [nodejs22.x, nodejs24.x]
+    Description: Lambda Node.js runtime. The code runs on Node.js 20 or later; Lambda deprecated nodejs20.x on 2026-04-30.
+  MirrorEnabled:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: Run the GitHub mirror schedule. Turn on once the secret aiui/github-mirror holds a token.
+  MirrorRepo:
+    Type: String
+    Default: tapacuk93/aiui-shared
+  MirrorBranch:
+    Type: String
+    Default: main
+  MirrorSecretName:
+    Type: String
+    Default: aiui/github-mirror
+
+Conditions:
+  MirrorOn: !Equals [!Ref MirrorEnabled, "true"]
+
+Resources:
+  # ---------------------------------------------------------------- storage
+  ItemsTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: aiui-shared-items
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - {AttributeName: id, AttributeType: S}
+        - {AttributeName: live, AttributeType: S}
+        - {AttributeName: liveKey, AttributeType: S}
+        - {AttributeName: gone, AttributeType: S}
+        - {AttributeName: goneKey, AttributeType: S}
+      KeySchema: [{AttributeName: id, KeyType: HASH}]
+      GlobalSecondaryIndexes:
+        - IndexName: live
+          KeySchema: [{AttributeName: live, KeyType: HASH}, {AttributeName: liveKey, KeyType: RANGE}]
+          Projection: {ProjectionType: ALL}
+        - IndexName: gone
+          KeySchema: [{AttributeName: gone, KeyType: HASH}, {AttributeName: goneKey, KeyType: RANGE}]
+          Projection: {ProjectionType: KEYS_ONLY}
+      PointInTimeRecoverySpecification: {PointInTimeRecoveryEnabled: true}
+      Tags: [{Key: project, Value: aiui}]
+
+  MarksTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: aiui-shared-marks
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions: [{AttributeName: item, AttributeType: S}, {AttributeName: mark, AttributeType: S}]
+      KeySchema: [{AttributeName: item, KeyType: HASH}, {AttributeName: mark, KeyType: RANGE}]
+      Tags: [{Key: project, Value: aiui}]
+
+  ProfilesTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: aiui-users-profiles
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions: [{AttributeName: id, AttributeType: S}, {AttributeName: findableKey, AttributeType: S}]
+      KeySchema: [{AttributeName: id, KeyType: HASH}]
+      GlobalSecondaryIndexes:
+        - IndexName: findable
+          KeySchema: [{AttributeName: findableKey, KeyType: HASH}]
+          Projection: {ProjectionType: ALL}
+      PointInTimeRecoverySpecification: {PointInTimeRecoveryEnabled: true}
+      Tags: [{Key: project, Value: aiui}]
+
+  HandlesTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: aiui-users-handles
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions: [{AttributeName: handle, AttributeType: S}]
+      KeySchema: [{AttributeName: handle, KeyType: HASH}]
+      Tags: [{Key: project, Value: aiui}]
+
+  ContactsTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: aiui-users-contacts
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions: [{AttributeName: owner, AttributeType: S}, {AttributeName: id, AttributeType: S}]
+      KeySchema: [{AttributeName: owner, KeyType: HASH}, {AttributeName: id, KeyType: RANGE}]
+      GlobalSecondaryIndexes:
+        - IndexName: byOther
+          KeySchema: [{AttributeName: id, KeyType: HASH}, {AttributeName: owner, KeyType: RANGE}]
+          Projection: {ProjectionType: ALL}
+      PointInTimeRecoverySpecification: {PointInTimeRecoveryEnabled: true}
+      Tags: [{Key: project, Value: aiui}]
+
+  EventsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: aiui-users-events
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions: [{AttributeName: owner, AttributeType: S}, {AttributeName: sk, AttributeType: S}]
+      KeySchema: [{AttributeName: owner, KeyType: HASH}, {AttributeName: sk, KeyType: RANGE}]
+      TimeToLiveSpecification: {AttributeName: expires, Enabled: true}
+      Tags: [{Key: project, Value: aiui}]
+
+  # replay marks and rate counters (TTL), item keys (author|kind|path|name -> id), small meta values
+  ControlTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: aiui-services-control
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions: [{AttributeName: k, AttributeType: S}]
+      KeySchema: [{AttributeName: k, KeyType: HASH}]
+      TimeToLiveSpecification: {AttributeName: expires, Enabled: true}
+      Tags: [{Key: project, Value: aiui}]
+
+  PayloadBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub aiui-shared-payloads-${AWS::AccountId}
+      PublicAccessBlockConfiguration: {BlockPublicAcls: true, BlockPublicPolicy: true, IgnorePublicAcls: true, RestrictPublicBuckets: true}
+      OwnershipControls: {Rules: [{ObjectOwnership: BucketOwnerEnforced}]}
+      BucketEncryption: {ServerSideEncryptionConfiguration: [{ServerSideEncryptionByDefault: {SSEAlgorithm: AES256}}]}
+      Tags: [{Key: project, Value: aiui}]
+
+  PayloadBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref PayloadBucket
+      PolicyDocument:
+        Statement:
+          - Sid: TLSOnly
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:*"
+            Resource: [!GetAtt PayloadBucket.Arn, !Sub "${PayloadBucket.Arn}/*"]
+            Condition: {Bool: {"aws:SecureTransport": "false"}}
+
+  # ---------------------------------------------------------------- functions
+  ApiLogs:
+    Type: AWS::Logs::LogGroup
+    Properties: {LogGroupName: /aws/lambda/aiui-services-api, RetentionInDays: 30}
+  MirrorLogs:
+    Type: AWS::Logs::LogGroup
+    Properties: {LogGroupName: /aws/lambda/aiui-services-mirror, RetentionInDays: 30}
+
+  ApiRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement: [{Effect: Allow, Principal: {Service: lambda.amazonaws.com}, Action: sts:AssumeRole}]
+      Policies:
+        - PolicyName: api
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action: [logs:CreateLogStream, logs:PutLogEvents]
+                Resource: !GetAtt ApiLogs.Arn   # arn:...:log-group:<name>:* (its streams)
+              - Effect: Allow
+                Action: [dynamodb:GetItem, dynamodb:PutItem, dynamodb:UpdateItem, dynamodb:DeleteItem, dynamodb:Query, dynamodb:ConditionCheckItem]
+                Resource:
+                  - !GetAtt ItemsTable.Arn
+                  - !Sub "${ItemsTable.Arn}/index/*"
+                  - !GetAtt MarksTable.Arn
+                  - !GetAtt ProfilesTable.Arn
+                  - !Sub "${ProfilesTable.Arn}/index/*"
+                  - !GetAtt HandlesTable.Arn
+                  - !GetAtt ContactsTable.Arn
+                  - !Sub "${ContactsTable.Arn}/index/*"
+                  - !GetAtt EventsTable.Arn
+                  - !GetAtt ControlTable.Arn
+              - Effect: Allow
+                Action: [s3:GetObject, s3:PutObject]
+                Resource: !Sub "${PayloadBucket.Arn}/payloads/*"
+      Tags: [{Key: project, Value: aiui}]
+
+  MirrorRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement: [{Effect: Allow, Principal: {Service: lambda.amazonaws.com}, Action: sts:AssumeRole}]
+      Policies:
+        - PolicyName: mirror
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action: [logs:CreateLogStream, logs:PutLogEvents]
+                Resource: !GetAtt MirrorLogs.Arn
+              - Effect: Allow
+                Action: [dynamodb:Query]
+                Resource: !Sub "${ItemsTable.Arn}/index/live"
+              - Effect: Allow
+                Action: [dynamodb:GetItem, dynamodb:PutItem]
+                Resource: !GetAtt ControlTable.Arn
+                Condition: {"ForAllValues:StringLike": {"dynamodb:LeadingKeys": ["meta:*"]}}
+              - Effect: Allow
+                Action: [s3:GetObject]
+                Resource: !Sub "${PayloadBucket.Arn}/payloads/*"
+              - Effect: Allow
+                Action: [secretsmanager:GetSecretValue]
+                Resource: !Sub "arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${MirrorSecretName}-??????"
+      Tags: [{Key: project, Value: aiui}]
+
+  ApiFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: ApiLogs
+    Properties:
+      FunctionName: aiui-services-api
+      Description: shared.aiui.oeaio.com and users.aiui.oeaio.com
+      Runtime: !Ref Runtime
+      Architectures: [arm64]
+      Handler: lambda.api
+      Code: ../services/src
+      MemorySize: 512
+      Timeout: 15
+      Role: !GetAtt ApiRole.Arn
+      Environment:
+        Variables:
+          ITEMS_TABLE: !Ref ItemsTable
+          MARKS_TABLE: !Ref MarksTable
+          PROFILES_TABLE: !Ref ProfilesTable
+          HANDLES_TABLE: !Ref HandlesTable
+          CONTACTS_TABLE: !Ref ContactsTable
+          EVENTS_TABLE: !Ref EventsTable
+          CONTROL_TABLE: !Ref ControlTable
+          PAYLOAD_BUCKET: !Ref PayloadBucket
+      Tags: [{Key: project, Value: aiui}]
+
+  MirrorFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: MirrorLogs
+    Properties:
+      FunctionName: aiui-services-mirror
+      Description: GitHub mirror of shared.aiui.oeaio.com
+      Runtime: !Ref Runtime
+      Architectures: [arm64]
+      Handler: lambda.mirror
+      Code: ../services/src
+      MemorySize: 1024
+      Timeout: 600
+      Role: !GetAtt MirrorRole.Arn
+      Environment:
+        Variables:
+          ITEMS_TABLE: !Ref ItemsTable
+          CONTROL_TABLE: !Ref ControlTable
+          PAYLOAD_BUCKET: !Ref PayloadBucket
+          MIRROR_REPO: !Ref MirrorRepo
+          MIRROR_BRANCH: !Ref MirrorBranch
+          MIRROR_SECRET: !Ref MirrorSecretName
+      Tags: [{Key: project, Value: aiui}]
+
+  # every 15 minutes; the function decides whether a run is due (settled 15 min, or 6 h)
+  MirrorSchedule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: aiui-services-mirror
+      ScheduleExpression: rate(15 minutes)
+      State: !If [MirrorOn, ENABLED, DISABLED]
+      Targets: [{Id: mirror, Arn: !GetAtt MirrorFunction.Arn}]
+  MirrorSchedulePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref MirrorFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt MirrorSchedule.Arn
+
+  # ---------------------------------------------------------------- HTTP API
+  Api:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: aiui-services
+      ProtocolType: HTTP
+      DisableExecuteApiEndpoint: true
+      Tags: {project: aiui}
+  ApiIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref Api
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !GetAtt ApiFunction.Arn
+      PayloadFormatVersion: "2.0"
+      TimeoutInMillis: 15000
+  ApiRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref Api
+      RouteKey: $default
+      Target: !Sub integrations/${ApiIntegration}
+  ApiStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref Api
+      StageName: $default
+      AutoDeploy: true
+      DefaultRouteSettings: {ThrottlingBurstLimit: 100, ThrottlingRateLimit: 50}
+  ApiPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref ApiFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${Api}/*
+
+  SharedDomain:
+    Type: AWS::ApiGatewayV2::DomainName
+    Properties:
+      DomainName: shared.aiui.oeaio.com
+      DomainNameConfigurations: [{CertificateArn: !Ref CertificateArn, EndpointType: REGIONAL, SecurityPolicy: TLS_1_2}]
+      Tags: {project: aiui}
+  UsersDomain:
+    Type: AWS::ApiGatewayV2::DomainName
+    Properties:
+      DomainName: users.aiui.oeaio.com
+      DomainNameConfigurations: [{CertificateArn: !Ref CertificateArn, EndpointType: REGIONAL, SecurityPolicy: TLS_1_2}]
+      Tags: {project: aiui}
+  SharedMapping:
+    Type: AWS::ApiGatewayV2::ApiMapping
+    DependsOn: ApiStage
+    Properties: {ApiId: !Ref Api, DomainName: !Ref SharedDomain, Stage: $default}
+  UsersMapping:
+    Type: AWS::ApiGatewayV2::ApiMapping
+    DependsOn: ApiStage
+    Properties: {ApiId: !Ref Api, DomainName: !Ref UsersDomain, Stage: $default}
+
+  # A records only: the regional API Gateway domains are IPv4 (dual-stack would need IpAddressType).
+  SharedDnsA:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: shared.aiui.oeaio.com.
+      Type: A
+      AliasTarget: {DNSName: !GetAtt SharedDomain.RegionalDomainName, HostedZoneId: !GetAtt SharedDomain.RegionalHostedZoneId}
+  UsersDnsA:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: users.aiui.oeaio.com.
+      Type: A
+      AliasTarget: {DNSName: !GetAtt UsersDomain.RegionalDomainName, HostedZoneId: !GetAtt UsersDomain.RegionalHostedZoneId}
+
+Outputs:
+  ApiId: {Value: !Ref Api}
+  ApiFunction: {Value: !Ref ApiFunction}
+  MirrorFunction: {Value: !Ref MirrorFunction}
+  PayloadBucket: {Value: !Ref PayloadBucket}

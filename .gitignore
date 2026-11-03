@@ -2,3 +2,5 @@ vendor/
 build/
 .DS_Store
 AIUI.xcodeproj/
+services/node_modules/
+services/.local-data/

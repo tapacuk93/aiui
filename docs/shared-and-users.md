@@ -175,3 +175,52 @@ HTTP API (API Gateway) with custom domains `shared.aiui.oeaio.com` and `users.ai
 DynamoDB (on-demand) for items/profiles/contacts/events/replay, and a private S3 bucket for
 payloads, plus an EventBridge schedule for the GitHub mirror. `services/` holds the code with a local server that runs the same handlers for tests.
 Deploying is a separate, explicit step (`deploy/deploy-services.sh`).
+
+## Implementation decisions (`services/`)
+
+Points the contract above left open, as the backend implements them:
+
+- **Payload bytes.** The server stores `JSON.stringify` of the `payload` object as received (key
+  order kept, no whitespace); `sha256` and `size` are over those bytes and come back in the item.
+  Component/util payloads may hold only `code` (required) and `css`; an applet payload is any
+  object with a string `kind`.
+- **Names.** `name` is 1-80 of `A-Z a-z 0-9 _ $ -` and each `path` segment 1-40 of
+  `A-Z a-z 0-9 _ -`, at most 8 segments (they are directories in the mirror: no dots or slashes).
+  `title` defaults to `name`; `libs` at most 32, `uses` at most 64 item ids. An over-long title,
+  description, usage, report reason or payload is `413`; other bad input (names included) `400`.
+- **Versions.** Creating answers `201`, a new version `200`. Posting exactly what is already there
+  (same payload and metadata) returns the item unchanged, without a new version. After a withdrawal
+  the same kind + path + name starts a new item (new id, version 1). A hidden (reported) item's new
+  versions stay hidden.
+- **`authorName`** is the author's display name from their users profile at share time, if any.
+- **Hidden and withdrawn items** answer `404` on `GET /v1/items/<id>` and `/payload`, and cannot be
+  adopted or reported.
+- **Index paging.** `limit` (1-500, default 500); `next` is a relative URL
+  (`/v1/index?...&after=<cursor>`) or `null`. `removed` is present only with `since`, on the first
+  page, and lists withdrawn **and** hidden items (both left the index).
+- **Reports** need `{reason}` (1-1000 characters); the answer is `{id, reports, hidden}`. Adoption
+  answers the item.
+- **Profiles.** A non-findable profile is also returned to a *signed* `GET /v1/profiles/<id>` from a
+  mutual contact (or from its owner). `GET /v1/find?q=<64-hex id>` answers `{profiles: [p]}` or 404.
+  `findable` defaults to false.
+- **Contacts.** At most 1000 per app id; `note` up to 280 characters. Entries:
+  `{id, state: "pending", added, note?, name?}`, `{id, state: "incoming", added, note?, name?}`,
+  `{id, state: "mutual", since, note?, name}` - the name only from a findable profile, or for a
+  mutual contact. Removing a contact (or deleting the profile) sends the other side `removed`, also
+  when it was only pending. `incoming` events always carry `note` (possibly "").
+- **Router inbox.** At most 100 events per call, with `"more": true` when there are more.
+- **Rate limits.** Writes = signed non-GET requests, 60/hour per app id across both hosts; reads =
+  all GETs, 600/hour per IP. The API also throttles at 50 requests/s (burst 100).
+- **Replay.** Ed25519 signatures are deterministic: an identical request signed in the same
+  millisecond is a replay (`409`). Unknown method on a known path is `405`.
+- **Mirror.** Triggered every 15 minutes; a run happens when changes have settled for 15 minutes or
+  6 hours have passed, and commits only when the tree differs from the branch (a fingerprint of the
+  last pushed tree skips even the GitHub calls). `index.json` in the mirror has `next: null` and
+  `generated` = the latest item update (not the run time, which would change every run). When two
+  authors share kind + path + name, the earliest-created item keeps the plain directory and later
+  ones get `<name>.<first 12 hex of the author id>`. The secret holds the token itself or
+  `{"token": "..."}`; an empty repository gets a first commit through the contents API. The
+  schedule is off until the stack is deployed with `MirrorEnabled=true`.
+- **Hosting.** Region us-east-1 (as the web stack; the regional certificate for both names lives
+  there). Lambda runtime `nodejs24.x` by default: the code needs Node.js 20 or later, and Lambda
+  deprecated `nodejs20.x` on 2026-04-30. DNS has A aliases only (the regional API domains are IPv4).
