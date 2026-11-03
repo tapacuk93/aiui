@@ -11,6 +11,7 @@ const WebBackend = (() => {
   let openScreen = null;  // id of the last `screen` call awaiting its tool result
   let replayed = [];
   let flow = [];          // [{depth, line}]
+  let prefetchedShown = []; // prefetched screens opened since the main AI last heard from us
 
   const err = (m) => new Error(m);
   const loadPrompts = async () => prompts || (prompts = await (await fetch('prompts.json')).json());
@@ -220,8 +221,7 @@ const WebBackend = (() => {
     const k = getKey();
     if (!k) throw err('no-ai');
     const p = await loadPrompts();
-    if (aborts.pager) aborts.pager.abort();
-    if (aborts.suggest) aborts.suggest.abort();
+    for (const ch of ['pager', 'suggest', 'scout', 'refine']) if (aborts[ch]) aborts[ch].abort();
     const action = actionOf(input);
     const key = await keyOf(action);
     const depth = (action.path || []).length;
@@ -235,8 +235,9 @@ const WebBackend = (() => {
       replayed = [...replayed, action].slice(-20);
       return { screen: hit.outcome, cached: true };
     }
-    const event = { ...input };
+    const event = { ...input, language: input.language || navigator.language };
     if (replayed.length) event.replayed = replayed;
+    if (prefetchedShown.length) event.prefetched = prefetchedShown;
     if (steps.length) event.flow = steps;
     const words = [...(input.path || []), input.target && input.target.label, input.text].filter(Boolean);
     const mem = related(words);
@@ -248,7 +249,7 @@ const WebBackend = (() => {
     const messages = [...convo];
     const { screen, callId } = await turn(k, instructions(p.system), JSON.parse(p.screenSchema), messages, prompt,
       openScreen, 'ai', progress);
-    convo = messages; openScreen = callId; replayed = [];
+    convo = messages; openScreen = callId; replayed = []; prefetchedShown = [];
     let out = screen;
     if (out.reuse) {
       const e = touch(out.reuse);
@@ -266,6 +267,7 @@ const WebBackend = (() => {
     const k = getKey();
     if (!k) throw err('no-ai');
     const p = await loadPrompts();
+    input = { ...input, language: input.language || navigator.language };
     const words = [...(input.path || []), input.input, input.screen && input.screen.title].filter(Boolean);
     const mem = related(words);
     const ev = { ...input };
@@ -313,8 +315,30 @@ const WebBackend = (() => {
       case 'ai': return ai(body, progress);
       case 'more': return side('pager', 'pager', 'pageSchema', body, 'The user scrolled past the end of this screen. Continue its circles:');
       case 'suggest': return side('suggest', 'suggest', 'suggestSchema', body, 'The user is typing on this screen. Suggest circles for their input:');
+      case 'prefetch': return side('scout', 'scout', 'screenSchema', body, 'The cursor is heading for this circle. Prepare the screen opening it would show:');
+      case 'refine': return side('refine', 'refine', 'patchSchema', body, 'Refine the circles of this screen with real data:');
+      case 'translate': {
+        const k = getKey();
+        if (!k) throw err('no-ai');
+        const p = await loadPrompts();
+        const { screen } = await turn(k, instructions(p.translate), JSON.parse(p.translateSchema), [],
+          JSON.stringify(body), null, 'translate', () => {});
+        return screen;
+      }
+      case 'adopt': {
+        const action = actionOf(body);
+        const key = await keyOf(action);
+        const depth = (action.path || []).length;
+        const before = flow.filter((f) => f.depth < depth);
+        flow = [...before, { depth, line: lineOf(action) }];
+        if (body.outcome) {
+          store(key, action, before.slice(-10).map((f) => f.line), body.outcome);
+          prefetchedShown = [...prefetchedShown, { ...action, shown: body.outcome.note || body.outcome.title || '' }].slice(-10);
+        }
+        return { ok: true };
+      }
       case 'cancel': {
-        const ch = body.pager ? 'pager' : body.suggest ? 'suggest' : 'ai';
+        const ch = body.pager ? 'pager' : body.suggest ? 'suggest' : body.scout ? 'scout' : body.refine ? 'refine' : 'ai';
         if (aborts[ch]) aborts[ch].abort();
         return { ok: true };
       }

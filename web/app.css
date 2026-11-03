@@ -268,8 +268,20 @@ html, body {
 
 /* ---------- busy ---------- */
 
-body.busy .circle:not(.pending) { opacity: .35; transition: opacity .3s; }
-body.busy #circles { pointer-events: none; }
+/* While a circle opens, the rest stays usable (clicking another one switches to it). */
+body.busy .circle:not(.pending) { opacity: .8; transition: opacity .3s; }
+.progress {
+  margin-top: 5px;
+  max-width: 86%;
+  font-size: 10.5px;
+  line-height: 1.2;
+  color: var(--accent);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.circle.pending .hint { display: none; }
 .circle.pending .face {
   border-color: var(--accent);
   animation: pulse 1.2s ease-in-out infinite;
@@ -296,7 +308,7 @@ body.mode-html #circles { display: none; }
 body.mode-html #stage { padding: 0; }
 body.mode-html #top { background: linear-gradient(var(--bg) 60%, transparent); padding-bottom: 14px; }
 body.mode-html.has-title #view { top: 0; }
-body.busy #view { opacity: .35; transition: opacity .3s; }
+body.busy #view { opacity: .7; transition: opacity .3s; }
 
 /* ---------- the text input (under the title, or in its place) ---------- */
 
@@ -399,7 +411,7 @@ body.busy #status, body.flash #status { opacity: 1; }
 #go:hover { filter: brightness(1.08); transform: translateY(-1px); }
 #go:active { transform: scale(.97); }
 body.show-go #go { display: block; animation: appear .3s both; }
-body.busy #go { opacity: .4; pointer-events: none; }
+body.busy #go { opacity: .6; }
 
 /* ---------- toast ---------- */
 
@@ -437,3 +449,19 @@ html.web #webnote {
   text-decoration: none;
 }
 html.web #webnote:hover { color: var(--accent); }
+
+/* ---------- cursor heading, prefetched, improved ---------- */
+
+.circle.heading .face { border-color: color-mix(in srgb, var(--accent) 55%, transparent); }
+.circle.ready .face::after {
+  content: '';
+  position: absolute;
+  bottom: 12%;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  opacity: .8;
+}
+.circle.improved .face { animation: improved 1.2s ease-out; }
+@keyframes improved { 0% { box-shadow: 0 0 0 0 var(--accent-glow); } 40% { box-shadow: 0 0 0 10px var(--accent-soft); } }

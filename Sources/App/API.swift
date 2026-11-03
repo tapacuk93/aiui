@@ -9,6 +9,12 @@ final class API: NSObject, AIUIHost {
     private(set) var pager: AIEngine?
     /// Live suggestions while the user types (stateless, separate so it never cancels paging).
     private(set) var suggester: AIEngine?
+    /// Prefetches the screen the cursor is heading for; refines live circles; translates UI text.
+    private(set) var scout: AIEngine?
+    private(set) var refiner: AIEngine?
+    private(set) var translator: AIEngine?
+    /// The user's system language (BCP 47), sent with every event.
+    let language = Locale.preferredLanguages.first ?? "en"
     private(set) var engineID: String?   // cli id, or "key"
     private let systemPrompt: String
     private let pagerPrompt: String
@@ -61,10 +67,13 @@ final class API: NSObject, AIUIHost {
         default:
             return false
         }
-        claude?.cancel(); pager?.cancel(); suggester?.cancel()
+        claude?.cancel(); pager?.cancel(); suggester?.cancel(); scout?.cancel(); refiner?.cancel()
         claude = make(true, systemPrompt, Prompts.screenSchema)
         pager = make(false, pagerPrompt, Prompts.pageSchema)
         suggester = make(false, suggestPrompt, Prompts.suggestSchema)
+        scout = make(false, systemPrompt + Prompts.scout, Prompts.screenSchema)
+        refiner = make(false, systemPrompt + Prompts.refine, Prompts.patchSchema)
+        translator = make(false, Prompts.translate, Prompts.translateSchema)
         engineID = id
         UserDefaults.standard.set(id, forKey: "engine")
         return true
@@ -80,8 +89,35 @@ final class API: NSObject, AIUIHost {
         return out
     }
 
-    func resetSession() { pager?.cancel(); suggester?.cancel(); claude?.reset() }
-    func shutdown() { pager?.cancel(); suggester?.cancel(); claude?.cancel() }
+    func resetSession() { pager?.cancel(); suggester?.cancel(); scout?.cancel(); refiner?.cancel(); claude?.reset() }
+    func shutdown() {
+        for e in [pager, suggester, scout, refiner, translator, claude] { e?.cancel() }
+    }
+
+    /// Runs a stateless side engine on `input` (plus flow index context) and replies with its JSON.
+    private func side(_ engine: AIEngine?, _ intro: String, _ input: [String: Any],
+                      send: @escaping ([String: Any]) -> Void, fail: @escaping (String) -> Void) {
+        guard let engine else { return fail("no-ai") }
+        var input = input
+        input["language"] = language
+        var words = (input["path"] as? [String]) ?? []
+        if let t = (input["target"] as? [String: Any])?["label"] as? String { words.append(t) }
+        if let t = (input["screen"] as? [String: Any])?["title"] as? String { words.append(t) }
+        let related = cache.related(words)
+        if !related.isEmpty { input["memory"] = related }
+        let flows = cache.overview(limit: 10)
+        if !flows.isEmpty { input["flows"] = flows }
+        let data = (try? JSONSerialization.data(withJSONObject: input, options: [.prettyPrinted, .sortedKeys])) ?? Data()
+        engine.next(prompt: intro + "\n```json\n" + String(decoding: data, as: UTF8.self) + "\n```", progress: { _ in }, done: { r in
+            switch r {
+            case .success(let obj): send(obj)
+            case .failure(let e): fail(e.localizedDescription)
+            }
+        })
+    }
+
+    /// Screens shown from a prefetch since the main AI last heard from us.
+    private var prefetched: [[String: Any]] = []
 
     func handleAPI(_ path: String, body: Data, reply: @escaping AIUIReply) {
         let input = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any] ?? [:]
@@ -96,7 +132,7 @@ final class API: NSObject, AIUIHost {
 
         switch path {
         case "info":
-            send(["home": NSHomeDirectory(), "user": NSFullUserName(),
+            send(["home": NSHomeDirectory(), "user": NSFullUserName(), "language": language,
                   "ai": claude?.label ?? "none", "engine": "CEF/Blink",
                   "macos": ProcessInfo.processInfo.operatingSystemVersionString])
 
@@ -135,10 +171,42 @@ final class API: NSObject, AIUIHost {
                 }
             })
 
+        case "prefetch":
+            side(scout, "The cursor is heading for this circle. Prepare the screen opening it would show:", input, send: send, fail: fail)
+
+        case "refine":
+            side(refiner, "Refine the circles of this screen with real data:", input, send: send, fail: fail)
+
+        case "translate":
+            guard let translator else { return fail("no-ai") }
+            let data = (try? JSONSerialization.data(withJSONObject: input, options: [.sortedKeys])) ?? Data()
+            translator.next(prompt: String(decoding: data, as: UTF8.self), progress: { _ in }, done: { r in
+                switch r {
+                case .success(let obj): send(obj)
+                case .failure(let e): fail(e.localizedDescription)
+                }
+            })
+
+        case "adopt":
+            // A prefetched screen was opened: record it like a normal turn and tell the AI next time.
+            let action = Cache.action(from: input)
+            let key = Cache.key(for: action)
+            let steps = advanceFlow(action)
+            if let screen = input["outcome"] as? [String: Any] {
+                cache.store(key: key, action: action, flow: steps, outcome: screen)
+                var note = action
+                note["shown"] = screen["note"] ?? screen["title"] ?? ""
+                prefetched.append(note)
+                if prefetched.count > 10 { prefetched.removeFirst(prefetched.count - 10) }
+            }
+            send(["ok": true])
+
         case "ai":
             guard let claude, let pager else { return fail("no-ai") }
             pager.cancel()
             suggester?.cancel()
+            scout?.cancel()
+            refiner?.cancel()
             let action = Cache.action(from: input)
             let key = Cache.key(for: action)
             let steps = advanceFlow(action)
@@ -149,7 +217,9 @@ final class API: NSObject, AIUIHost {
                 return
             }
             var event = input
+            event["language"] = language
             if !replayed.isEmpty { event["replayed"] = replayed }
+            if !prefetched.isEmpty { event["prefetched"] = prefetched }
             if !steps.isEmpty { event["flow"] = steps }
             // Related past flows and outcomes; the AI may reuse any by key.
             var words = (input["path"] as? [String]) ?? []
@@ -167,6 +237,7 @@ final class API: NSObject, AIUIHost {
                 case .success(let screen):
                     guard let self else { return }
                     self.replayed.removeAll()
+                    self.prefetched.removeAll()
                     var screen = screen
                     // `reuse`: the AI picked a stored outcome instead of rebuilding it.
                     if let rk = screen.removeValue(forKey: "reuse") as? String, !rk.isEmpty,
@@ -219,6 +290,8 @@ final class API: NSObject, AIUIHost {
         case "cancel":
             if (input["pager"] as? Bool) == true { pager?.cancel() }
             else if (input["suggest"] as? Bool) == true { suggester?.cancel() }
+            else if (input["scout"] as? Bool) == true { scout?.cancel() }
+            else if (input["refine"] as? Bool) == true { refiner?.cancel() }
             else { claude?.cancel() }
             send(["ok": true])
 

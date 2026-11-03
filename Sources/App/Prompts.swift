@@ -89,6 +89,14 @@ enum Prompts {
     circle is the typed text itself. When the user opens a circle while typing, the event carries \
     both `target` and `text`.
 
+    Language: write every user-facing word (titles, labels, hints, messages, HTML) in the user's \
+    language, given as `language` in each event — unless the user writes in another language.
+
+    Background work: the app prefetches the screen of the circle the user's cursor is heading for \
+    and, for screens marked `live: true`, refines circles in place with real data (counts, previews). \
+    Events carry `attention` — where the cursor lingered or hesitated on the previous screen (circle \
+    labels with dwell time) — and may list `prefetched` screens shown without you; use both.
+
     Every screen may have a `title` and a `go` label (Go button, bottom center) — decide per screen; \
     omit them when they add nothing. Go means "do it / continue with what is selected". `message` is an \
     optional short line under the title (status, result summary, a question).
@@ -162,6 +170,46 @@ enum Prompts {
     as is; otherwise leave it unset.
     """
 
+    static let scout = """
+
+    ## Prefetch mode
+    You are now the scout, a separate background call. The user's cursor is heading for a circle; \
+    prepare the screen that opening it would show, so it appears instantly if they click. Read-only: \
+    look things up, but never perform an action with effects (no sending, deleting, creating, \
+    buying, opening apps). If opening it would need such an action, return the confirmation screen.
+    """
+
+    static let refine = """
+
+    ## Refine mode
+    You are now the refiner, a separate background call made while the user looks at a screen. \
+    Improve its circles in place with real, current data: counts (`value`), short live previews \
+    (`hint`), better `icon` or a sharper `label`. Read-only; quick lookups only. Return only circles \
+    you actually improve, by `id`, with only the changed fields.
+    """
+
+    static let translate = """
+    Translate the UI strings in `strings` into the language `language` (a BCP 47 code). Keep them \
+    short, natural UI text; keep emoji and placeholders like {name} unchanged. Return every key.
+    """
+
+    static let patchSchema: String = json([
+        "type": "object",
+        "properties": ["circles": ["type": "array", "items": [
+            "type": "object",
+            "properties": ["id": ["type": "string"], "label": ["type": "string"], "hint": ["type": "string"],
+                           "icon": ["type": "string"], "value": ["type": "number"]],
+            "required": ["id"],
+        ] as [String: Any]]],
+        "required": ["circles"],
+    ])
+
+    static let translateSchema: String = json([
+        "type": "object",
+        "properties": ["strings": ["type": "object", "additionalProperties": ["type": "string"]]],
+        "required": ["strings"],
+    ])
+
     static let suggestSchema: String = json([
         "type": "object",
         "properties": ["circles": ["type": "array", "items": circleSchema], "focus": ["type": "string"]],
@@ -205,6 +253,7 @@ enum Prompts {
             "more": ["type": "boolean", "description": "expandable: show the More button"],
             "back": ["type": "boolean", "description": "context needs a visible Back button"],
             "focus": ["type": "string", "description": "id of the circle the user most likely wants next; it starts pre-selected"],
+            "live": ["type": "boolean", "description": "circles would gain from a background pass filling real data (counts, previews, statuses)"],
             "note": ["type": "string", "description": "one-line index description of this action and its outcome, for the memory index"],
             "reuse": ["type": "string", "description": "key of a stored outcome (from memory/index) to show instead of building a new one"],
             "cacheable": ["type": "boolean", "description": "true if repeating the same action may reuse this screen (menus, categories); false for live data or performed actions"],

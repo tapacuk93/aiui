@@ -69,7 +69,11 @@ window.aiui = {
   setup: () => showSetup(),
   get screen() { return current.screen; },
   _event(e) {
-    if (e.type === 'progress') el.status.textContent = e.text;
+    if (e.type !== 'progress') return;
+    el.status.textContent = e.text;
+    // The circle being opened shows what is happening inside it.
+    const hint = pendingCircle && pendingCircle.querySelector('.progress');
+    if (hint) hint.textContent = e.text;
   },
 };
 
@@ -102,13 +106,16 @@ async function ask(evt, { label, replace = false, circle = null } = {}) {
     ...evt,
     path: [...stack.map((e) => e.label), current.label].filter(Boolean),
     screen: summary(current.screen),
+    language: LANG,
   };
+  const att = attentionSummary(current.screen);
+  if (att.length) payload.attention = att;
   const my = ++seq;
   setBusy(true, circle);
   try {
     const { screen, cached } = await call('ai', payload);
     if (my !== seq) return; // cancelled or superseded
-    if (cached) flashStatus('from memory');
+    if (cached) flashStatus(t('fromMemory'));
     const next = normalize(screen);
     if (replace) {
       current.screen = next;
@@ -153,10 +160,19 @@ async function cancel() {
 function setBusy(on, circle) {
   busy = on;
   document.body.classList.toggle('busy', on);
-  if (pendingCircle) pendingCircle.classList.remove('pending');
+  if (pendingCircle) {
+    pendingCircle.classList.remove('pending');
+    const p = pendingCircle.querySelector('.progress'); if (p) p.remove();
+  }
   pendingCircle = on ? circle : null;
-  if (pendingCircle) pendingCircle.classList.add('pending');
-  if (on) el.status.textContent = 'thinking';
+  if (pendingCircle) {
+    pendingCircle.classList.add('pending');
+    const p = document.createElement('span');
+    p.className = 'progress';
+    p.textContent = t('thinking');
+    pendingCircle.querySelector('.face').appendChild(p);
+  }
+  if (on) el.status.textContent = t('thinking');
   else updatePager();
 }
 
@@ -267,7 +283,8 @@ function render() {
   updateGo();
   fitStage();
   layoutPages(typing());
-  if (s.kind === 'circles') initFocus(s);
+  if (s.kind === 'circles') { initFocus(s); maybeRefine(s); }
+  trail.length = 0;
 }
 
 function renderCircles(s) {
@@ -494,6 +511,7 @@ function openCircle(c, node) {
   const text = typing() ? el.write.value.trim() : '';
   const evt = { event: 'open', target: circleSummary(c) };
   if (text) evt.text = text;
+  if (!text && openPrefetched(c, evt)) return;
   ask(evt, { label: c.label, circle: node });
 }
 
@@ -647,11 +665,11 @@ function updateGo() {
   const s = current.screen;
   const text = el.write.value.trim();
   let label = null;
-  if (s.kind === 'text' && text) label = s.go || 'Send';
+  if (s.kind === 'text' && text) label = s.go || t('send');
   else if (typing() && text) label = null; // Enter opens the focused circle
   else if (s.go) label = s.go;
-  else if (anySelected()) label = 'Go';
-  el.go.textContent = label || 'Go';
+  else if (anySelected()) label = t('go');
+  el.go.textContent = label || t('go');
   document.body.classList.toggle('show-go', !!label);
 }
 
@@ -753,7 +771,7 @@ function startWriting(text) {
   document.body.classList.add('typing');
   document.body.classList.toggle('typing-text', s.kind === 'text');
   if (text != null) el.write.value = text;
-  el.write.placeholder = s.kind === 'text' ? '' : 'Type — Enter opens the highlighted circle, ⌥Enter new line, Esc closes';
+  el.write.placeholder = s.kind === 'text' ? '' : t('typeHint');
   el.write.focus();
   autosize();
   fitStage();
@@ -806,7 +824,7 @@ function visibleCircles(s) {
   if (!typing() || !q || s.kind !== 'circles') return s.circles || [];
   const ql = q.toLowerCase();
   const typed = { id: '__typed', typed: true, icon: '✍️', label: q.length > 42 ? q.slice(0, 40) + '…' : q,
-    hint: 'as typed', size: 1.1 };
+    hint: t('asTyped'), size: 1.1 };
   const matches = (s.circles || []).filter((c) => !c.removed)
     .map((c) => [c, matchScore(c, ql)]).filter(([, v]) => v > 0)
     .sort((a, b) => b[1] - a[1]).map(([c]) => c);
@@ -983,6 +1001,194 @@ function toast(msg) {
   toastTimer = setTimeout(() => el.toast.classList.remove('on'), 6000);
 }
 
+// ---------------------------------------------------------------- language
+// The AI writes in the system language (`language` in every event). The app's own words are
+// translated once by the AI and cached per language.
+
+const STR = {
+  go: 'Go', send: 'Send', back: '‹ Back', more: 'More ›', thinking: 'thinking', fromMemory: 'from memory',
+  ready: 'ready', asTyped: 'as typed',
+  typeHint: 'Type — Enter opens the highlighted circle, ⌥Enter new line, Esc closes',
+};
+for (const c of ROOT.circles) { STR['root.' + c.id] = c.label; STR['root.' + c.id + '.hint'] = c.hint; }
+let LANG = (navigator.language || 'en');
+let L10N = null;
+function t(k) { return (L10N && L10N[k]) || STR[k] || k; }
+
+function applyStrings() {
+  el.prev.textContent = t('back');
+  el.more.textContent = t('more');
+  for (const c of ROOT.circles) { c.label = t('root.' + c.id); c.hint = t('root.' + c.id + '.hint'); }
+  // The root screen on display picks up the translated labels.
+  const root = stack.length ? stack[0].screen : current.screen;
+  for (const c of root.circles || []) {
+    if (STR['root.' + c.id]) { c.label = t('root.' + c.id); c.hint = t('root.' + c.id + '.hint'); }
+  }
+  if (!stack.length && current.screen.kind === 'circles' && !typing()) render();
+}
+
+async function initLanguage() {
+  if (NATIVE) { try { LANG = (await call('info')).language || LANG; } catch {} }
+  document.documentElement.lang = LANG;
+  if (/^en\b/i.test(LANG)) return;
+  const store = 'aiui.i18n.' + LANG + '.' + Object.keys(STR).length;
+  try { L10N = JSON.parse(localStorage.getItem(store)); } catch {}
+  if (L10N) return applyStrings();
+  try {
+    const r = await call('translate', { language: LANG, strings: STR });
+    if (r && r.strings) {
+      L10N = r.strings;
+      localStorage.setItem(store, JSON.stringify(L10N));
+      applyStrings();
+    }
+  } catch { /* stay in English */ }
+}
+
+// ---------------------------------------------------------------- cursor trajectories
+// The app follows the pointer: which circle it lingers on or hesitates over (sent to the AI as
+// `attention`), and where it is heading — that circle is highlighted and its screen prefetched in
+// the background, so clicking it is instant.
+
+const trail = [];            // recent pointer samples {x, y, t}
+let heading = null;          // id of the circle the pointer is heading for
+let headingSince = 0;
+let hoverStart = 0, hoverId = null;
+
+function attentionOf(screen) { return screen.attention || (screen.attention = {}); }
+
+function attentionSummary(screen) {
+  const a = screen.attention || {};
+  const byId = new Map((screen.circles || []).map((c) => [c.id, c]));
+  return Object.entries(a).filter(([, v]) => v.ms > 150)
+    .sort((x, y) => y[1].ms - x[1].ms).slice(0, 6)
+    .map(([id, v]) => ({ circle: (byId.get(id) || {}).label || id, dwellMs: Math.round(v.ms), passes: v.passes,
+      ...(v.ms > 900 && !v.opened ? { hesitated: true } : {}) }));
+}
+
+function circleAt(target) {
+  const n = target && target.closest && target.closest('.circle');
+  return n && !n.hidden ? n : null;
+}
+
+el.circles.addEventListener('mouseover', (e) => {
+  const n = circleAt(e.target);
+  if (!n || n.dataset.id === hoverId) return;
+  endHover();
+  hoverId = n.dataset.id; hoverStart = performance.now();
+  if (!typing() && n.dataset.id !== focusedId()) setFocus(n.dataset.id, true); // the focus ring follows the pointer
+});
+el.circles.addEventListener('mouseleave', endHover);
+function endHover() {
+  if (!hoverId) return;
+  const a = attentionOf(current.screen);
+  const v = a[hoverId] || (a[hoverId] = { ms: 0, passes: 0 });
+  v.ms += performance.now() - hoverStart; v.passes += 1;
+  hoverId = null;
+}
+
+document.addEventListener('mousemove', (e) => {
+  const now = performance.now();
+  trail.push({ x: e.clientX, y: e.clientY, t: now });
+  while (trail.length > 10 || (trail.length && now - trail[0].t > 250)) trail.shift();
+  if (current.screen.kind !== 'circles' || busy) return;
+  predictTarget(now);
+}, { passive: true });
+
+// Extrapolates the pointer's motion: the circle closest to its path, ahead of it, is the target.
+function predictTarget(now) {
+  if (trail.length < 4) return;
+  const a = trail[0], b = trail[trail.length - 1];
+  const dt = b.t - a.t || 1, vx = (b.x - a.x) / dt, vy = (b.y - a.y) / dt;
+  const speed = Math.hypot(vx, vy);
+  let best = null, bestScore = Infinity;
+  const over = circleAt(document.elementFromPoint(b.x, b.y));
+  if (over && speed < 0.15) best = over; // resting on a circle
+  else if (speed > 0.15) {
+    for (const n of el.circles.children) {
+      if (n.hidden) continue;
+      const r = n.getBoundingClientRect();
+      const dx = r.left + r.width / 2 - b.x, dy = r.top + r.height / 2 - b.y;
+      const dist = Math.hypot(dx, dy);
+      if (dist > 650) continue;
+      const cos = (dx * vx + dy * vy) / (dist * speed || 1);
+      if (cos < 0.92) continue;
+      const score = dist * (2 - cos);
+      if (score < bestScore) { bestScore = score; best = n; }
+    }
+  }
+  const id = best ? best.dataset.id : null;
+  if (id !== heading) {
+    for (const n of el.circles.children) n.classList.toggle('heading', n.dataset.id === id);
+    heading = id; headingSince = now;
+  } else if (id && now - headingSince > 260 && speed < 0.6) {
+    prefetchCircle(id);
+  }
+}
+
+// ---------------------------------------------------------------- prefetch
+let prefetching = null; // circle id in flight
+
+function prefetchCircle(id) {
+  const s = current.screen;
+  if (s.local || typing() || busy || prefetching === id) return;
+  const c = (s.circles || []).find((x) => x.id === id && !x.removed);
+  if (!c || c.typed || c.plus === 'more') return;
+  const pf = s.prefetch || (s.prefetch = {});
+  if (pf[id]) return;
+  if (prefetching) call('cancel', { scout: true }).catch(() => {});
+  prefetching = id;
+  const evt = { event: 'open', target: circleSummary(c), path: [...stack.map((e) => e.label), current.label].filter(Boolean),
+    screen: summary(s), language: LANG };
+  const att = attentionSummary(s);
+  if (att.length) evt.attention = att;
+  call('prefetch', evt).then((screen) => {
+    if (!screen || !screen.kind) return;
+    pf[id] = { screen, at: Date.now(), evt };
+    const n = [...el.circles.children].find((x) => x.dataset.id === id);
+    if (n && current.screen === s) n.classList.add('ready');
+  }).catch(() => {}).finally(() => { if (prefetching === id) prefetching = null; });
+}
+
+// Shows a prefetched screen (fresh within 3 minutes) instead of asking; records it as a turn.
+function openPrefetched(c, evt) {
+  const s = current.screen;
+  const p = s.prefetch && s.prefetch[c.id];
+  if (!p || Date.now() - p.at > 180000) return false;
+  delete s.prefetch[c.id];
+  const a = attentionOf(s)[c.id]; if (a) a.opened = true;
+  const { note, cacheable, reuse, ...screen } = p.screen;
+  call('adopt', { ...p.evt, ...evt, outcome: p.screen }).catch(() => {});
+  stack.push(current);
+  current = { screen: normalize(screen), label: c.label };
+  stopWriting(true);
+  render();
+  flashStatus(t('ready'));
+  return true;
+}
+
+// ---------------------------------------------------------------- live refinement
+// Screens the AI marks `live` get a background pass that improves circles in place (real counts,
+// previews, sharper labels). Changed circles update where they are, with a short glow.
+
+function maybeRefine(s) {
+  if (!s.live || s.refined || s.local) return;
+  s.refined = true;
+  call('refine', { path: [...stack.map((e) => e.label), current.label].filter(Boolean), screen: summary(s), language: LANG })
+    .then((r) => {
+      for (const patch of (r && r.circles) || []) {
+        const c = (s.circles || []).find((x) => x.id === patch.id);
+        if (!c) continue;
+        let changed = false;
+        for (const k of ['label', 'hint', 'icon', 'value']) {
+          if (patch[k] != null && patch[k] !== c[k]) { c[k] = patch[k]; changed = true; }
+        }
+        if (!changed || current.screen !== s || typing()) continue;
+        const n = [...el.circles.children].find((x) => x.dataset.id === c.id);
+        if (n) { refresh(c, n); const m = [...el.circles.children].find((x) => x.dataset.id === c.id); if (m) m.classList.add('improved'); }
+      }
+    }).catch(() => {});
+}
+
 render();
 // No AI available yet: ask for one.
-call('engine', { op: 'status' }).then((st) => { if (!st.active) showSetup(); }).catch(() => {});
+call('engine', { op: 'status' }).then((st) => { if (!st.active) showSetup(); else initLanguage(); }).catch(() => {});
