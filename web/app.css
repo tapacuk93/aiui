@@ -67,7 +67,7 @@ html, body {
 #top {
   position: fixed;
   inset: 0 0 auto 0;
-  padding: 14px 28px 0;
+  padding: calc(14px + env(safe-area-inset-top)) 28px 0;
   text-align: center;
   pointer-events: none;
   z-index: 3;
@@ -347,7 +347,7 @@ body.typing-text #write {
 
 #close {
   position: fixed;
-  top: 14px;
+  top: calc(14px + env(safe-area-inset-top));
   right: 18px;
   z-index: 7;
   width: 34px;
@@ -502,7 +502,7 @@ html.web #webnote:hover { color: var(--accent); }
 
 #who {
   position: fixed;
-  top: 12px;
+  top: calc(12px + env(safe-area-inset-top));
   left: 50%;
   transform: translateX(-50%);
   z-index: 8;

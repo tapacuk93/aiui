@@ -1,9 +1,10 @@
 // Renders the AI UI app icon (1024px PNG): a circle with its two ears, × and +.
-// Usage: swift make_icon.swift out.png
+// Usage: swift make_icon.swift out.png [--square]   (--square: opaque full-bleed, for iOS)
 import AppKit
 
 let S: CGFloat = 1024
 let out = CommandLine.arguments[1]
+let square = CommandLine.arguments.contains("--square")
 let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(S), pixelsHigh: Int(S), bitsPerSample: 8,
                            samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB,
                            bytesPerRow: 0, bitsPerPixel: 0)!
@@ -13,10 +14,15 @@ func rgb(_ r: CGFloat, _ g: CGFloat, _ b: CGFloat, _ a: CGFloat = 1) -> CGColor 
 let space = CGColorSpaceCreateDeviceRGB()
 
 // Squircle tile (macOS grid: 824px tile centred, ~185px corner radius), with a soft drop shadow.
+// iOS: the tile fills the whole opaque canvas (the system applies the mask).
+if square {
+    ctx.translateBy(x: 512, y: 512); ctx.scaleBy(x: 1024 / 824, y: 1024 / 824); ctx.translateBy(x: -512, y: -512)
+}
 let tile = CGRect(x: 100, y: 100, width: 824, height: 824)
-let tilePath = CGPath(roundedRect: tile, cornerWidth: 186, cornerHeight: 186, transform: nil)
+let tilePath = square ? CGPath(rect: tile, transform: nil)
+                      : CGPath(roundedRect: tile, cornerWidth: 186, cornerHeight: 186, transform: nil)
 ctx.saveGState()
-ctx.setShadow(offset: CGSize(width: 0, height: -12), blur: 28, color: rgb(0, 0, 0, 0.35))
+if !square { ctx.setShadow(offset: CGSize(width: 0, height: -12), blur: 28, color: rgb(0, 0, 0, 0.35)) }
 ctx.addPath(tilePath); ctx.setFillColor(rgb(11, 11, 15)); ctx.fillPath()
 ctx.restoreGState()
 ctx.saveGState()

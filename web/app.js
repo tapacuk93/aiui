@@ -46,10 +46,19 @@ const paging = { loading: false, failed: false, token: 0, n: 0 };
 // Inside the Mac app the page is served from aiui:// and /api/* is native. Anywhere else this is
 // the web version, answered by WebBackend (backend.js) in the browser.
 const NATIVE = location.protocol === 'aiui:';
+// The iOS app answers through a WebKit message handler instead of the aiui:// scheme.
+const IOS_BRIDGE = NATIVE && window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.aiui;
 document.documentElement.classList.toggle('web', !NATIVE);
+document.documentElement.classList.toggle('ios', !!IOS_BRIDGE);
 
 async function call(name, body) {
   if (!NATIVE) return WebBackend.call(name, body || {}, (text) => aiui._event({ type: 'progress', text }));
+  if (IOS_BRIDGE) {
+    const r = await IOS_BRIDGE.postMessage({ name, body: body || {} });
+    const data = (r && r.data) || {};
+    if (!r || r.status >= 300 || data.error) throw new Error(data.error || ('HTTP ' + (r && r.status)));
+    return data;
+  }
   const r = await fetch('/api/' + name, { method: 'POST', body: JSON.stringify(body || {}) });
   const data = await r.json().catch(() => ({ error: 'bad response' }));
   if (!r.ok || data.error) throw new Error(data.error || ('HTTP ' + r.status));
@@ -199,9 +208,13 @@ async function showSetup() {
   let st;
   try { st = await call('engine', { op: 'status' }); } catch (e) { return toast(e.message); }
   const circles = (st.options || []).map((o) => ({
-    id: 'use:' + o.id, label: o.label, icon: o.kind === 'cli' ? '⌨️' : '🔑',
-    hint: o.kind === 'cli' ? 'agent CLI on this Mac' : 'saved API key',
+    id: o.kind === 'aicoin' ? 'aicoin' : 'use:' + o.id, label: o.label,
+    icon: o.kind === 'cli' ? '⌨️' : o.kind === 'aicoin' ? '🪙' : '🔑',
+    hint: o.kind === 'cli' ? 'agent CLI on this Mac'
+      : o.kind === 'aicoin' ? (o.balance != null ? `${Math.floor(o.balance)} coins` : 'free coins to start, no key')
+      : 'saved API key',
     selected: !!(st.active && st.active.id === o.id),
+    size: o.kind === 'aicoin' ? 1.15 : 1,
   }));
   circles.push({ id: 'key', label: 'API Key', icon: '🔑', hint: 'any provider', size: 1.1 });
   if ((st.options || []).some((o) => o.kind === 'key')) circles.push({ id: 'forget', label: 'Forget Key', icon: '🗑️', size: 0.8 });
@@ -213,7 +226,9 @@ async function showSetup() {
         'Web version: your API key stays in this browser and goes only to its provider. No system access here — the AI UI Mac app has it.'
       : st.active
         ? `Using ${st.active.label}. Pick another, or add an API key.`
-        : 'No AI command-line tool was found on this Mac. Paste an API key from any provider to continue.',
+        : IOS_BRIDGE
+          ? 'Choose how AI UI reaches AI: AICoin — free coins to start, no account or key — or your own API key.'
+          : 'No AI command-line tool was found on this Mac. Use AICoin, or paste an API key from any provider.',
     circles,
   }, 'AI');
 }
@@ -253,12 +268,13 @@ async function localOpen(c) {
       kind: 'text', local: 'key', go: 'Connect', title: 'Paste an API key',
       message: 'Anthropic, OpenAI, Google, OpenRouter, Groq or xAI is recognised from the key. ' +
         'Any other OpenAI-compatible provider: <base-url> <key> [model]. ' +
-        (NATIVE ? 'Stored in the macOS Keychain.' : 'Stored only in this browser.'),
+        (!NATIVE ? 'Stored only in this browser.' : 'Stored in your iCloud Keychain, shared with your other devices.'),
       text: '',
     }, 'API Key');
   }
   try {
     if (c.id === 'forget') await call('engine', { op: 'forget' });
+    else if (c.id === 'aicoin') { flashStatus('🪙 …'); await call('engine', { op: 'aicoin' }); }
     else await call('engine', { op: 'use', id: c.id.slice(4) });
   } catch (e) { return toast(e.message); }
   if (c.id === 'forget') { stack.pop(); return showSetup(); }
