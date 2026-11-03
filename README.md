@@ -55,6 +55,14 @@ Deploy: run `deploy/request-cert.sh` once and wait for ISSUED, then `deploy/depl
 CloudFormation stack `aiui-web` (private S3 bucket, CloudFront with origin access control, Route 53
 alias in the `oeaio.com` zone).
 
+Auto-deploy: `.github/workflows/deploy-web.yml` deploys on every push to `main` that touches the web
+version, through an AWS role assumed with GitHub OIDC (no stored keys). One-time setup:
+
+    aws cloudformation deploy --region us-east-1 --stack-name aiui-github \
+      --template-file deploy/github-role.yaml --capabilities CAPABILITY_NAMED_IAM
+    gh variable set AWS_DEPLOY_ROLE_ARN --body "$(aws cloudformation describe-stacks --region us-east-1 \
+      --stack-name aiui-github --query 'Stacks[0].Outputs[0].OutputValue' --output text)"
+
 ## Build
 
     ./build.sh          # downloads CEF 156 (arm64) into vendor/ the first time, builds build/AI UI.app

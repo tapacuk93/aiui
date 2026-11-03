@@ -1,0 +1,52 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Lets GitHub Actions in tapacuk93/aiui (main branch only) deploy the web version: OIDC trust,
+  no stored keys. Permissions: write the site bucket, invalidate its distribution, read the
+  aiui-web stack outputs.
+
+Parameters:
+  DistributionId:
+    Type: String
+    Default: E3TO8SA4TCZSNG
+
+Resources:
+  GitHubOIDC:
+    Type: AWS::IAM::OIDCProvider
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList: [sts.amazonaws.com]
+
+  DeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: aiui-github-deploy
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal: {Federated: !Ref GitHubOIDC}
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+                token.actions.githubusercontent.com:sub: repo:tapacuk93/aiui:ref:refs/heads/main
+      Policies:
+        - PolicyName: deploy-web
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action: [s3:ListBucket]
+                Resource: arn:aws:s3:::aiui-oeaio-site
+              - Effect: Allow
+                Action: [s3:PutObject, s3:DeleteObject, s3:GetObject]
+                Resource: arn:aws:s3:::aiui-oeaio-site/*
+              - Effect: Allow
+                Action: [cloudfront:CreateInvalidation]
+                Resource: !Sub arn:aws:cloudfront::${AWS::AccountId}:distribution/${DistributionId}
+              - Effect: Allow
+                Action: [cloudformation:DescribeStacks]
+                Resource: !Sub arn:aws:cloudformation:us-east-1:${AWS::AccountId}:stack/aiui-web/*
+      Tags: [{Key: project, Value: aiui}]
+
+Outputs:
+  RoleArn: {Value: !GetAtt DeployRole.Arn}

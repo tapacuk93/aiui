@@ -1,7 +1,8 @@
 #!/bin/sh
 # Deploys the web version to https://aiui.oeaio.com.
-#   deploy/deploy-web.sh          build web/ (+ prompts.json from the Swift prompts), create/update
-#                                 the stack once the certificate is issued, sync, invalidate
+#   deploy/deploy-web.sh             build web/ (+ prompts.json from the Swift prompts), create/update
+#                                    the stack once the certificate is issued, sync, invalidate
+#   deploy/deploy-web.sh --content   build, sync, invalidate only (what GitHub Actions runs)
 # First run: deploy/request-cert.sh, wait until it prints ISSUED (a few minutes), then this.
 set -eu
 export AWS_REGION=us-east-1
@@ -16,11 +17,13 @@ rm -rf "$DIST" && cp -R "$ROOT/web" "$DIST"
 "$ROOT/build/export-prompts" "$DIST/prompts.json"
 
 # 2. infrastructure (needs the issued certificate)
+if [ "${1:-}" != "--content" ]; then
 CERT=$(aws acm list-certificates --certificate-statuses ISSUED \
   --query "CertificateSummaryList[?DomainName=='aiui.oeaio.com'].CertificateArn | [0]" --output text)
 [ "$CERT" != "None" ] && [ -n "$CERT" ] || { echo "no ISSUED certificate yet - run deploy/request-cert.sh and wait" >&2; exit 1; }
 aws cloudformation deploy --stack-name $STACK --template-file "$ROOT/deploy/stack.yaml" \
   --parameter-overrides CertificateArn="$CERT" --no-fail-on-empty-changeset
+fi
 
 # 3. upload (short cache: the files are not content-hashed) and invalidate
 aws s3 sync "$DIST" s3://aiui-oeaio-site --delete --cache-control 'public, max-age=60' --only-show-errors

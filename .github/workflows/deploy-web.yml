@@ -1,0 +1,31 @@
+# Deploys the web version (https://aiui.oeaio.com) on every push to main that touches it.
+name: Deploy web
+
+on:
+  push:
+    branches: [main]
+    paths: [web/**, Sources/App/Prompts.swift, tools/export-prompts/**, deploy/deploy-web.sh, .github/workflows/deploy-web.yml]
+  workflow_dispatch:
+
+permissions:
+  id-token: write   # OIDC: assume the AWS role without stored keys
+  contents: read
+
+concurrency:
+  group: deploy-web
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: vars.AWS_DEPLOY_ROLE_ARN != ''   # set once deploy/github-role.yaml is deployed
+    runs-on: macos-latest   # swiftc builds prompts.json from Sources/App/Prompts.swift
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: us-east-1
+      - name: Check syntax
+        run: node --check web/app.js && node --check web/backend.js
+      - name: Build and deploy
+        run: deploy/deploy-web.sh --content
