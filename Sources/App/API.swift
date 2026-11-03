@@ -725,6 +725,7 @@ final class API: NSObject {
         case "usage":
             switch input["op"] as? String ?? "record" {
             case "list": send(["scenes": usage.list()])
+            case "applets": send(["applets": usage.applets(limit: 300)])   // titles only (typing proposals)
             case "improve":                       // now, for the scene given (Settings, quick action)
                 if let k = input["key"] as? String { usage.improveNow(usage.canonical(k)) }
                 improveIfDue(); send(["ok": true])

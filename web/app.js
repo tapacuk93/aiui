@@ -928,6 +928,7 @@ function circleEl(c, i) {
 function openCircle(c, node) {
   if (shownAt) { observe('decideMs', performance.now() - shownAt); shownAt = 0; }
   if (c.typed) return submitText(node);
+  if (c.known) { stopWriting(true); return c.open(); }
   if (current.screen.local) return localOpen(c);
   const text = typing() ? el.write.value.trim() : '';
   const evt = { event: 'open', target: circleSummary(c) };
@@ -1890,8 +1891,48 @@ function visibleCircles(s) {
     .map((c) => [c, matchScore(c, ql)]).filter(([, v]) => v > 0)
     .sort((a, b) => b[1] - a[1]).map(([c]) => c);
   const seen = new Set(matches.map((c) => c.label.toLowerCase()));
+  // Already available elsewhere (app screens, the root, screens in this and other paths, applets).
+  const known = knownCircles().map((c) => [c, matchScore(c, ql)]).filter(([c, v]) => v >= 2 && !seen.has(c.label.toLowerCase()))
+    .sort((a, b) => b[1] - a[1]).map(([c]) => c).filter((c) => seen.add(c.label.toLowerCase())).slice(0, 6);
   const sugg = live.circles.filter((c) => !seen.has(c.label.toLowerCase()) && seen.add(c.label.toLowerCase()));
-  return [typed, ...matches, ...sugg];
+  return [typed, ...matches, ...known, ...sugg];
+}
+
+// Circles that already exist somewhere the user can go: proposed while typing, opened directly.
+let knownApplets = [], knownAppletsAt = 0;
+function refreshKnownApplets() {
+  if (Date.now() - knownAppletsAt < 60000) return;
+  knownAppletsAt = Date.now();
+  callRaw('usage', { op: 'applets' }).then((r) => { knownApplets = (r && r.applets) || []; if (typing()) rerenderLive(); }).catch(() => {});
+}
+function knownCircles() {
+  const out = [];
+  const add = (c, open) => out.push({ ...c, id: 'k~' + out.length, known: true, open, size: 0.9 });
+  const appScreens = [['📶', t('network'), () => showNetwork()], ['ⓘ', t('actScreen'), () => toggleActivityScreen(true)],
+    ['⚙️', t('system'), () => showSystem()], ['📦', t('jsLibs'), () => showJSLibraries()], ['🧰', t('utilityLibrary') , () => showLibrary()],
+    ['👤', t('profileTitle'), () => showProfile()], ['🤖', 'AI', () => showSetup()]];
+  for (const [icon, label, open] of appScreens) add({ icon, label, hint: t('appName') }, open);
+  if (stack.length) for (const c of ROOT.circles) add({ icon: c.icon, label: c.label, hint: t('appName') }, () => openKnown(null, c));
+  const where = (labels) => labels.filter(Boolean).slice(-2).join(' › ');
+  stack.forEach((entry, i) => { for (const c of (entry.screen.circles || []).filter((x) => !x.removed && !x.typed))
+    add({ icon: c.icon, label: c.label, hint: where([...stack.slice(1, i + 1).map((e) => e.label)]) || t('appName') }, () => openKnown({ level: i }, c)); });
+  paths.forEach((p, pi) => { for (const entry of [...p.stack, p.current]) for (const c of (entry.screen.circles || []).filter((x) => !x.removed && !x.typed))
+    add({ icon: c.icon, label: c.label, hint: where(pathLabels(p)) }, () => openKnown({ path: pi, entry }, c)); });
+  for (const a of knownApplets) if (a.key !== current.key) add({ icon: '🧩', label: a.title, hint: `${a.opens || 0} ×` }, () => openApplet(a.key, a.title));
+  return out;
+}
+// Goes where a known circle lives (a level of this path, another path, or the root) and opens it.
+function openKnown(at, c) {
+  stopWriting(true);
+  if (!at) home();
+  else if (at.path != null) {
+    switchPath(at.path);
+    const i = stack.indexOf(at.entry);
+    if (i >= 0) goTo(i);
+  } else goTo(at.level);
+  const n = [...el.circles.children].find((x) => x.dataset.id === c.id);
+  const real = (current.screen.circles || []).find((x) => x.id === c.id) || c;
+  openCircle(real, n || null);
 }
 
 function rerenderLive() {
@@ -1934,6 +1975,7 @@ function onInput(ev) {
   if (s.kind !== 'circles') return;
   const q = typedText().trim();
   if (!q) { live.circles = []; live.focus = '__typed'; }
+  else refreshKnownApplets();
   if (live.q !== q) live.understood = null; // the text changed: back to the raw text until re-understood
   if (!focusManual) live.focus = '__typed';
   focusManual = false;
@@ -2207,7 +2249,7 @@ const STR = {
   qaCancel: 'Cancel', qaPause: 'Pause', qaResume: 'Resume', qaStop: 'Stop', qaSkip: 'Skip',
   qaPauseImprove: 'Pause improvements', qaResumeImprove: 'Resume improvements', qaImproveNow: 'Improve now',
   scheduled: 'Scheduled', nextImprove: 'next improvement', improvesPaused: 'improvements paused', dueNow: 'due now',
-  nothingRunning: 'Nothing running', versionWord: 'version',
+  nothingRunning: 'Nothing running', versionWord: 'version', utilityLibrary: 'Utility Library', profileTitle: 'What AI UI knows about you',
   network: 'Network', netScan: 'Looking for networks…', netHidden: 'macOS shows network names only with Location access: allow AI UI in System Settings › Privacy & Security › Location Services.',
   netPassword: 'Password for', netConnected: 'connected', netJoining: 'joining', netOn: 'Turn Wi-Fi on', netOff: 'Turn Wi-Fi off',
   netRescan: 'Scan again', netKnown: 'saved', netSecured: 'secured', netOpen: 'open', netNone: 'No networks found',
