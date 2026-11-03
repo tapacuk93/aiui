@@ -127,6 +127,9 @@ final class APIEngine: AIEngine {
     /// The last turn ended with a `screen` call that still needs its tool result.
     private var openScreenCall: String?
 
+    /// Thinking effort for Anthropic models ("low" for quick interim screens).
+    var effort = "medium"
+
     init(key: Provider.Key, persistent: Bool, systemPrompt: String, schema: String) {
         self.key = key; self.persistent = persistent; self.systemPrompt = systemPrompt
         self.schema = (try? JSONSerialization.jsonObject(with: Data(schema.utf8))) as? [String: Any] ?? [:]
@@ -228,7 +231,7 @@ final class APIEngine: AIEngine {
             var body: [String: Any] = [
                 "model": key.model, "max_tokens": 16000, "system": instructions,
                 "tools": tools, "tool_choice": ["type": "auto"], "messages": convo,
-                "output_config": ["effort": "medium"],
+                "output_config": ["effort": effort],
             ]
             var headers = ["x-api-key": key.key, "anthropic-version": "2026-10-21"].merging(key.headers ?? [:]) { $1 }
             if usesFallbacks {

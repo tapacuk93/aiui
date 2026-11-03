@@ -125,13 +125,60 @@ async function ask(evt, { label, replace = false, circle = null, retried = false
   if (who.suspect) payload.userCheck = { suspect: true, reasons: who.suspect };
   const my = ++seq;
   setBusy(true, circle);
+  // Time budget, as the screen declared it for this action (or the circle's own `expect`):
+  // when it runs out → `interim` (a quick screen now, the full one replaces it in place),
+  // `wait` (keep waiting) or `cancel`. A hard limit ends any wait.
+  const policy = timeoutFor(evt, circle);
+  let interim = null;     // the history entry showing the interim screen
+  const started = performance.now();
+  const countdown = setInterval(() => {
+    if (my !== seq) return clearInterval(countdown);
+    const left = Math.max(0, Math.round(policy.seconds - (performance.now() - started) / 1000));
+    if (policy.label) el.status.textContent = policy.label + (left ? ` · ${left}s` : ' · …');
+  }, 1000);
+  const quickTimer = setTimeout(async () => {
+    if (my !== seq || replace) return;
+    if (policy.then === 'wait') { flashStatus((policy.label ? policy.label + ' · ' : '') + t('stillWorking')); return; }
+    if (policy.then === 'cancel') {
+      call('cancel').catch(() => {});
+      seq++; setBusy(false);
+      return toast(policy.label ? `${policy.label}: ${t('tooLong')}` : t('tooLong'));
+    }
+    try {
+      const q = await call('quick', payload);
+      if (my !== seq || interim || !busy || !q || !q.kind) return;
+      const { note, cacheable, reuse, publish, ...screen } = q;
+      stack.push(current);
+      interim = { screen: { ...normalize(screen), interim: true }, label: label || screen.title || evt.event };
+      current = interim;
+      stopWriting(true);
+      setBusy(false);
+      document.body.classList.add('updating');
+      render();
+    } catch {}
+  }, policy.seconds * 1000);
+  const hardTimer = setTimeout(() => {
+    if (my !== seq) return;
+    call('cancel').catch(() => {});
+    seq++;
+    setBusy(false);
+    document.body.classList.remove('updating');
+    if (!interim) toast(t('tooLong'));
+  }, HARD_LIMIT_MS);
   try {
     const { screen, cached, published } = await call('ai', payload);
     if (my !== seq) return; // cancelled or superseded
-    if (!cached) learnSoon();
-    if (published) setTimeout(() => flashStatus('🧩 +' + published), 300);
     if (cached) flashStatus(t('fromMemory'));
+    if (published) setTimeout(() => flashStatus('🧩 +' + published), 300);
+    if (!cached) learnSoon();
     const next = normalize(screen);
+    if (interim) {
+      // Replace the interim screen wherever it is now: on screen, or back in the history.
+      interim.screen = next;
+      document.body.classList.remove('updating');
+      if (current === interim && !typing()) { render(); flashStatus(t('updated')); }
+      return;
+    }
     if (replace) {
       current.screen = next;
     } else {
@@ -145,13 +192,29 @@ async function ask(evt, { label, replace = false, circle = null, retried = false
       if (e.message === 'no-ai') { setBusy(false); return showSetup(); }
       // Cancelled by something other than the user (another request took the AI session):
       // try once more instead of showing an error.
-      if (e.message === 'cancelled' && !retried) { setBusy(false); return ask(evt, { label, replace, circle, retried: true }); }
-      toast(e.message);
+      if (e.message === 'cancelled' && !retried && !interim) { setBusy(false); return ask(evt, { label, replace, circle, retried: true }); }
+      if (!interim) toast(e.message);
     }
   } finally {
-    if (my === seq) setBusy(false);
+    clearTimeout(quickTimer);
+    clearTimeout(hardTimer);
+    clearInterval(countdown);
+    if (my === seq) { setBusy(false); document.body.classList.remove('updating'); }
   }
 }
+
+let QUICK_AFTER_MS = 6000;       // default budget: no screen yet → interim screen
+
+// The budget for an action: the circle's `expect`, else the screen's `timeouts[event]`,
+// else its `timeouts.default`, else 6 s → interim.
+function timeoutFor(evt, circleNode) {
+  const s = current.screen;
+  const c = circleNode && (s.circles || []).find((x) => x.id === circleNode.dataset.id);
+  const p = (c && c.expect) || (s.timeouts && (s.timeouts[evt.event] || s.timeouts.default)) || {};
+  const seconds = Math.max(0.2, Math.min(Number(p.seconds) || QUICK_AFTER_MS / 1000, HARD_LIMIT_MS / 1000 - 5));
+  return { seconds, then: ['interim', 'wait', 'cancel'].includes(p.then) ? p.then : 'interim', label: p.label || '' };
+}
+const HARD_LIMIT_MS = 150000;    // give up on the full answer
 
 function normalize(s) {
   s = s && typeof s === 'object' ? s : {};
@@ -562,6 +625,7 @@ function circleEl(c, i) {
       <span class="label">${esc(c.label)}</span>
       ${c.hint && size >= 0.9 ? `<span class="hint">${esc(c.hint)}</span>` : ''}
       ${showValue ? `<span class="value">${esc(String(c.value))}</span>` : ''}
+      ${c.expect && c.expect.seconds >= 8 ? `<span class="expect" title="${esc(c.expect.label || '')}">⏱ ${fmtSecs(c.expect.seconds)}</span>` : ''}
     </div>
     <button class="ear plus" type="button" title="Add / select / increase">+</button>`;
 
@@ -775,6 +839,8 @@ function updateGo() {
   else if (s.go) label = s.go;
   else if (anySelected()) label = t('go');
   el.go.textContent = label || t('go');
+  const goT = s.timeouts && (s.timeouts.go || s.timeouts.default);
+  if (label && goT && goT.seconds >= 8 && !typing()) el.go.textContent += ' · ⏱ ' + fmtSecs(goT.seconds);
   document.body.classList.toggle('show-go', !!label);
 }
 
@@ -1131,6 +1197,8 @@ document.addEventListener('keydown', onKey);
 
 // ---------------------------------------------------------------- misc
 
+function fmtSecs(n) { n = Math.round(n); return n >= 90 ? Math.round(n / 60) + 'm' : n + 's'; }
+
 function esc(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
@@ -1164,6 +1232,7 @@ const STR = {
   whoGuestMsg: 'Guest mode: no personal history is used.',
   itsMe: "It's me", itsMeHint: 'keep going, learn this', someoneElse: 'Someone else', someoneElseHint: 'guest mode',
   aboutYou: 'About you', aboutYouEmpty: 'Nothing learned yet. It builds up as you use the app.',
+  tooLong: 'This took too long — try again, or ask differently.', stillWorking: 'still working', updated: 'updated', updating: 'updating…',
   library: 'Utility library', libraryMsg: 'Code the AI wrote once and reuses across screens. Reviewed now and then.',
   libraryEmpty: 'Empty so far: screens publish reusable code here as the AI builds them.',
   fullscreen: 'Full screen',

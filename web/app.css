@@ -552,3 +552,33 @@ body.immersive #top, body.immersive #bottom, body.immersive #webnote, body.immer
 body.immersive #stage { padding: 12px; }
 body.immersive #full { opacity: .35; }
 body.immersive #full:hover { opacity: 1; }
+
+/* ---------- interim screen while the full one is on its way ---------- */
+
+body.updating #status { opacity: 1; }
+body.updating #title::after {
+  content: '';
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-left: 10px;
+  vertical-align: middle;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: pulse-dot 1.1s ease-in-out infinite;
+}
+@keyframes pulse-dot { 50% { opacity: .25; transform: scale(.7); } }
+
+.expect {
+  position: absolute;
+  top: -6px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 1px 7px;
+  border-radius: 99px;
+  background: var(--chip);
+  border: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 10px;
+  white-space: nowrap;
+}

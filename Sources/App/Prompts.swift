@@ -132,6 +132,15 @@ enum Prompts {
     (or comes from `uses` if the library has it); only the screen-specific part stays in `html`. \
     A librarian reviews the library now and then.
 
+    Timeouts: you decide how this screen handles slow answers. Set `timeouts` per action (open, \
+    go, text, more, default) and `expect` on circles whose action is heavy: `seconds` is the budget, \
+    `then` what the app does when it runs out — `interim` (a quick screen now, replaced by the full \
+    one; right for most), `wait` (keep waiting; right when a partial answer would mislead, e.g. a \
+    payment or a long computation), `cancel` (stop; right when a late answer is useless) — and \
+    `label` says what is happening. The app shows the budget on the circle or Go button and counts \
+    down with your label. Without them: 6 seconds, then interim. Be realistic: a lookup across \
+    mail or files takes 20–60 s, a plain menu a few seconds.
+
     Full screen: every game, video/media player, canvas, drawing or long reading view must set \
     `fullscreen: true`; the app then offers a full-screen button.
 
@@ -258,6 +267,16 @@ enum Prompts {
         "required": ["updates"],
     ])
 
+    static let quick = """
+
+    ## Quick mode
+    You are now the quick responder, a separate call made because the full answer to this event \
+    is taking long. Return a useful screen within seconds from what you already know: no tools, \
+    no lookups. Prefer circles (likely next steps, the obvious options) over HTML; say in \
+    `message` that more is on the way if the full answer will add real data. The full screen \
+    replaces yours when it is ready. Do not perform any actions.
+    """
+
     static let librarian = """
 
     ## Librarian mode
@@ -330,6 +349,19 @@ enum Prompts {
         String(decoding: try! JSONSerialization.data(withJSONObject: o, options: [.sortedKeys]), as: UTF8.self)
     }
 
+    /// How long an action may take and what the app does when that budget runs out.
+    static let timeoutSchema: [String: Any] = [
+        "type": "object",
+        "description": "expected duration of this action and what to do if it runs out",
+        "properties": [
+            "seconds": ["type": "number", "description": "budget before `then` applies"],
+            "then": ["type": "string", "enum": ["interim", "wait", "cancel"],
+                     "description": "interim: show a quick screen now and replace it when the full one is ready; wait: keep waiting (up to the hard limit); cancel: stop and show `label`"],
+            "label": ["type": "string", "description": "what is happening, shown with the countdown (e.g. 'searching mail')"],
+        ] as [String: Any],
+        "required": ["seconds", "then"],
+    ]
+
     static let circleSchema: [String: Any] = [
         "type": "object",
         "properties": [
@@ -374,6 +406,12 @@ enum Prompts {
                 ] as [String: Any],
             ] as [String: Any],
             "uses": ["type": "array", "items": ["type": "string"], "description": "library module ids (or path/name) this html screen needs; the app injects them before its html"],
+            "timeouts": [
+                "type": "object",
+                "description": "per action on this screen: how long it may take and what to do when that runs out",
+                "properties": ["open": timeoutSchema, "go": timeoutSchema, "text": timeoutSchema,
+                               "more": timeoutSchema, "default": timeoutSchema] as [String: Any],
+            ] as [String: Any],
             "fullscreen": ["type": "boolean", "description": "this screen is best experienced full screen (games, media, reading, canvases); the app offers a full-screen button"],
             "live": ["type": "boolean", "description": "circles would gain from a background pass filling real data (counts, previews, statuses)"],
             "note": ["type": "string", "description": "one-line index description of this action and its outcome, for the memory index"],

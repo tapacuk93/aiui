@@ -42,6 +42,48 @@ const result = await ev(`(async () => {
   await step('setup screen', () => showSetup());
   await step('who screen', () => showWhoScreen());
   await step('home', () => home());
+  await step('slow answer: interim screen, then replaced in place', async () => {
+    QUICK_AFTER_MS = 200;
+    const realCall = WebBackend.call;
+    WebBackend.call = async (name, body) => {
+      if (name === 'ai') { await new Promise(r => setTimeout(r, 900)); return { screen: { kind: 'circles', title: 'Full', circles: [{ id: 'f', label: 'F' }] } }; }
+      if (name === 'quick') return { kind: 'circles', title: 'Quick', circles: [{ id: 'q', label: 'Q' }] };
+      return realCall(name, body);
+    };
+    const done = ask({ event: 'open', target: { label: 'Slow' } }, { label: 'Slow' });
+    await new Promise(r => setTimeout(r, 500));
+    const mid = aiui.screen.title + (document.body.classList.contains('updating') ? '+updating' : '');
+    await done;
+    const end = aiui.screen.title + (document.body.classList.contains('updating') ? '+updating' : '');
+    WebBackend.call = realCall; QUICK_AFTER_MS = 6000;
+    if (mid !== 'Quick+updating' || end !== 'Full') throw new Error('interim ' + mid + ' → ' + end);
+  });
+  const slowFull = async (screenTimeouts, expectToast) => {
+    const realCall = WebBackend.call;
+    let quickCalled = false;
+    WebBackend.call = async (name, body) => {
+      if (name === 'ai') { await new Promise(r => setTimeout(r, 900)); return { screen: { kind: 'circles', title: 'Full', circles: [{ id: 'f', label: 'F' }] } }; }
+      if (name === 'quick') { quickCalled = true; return { kind: 'circles', title: 'Quick', circles: [] }; }
+      return realCall(name, body);
+    };
+    home();
+    current.screen.timeouts = screenTimeouts;
+    const before = toasts.length;
+    await ask({ event: 'open', target: { label: 'X' } }, { label: 'X' });
+    await new Promise(r => setTimeout(r, 1200));
+    WebBackend.call = realCall;
+    const newToasts = toasts.slice(before);
+    toasts.length = before; // expected toasts are not failures
+    return { title: aiui.screen.title, quickCalled, toast: newToasts.join(' ') };
+  };
+  await step('policy wait: no interim, full screen arrives', async () => {
+    const r = await slowFull({ open: { seconds: 0.3, then: 'wait', label: 'searching' } });
+    if (r.quickCalled || r.title !== 'Full') throw new Error(JSON.stringify(r));
+  });
+  await step('policy cancel: stops and says why', async () => {
+    const r = await slowFull({ open: { seconds: 0.3, then: 'cancel', label: 'searching mail' } });
+    if (r.quickCalled || r.title === 'Full' || !r.toast.includes('searching mail')) throw new Error(JSON.stringify(r));
+  });
   toast = realToast;
   return { steps, toasts, errors };
 })()`);

@@ -487,6 +487,7 @@ const WebBackend = (() => {
       case 'ai': return ai(body, progress);
       case 'more': return side('pager', 'pager', 'pageSchema', body, 'The user scrolled past the end of this screen. Continue its circles:');
       case 'suggest': return side('suggest', 'suggest', 'suggestSchema', body, 'The user is typing on this screen. Suggest circles for their input:');
+      case 'quick': return side('quick', 'quick', 'screenSchema', body, 'The full answer to this event is taking long. Give a quick interim screen now:');
       case 'prefetch': return side('scout', 'scout', 'screenSchema', body, 'The cursor is heading for this circle. Prepare the screen opening it would show:');
       case 'refine': return side('refine', 'refine', 'patchSchema', body, 'Refine the circles of this screen with real data:');
       case 'translate': {
@@ -510,7 +511,7 @@ const WebBackend = (() => {
         return { ok: true };
       }
       case 'cancel': {
-        const ch = body.pager ? 'pager' : body.suggest ? 'suggest' : body.scout ? 'scout' : body.refine ? 'refine' : 'ai';
+        const ch = body.pager ? 'pager' : body.suggest ? 'suggest' : body.scout ? 'scout' : body.refine ? 'refine' : body.quick ? 'quick' : 'ai';
         if (aborts[ch]) aborts[ch].abort();
         return { ok: true };
       }

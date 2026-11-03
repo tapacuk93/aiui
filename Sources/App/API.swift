@@ -24,6 +24,8 @@ final class API: NSObject {
     private(set) var translator: AIEngine?
     private(set) var profiler: AIEngine?
     private(set) var librarian: AIEngine?
+    /// Fast interim screens when the full answer takes long.
+    private(set) var quick: AIEngine?
     private var reviewing = false
     /// The user's system language (BCP 47), sent with every event.
     let language = Locale.preferredLanguages.first ?? "en"
@@ -95,6 +97,12 @@ final class API: NSObject {
         translator = make(false, Prompts.translate, Prompts.translateSchema)
         profiler = make(false, systemPrompt + Prompts.profiler, Prompts.profileSchema)
         librarian = make(false, systemPrompt + Prompts.librarian, Prompts.librarySchema)
+        let q = make(false, systemPrompt + Prompts.quick, Prompts.screenSchema)
+        #if os(macOS)
+        if let c = q as? Claude { c.model = "haiku" }      // the fast model for interim screens
+        #endif
+        if let a = q as? APIEngine { a.effort = "low" }
+        quick = q
         engineID = id
         UserDefaults.standard.set(id, forKey: "engine")
         return true
@@ -138,7 +146,7 @@ final class API: NSObject {
 
     func resetSession() { pager?.cancel(); suggester?.cancel(); scout?.cancel(); refiner?.cancel(); claude?.reset() }
     func shutdown() {
-        for e in [pager, suggester, scout, refiner, translator, profiler, librarian, claude] { e?.cancel() }
+        for e in [pager, suggester, scout, refiner, translator, profiler, librarian, quick, claude] { e?.cancel() }
     }
 
     /// Runs a stateless side engine on `input` (plus flow index context) and replies with its JSON.
@@ -228,6 +236,9 @@ final class API: NSObject {
                 case .failure(let e): fail(e.localizedDescription)
                 }
             })
+
+        case "quick":
+            side(quick, "The full answer to this event is taking long. Give a quick interim screen now:", input, send: send, fail: fail)
 
         case "prefetch":
             side(scout, "The cursor is heading for this circle. Prepare the screen opening it would show:", input, send: send, fail: fail)
@@ -444,6 +455,7 @@ final class API: NSObject {
             else if (input["suggest"] as? Bool) == true { suggester?.cancel() }
             else if (input["scout"] as? Bool) == true { scout?.cancel() }
             else if (input["refine"] as? Bool) == true { refiner?.cancel() }
+            else if (input["quick"] as? Bool) == true { quick?.cancel() }
             else { claude?.cancel() }
             send(["ok": true])
 
