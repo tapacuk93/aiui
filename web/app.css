@@ -455,7 +455,7 @@ html.web #webnote:hover { color: var(--accent); }
 .circle.ready .face::after {
   content: '';
   position: absolute;
-  bottom: 12%;
+  bottom: 4%;
   width: 6px;
   height: 6px;
   border-radius: 50%;
@@ -515,3 +515,17 @@ html.web #webnote:hover { color: var(--accent); }
   cursor: pointer;
 }
 #who[hidden] { display: none; }
+
+/* ---------- text that fits the circle ---------- */
+
+.label {
+  max-width: 92%;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.circle.long .icon { margin-bottom: 4px; font-size: calc(26px * var(--s)); }
+.circle.longer .label { font-size: calc(13px * min(var(--s), 1.15)); }
+.circle.longer .hint { display: none; }

@@ -12,6 +12,12 @@ protocol AIEngine: AnyObject {
 
 func aiError(_ s: String) -> NSError { NSError(domain: "aiui", code: 1, userInfo: [NSLocalizedDescriptionKey: s]) }
 
+/// The outermost {...} of a model's text reply, as JSON (fallback when no tool/structured output came).
+func extractJSON(_ text: String) -> [String: Any]? {
+    guard let a = text.firstIndex(of: "{"), let b = text.lastIndex(of: "}"), a < b else { return nil }
+    return (try? JSONSerialization.jsonObject(with: Data(String(text[a...b]).utf8))) as? [String: Any]
+}
+
 // MARK: - Provider choice
 
 /// Which AI backs the app: a detected agent CLI, or an API key for a provider (Keychain).
@@ -295,7 +301,7 @@ final class APIEngine: AIEngine {
                 return (args(s), s["id"] as? String)
             }
             if calls.isEmpty {
-                if let text = msg["content"] as? String, let screen = Claude.extractJSON(text) { return (screen, nil) }
+                if let text = msg["content"] as? String, let screen = extractJSON(text) { return (screen, nil) }
                 convo.append(["role": "user", "content": "Call the screen tool now with the next screen."])
                 continue
             }

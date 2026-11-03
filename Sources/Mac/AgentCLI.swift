@@ -90,7 +90,7 @@ final class AgentCLI: AIEngine {
                 guard let self, self.generation == gen else { return }
                 self.process = nil
                 self.pendingDone = nil
-                if let screen = Claude.extractJSON(last) ?? Claude.extractJSON(all) {
+                if let screen = extractJSON(last) ?? extractJSON(all) {
                     if self.persistent {
                         self.transcript.append("- event: \(prompt.prefix(400))\n  → screen: \(screen["note"] as? String ?? screen["title"] as? String ?? "")")
                     }

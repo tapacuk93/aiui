@@ -156,7 +156,7 @@ final class Claude {
                 self.process = nil
                 self.pendingDone = nil
                 if let s { self.started = true; done(.success(s)); return }
-                if let text, let parsed = Self.extractJSON(text) { self.started = true; done(.success(parsed)); return }
+                if let text, let parsed = extractJSON(text) { self.started = true; done(.success(parsed)); return }
                 let msg = rErr ?? (stderr.isEmpty ? "claude exited with status \(proc.terminationStatus)" : stderr)
                 // A failed first call may or may not have created the session: start a fresh one.
                 if !self.started { self.sessionID = UUID().uuidString.lowercased() }
@@ -193,10 +193,4 @@ final class Claude {
         return d.isEmpty ? tool : "\(tool) · \(d.prefix(110))"
     }
 
-    /// Fallback when no structured output came back: take the outermost {...} of the text.
-    static func extractJSON(_ text: String) -> [String: Any]? {
-        guard let a = text.firstIndex(of: "{"), let b = text.lastIndex(of: "}"), a < b else { return nil }
-        let slice = String(text[a...b])
-        return (try? JSONSerialization.jsonObject(with: Data(slice.utf8))) as? [String: Any]
-    }
 }

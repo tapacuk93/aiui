@@ -324,6 +324,18 @@ function render() {
   trail.length = 0;
 }
 
+// Keeps each circle's text inside it: a label that wraps leaves the hint one line; a label
+// that still overflows gets a smaller size.
+function fitText(node) {
+  const label = node.querySelector('.label'), hint = node.querySelector('.hint');
+  if (!label) return;
+  const lh = parseFloat(getComputedStyle(label).lineHeight) || 17;
+  const lines = Math.round(label.scrollHeight / lh);
+  node.classList.toggle('long', lines >= 2);
+  node.classList.toggle('longer', lines >= 3);
+  if (hint) hint.style.webkitLineClamp = lines >= 2 ? '1' : '';
+}
+
 function renderCircles(s) {
   const before = new Set([...el.circles.children].map((n) => n.dataset.id));
   el.circles.innerHTML = '';
@@ -332,6 +344,7 @@ function renderCircles(s) {
     const node = circleEl(c, 0);
     if (before.has(c.id)) node.style.animation = 'none'; // only new circles animate in
     el.circles.appendChild(node);
+    fitText(node);
   });
 }
 
@@ -401,8 +414,10 @@ function showPage() {
   pages.forEach((p, i) => p.forEach((n, j) => {
     const on = i === s.page;
     if (on && n.dataset.shown !== String(s.page)) n.style.setProperty('--i', j); // stagger the entrance
+    const appearing = on && n.hidden;
     n.hidden = !on;
     if (on) n.dataset.shown = String(s.page);
+    if (appearing) fitText(n);
   }));
   // Freeze every page up to the one shown (not while typing: live circles re-flow freely).
   if (!typing()) s.frozen = pages.slice(0, (s.page || 0) + 1).map((p) => p.map((n) => n.dataset.id));
@@ -479,8 +494,9 @@ async function loadMore() {
       c = { ...c, id: (c.id || 'c') + '~p' + (++paging.n) };
       screen.circles.push(c);
       const node = circleEl(c, 0);
-      node.hidden = true;
       el.circles.appendChild(node);
+      fitText(node);
+      node.hidden = true;
     });
     if (!screen.infinite && page.more === false && !fresh.length) screen.more = false;
     else if (!fresh.length) paging.failed = true; // nothing new this time: wait for a More press
@@ -621,6 +637,7 @@ function refresh(c, node) {
   fresh.hidden = node.hidden;
   fresh.classList.toggle('focused', node.classList.contains('focused'));
   node.replaceWith(fresh);
+  fitText(fresh);
   pages = pages.map((p) => p.map((n) => (n === node ? fresh : n)));
   updateGo();
 }
