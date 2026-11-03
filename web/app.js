@@ -1042,28 +1042,64 @@ const SCENE_SHIM = `<script>(() => {
       if (m) m.pause();
     }
   });
-  // Typing on a scene: a scene that doesn't listen to keys gives every typed character to the
-  // app's text input; a scene that does keeps its keys, and a lone ⌘ press opens the input.
-  const realAdd = EventTarget.prototype.addEventListener;
-  let keyListeners = 0;
+  // Typing on a scene: a key that no handler of the scene does anything with goes to the app's
+  // text input. A handler "does something" when it prevents the default, stops the event,
+  // changes the page, draws, schedules work, loads, plays or moves focus. Scenes that track held
+  // keys (keyup handlers, as games do) keep every key. A lone ⌘ press, or ⌘T, opens the input.
+  const realAdd = EventTarget.prototype.addEventListener, realRemove = EventTarget.prototype.removeEventListener;
+  const realTimeout = window.setTimeout.bind(window);
+  let keyListeners = 0, heldKeys = 0, inKey = 0, keyEffect = false;
+  const effect = () => { if (inKey) keyEffect = true; };
+  const watched = (obj, names) => { for (const n of names) { const o = obj && obj[n]; if (typeof o === 'function') obj[n] = function (...a) { effect(); return o.apply(this, a); }; } };
+  watched(window, ['setTimeout', 'setInterval', 'requestAnimationFrame', 'fetch', 'open', 'alert', 'confirm', 'prompt']);
+  watched(Event.prototype, ['stopPropagation', 'stopImmediatePropagation']);
+  watched(XMLHttpRequest.prototype, ['send']);
+  watched(HTMLMediaElement.prototype, ['play', 'pause']);
+  watched(History.prototype, ['pushState', 'replaceState', 'back', 'forward']);
+  watched(Storage.prototype, ['setItem', 'removeItem']);
+  watched(window.CanvasRenderingContext2D && CanvasRenderingContext2D.prototype, ['fillRect', 'clearRect', 'strokeRect', 'fill', 'stroke', 'drawImage', 'putImageData', 'fillText', 'strokeText']);
+  for (const G of [window.WebGLRenderingContext, window.WebGL2RenderingContext]) watched(G && G.prototype, ['drawArrays', 'drawElements', 'clear']);
+  const wrapped = new WeakMap();
+  const editable = (t) => t && t.nodeType === 1 && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName));
   EventTarget.prototype.addEventListener = function (type, fn, opts) {
-    if (/^key(down|up|press)$/.test(type) && (this === window || this === document || this === document.documentElement || this === document.body)) keyListeners++;
+    if (fn && (type === 'keyup') && !editable(this)) heldKeys++;
+    if (fn && (type === 'keydown' || type === 'keypress')) {
+      keyListeners++;
+      if (!wrapped.has(fn)) wrapped.set(fn, function (e) {
+        const mo = new MutationObserver(() => {}), prevented = e.defaultPrevented, focus = document.activeElement;
+        mo.observe(document, { subtree: true, childList: true, attributes: true, characterData: true });
+        inKey++;
+        try { return typeof fn === 'function' ? fn.call(this, e) : fn.handleEvent(e); }
+        finally {
+          inKey--;
+          if (mo.takeRecords().length || e.defaultPrevented !== prevented || document.activeElement !== focus) keyEffect = true;
+          mo.disconnect();
+        }
+      });
+      return realAdd.call(this, type, wrapped.get(fn), opts);
+    }
     return realAdd.call(this, type, fn, opts);
   };
-  const listensToKeys = () => keyListeners > 0 || !!(window.onkeydown || window.onkeypress || document.onkeydown || document.onkeypress
+  EventTarget.prototype.removeEventListener = function (type, fn, opts) {
+    return realRemove.call(this, type, (fn && wrapped.get(fn)) || fn, opts);
+  };
+  const keyProps = () => !!(window.onkeydown || window.onkeypress || document.onkeydown || document.onkeypress
     || (document.body && (document.body.onkeydown || document.body.onkeypress)));
   let metaDown = 0;
   realAdd.call(window, 'keydown', (e) => {
     if (e.key === 'Meta') { metaDown = performance.now(); return; }
     metaDown = 0;
     const t = e.target;
-    if (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName)) return;
+    if (editable(t) || e.isComposing) return;
     if (e.key.length !== 1 || e.key === '\`' || e.metaKey || e.ctrlKey || e.altKey || e.defaultPrevented) return;
     if (e.key === ' ' && t !== document.body && t !== document.documentElement) return;
-    if (listensToKeys()) return;
-    e.preventDefault();
-    parent.postMessage({ aiuiType: e.key }, '*');
-  });
+    if (heldKeys || keyProps()) return;
+    if (!keyListeners) { e.preventDefault(); parent.postMessage({ aiuiType: e.key }, '*'); return; }
+    // The scene's handlers run after this one: decide once the event has been through all of them.
+    keyEffect = false;
+    const key = e.key;
+    realTimeout(() => { if (!keyEffect && !e.defaultPrevented) parent.postMessage({ aiuiType: key }, '*'); }, 0);
+  }, true);
   realAdd.call(window, 'keyup', (e) => {
     if (e.key === 'Meta' && metaDown && performance.now() - metaDown < 600) parent.postMessage({ aiuiType: '' }, '*');
     metaDown = 0;
@@ -1382,7 +1418,7 @@ const FRAME_SHIM = `<script>(() => {
   addEventListener('keydown', (e) => {
     const t = e.target; if (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName)) return;
     if (e.key === 'Backspace' || e.key === 'Escape' || e.key === '\`') { e.preventDefault(); parent.postMessage({ aiuiKey: e.key }, '*'); }
-    if ((e.metaKey || e.ctrlKey) && /^[fp=\\-0\\[\\]r]$/i.test(e.key)) { e.preventDefault(); parent.postMessage({ aiuiKey: e.key, meta: true, shift: e.shiftKey }, '*'); }
+    if ((e.metaKey || e.ctrlKey) && /^[fp=\\-0\\[\\]rt]$/i.test(e.key)) { e.preventDefault(); parent.postMessage({ aiuiKey: e.key, meta: true, shift: e.shiftKey }, '*'); }
   });
   addEventListener('click', (e) => {
     const a = e.target.closest && e.target.closest('a[href]'); if (!a) return;
@@ -1914,7 +1950,7 @@ function onKey(e) {
   if (mod && !e.altKey) {
     const k = e.key.toLowerCase();
     const acts = { f: find, '=': () => zoom(1), '+': () => zoom(1), '-': () => zoom(-1), '0': () => zoom(0), p: printScene,
-      ']': forward, r: () => (e.shiftKey ? location.reload() : reloadScene()) };
+      ']': forward, r: () => (e.shiftKey ? location.reload() : reloadScene()), t: () => typeFromScene('') };
     if (acts[k]) { e.preventDefault(); return acts[k](); }
   }
   if (!isEditable(e.target) && current.screen.kind === 'circles' && (e.key === 'Home' || e.key === 'End')) {

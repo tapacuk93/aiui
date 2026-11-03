@@ -7,6 +7,8 @@ A native macOS app whose whole UI is one Blink webview (CEF), driven by the `cla
 - **Go** (bottom center) appears when the AI gives the screen one, or when something is selected.
 - Click **any empty place** (or just start typing), and the whole screen becomes a text area starting there.
   Enter sends, Shift-Enter adds a new line, Esc closes it.
+  On an AI scene, typing goes to the scene's own key bindings; any key the scene does nothing with
+  opens the text input. **⌘T** opens it anywhere (also on scenes that keep every key, like games).
 - **No scrolling.** Bottom row: **Back · Go · More**. Circles that don't fit go to further pages. More appears on
   every screen the AI marks expandable (`more`). Open-ended sets, like the root's "things to do", are endless:
   a background, stateless Claude "pager" keeps one full page preloaded. Back appears after paging forward, or when
