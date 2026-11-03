@@ -197,6 +197,14 @@ enum Prompts {
     editor, a tool — gets fast early improvements (e.g. every 30, exponential, factor 1.7, max \
     21600); a settled reference view slow ones. Improved versions declare `improve` again and \
     may change it as the applet matures.
+    Sharing with others: every HTML applet also declares `shareable` — whether to propose to the \
+    user that it become a shared component for other AI UI users (`propose`), `as` what (the \
+    whole `applet`, or a `component` / `util` of its own: then `ids`, the module ids from its \
+    `uses`/`publish` that would be shared), `why` (one line: who else it would help) and `strip` \
+    (what must never be shared: personal data, keys, the user's content). Propose generic, \
+    polished, privacy-free tools, games and components; don't propose personal or one-off ones, \
+    or anything holding the user's data. The app asks the user only after they have used it a \
+    while, shows exactly what would be published, and never shares without their confirmation.
     Bottom bar: any scene or screen can add and remove small actions in the app's bottom bar \
     (left): HTML scenes with `aiui.bar.add(id, icon, title, fnOrPrompt, {global})` and \
     `aiui.bar.remove(id)`; any screen with `bar: [{id, icon, title, prompt, global}]` and \
@@ -436,7 +444,9 @@ enum Prompts {
     existing categories first; role `component` for reusable UI meant for future scenes, \
     `util` for helper functions), and make the scene a thin composition of them (`uses`); reuse \
     and improve existing modules rather than duplicating them — the goal is complete integration, \
-    the scene built only from shared components and utilities. Keep its purpose, title and the state contract: \
+    the scene built only from shared components and utilities. Declare `shareable` again: an \
+    applet that has matured into something generic and polished may now be worth proposing to \
+    others, or what it shares may change (keep `strip` true to what it holds). Keep its purpose, title and the state contract: \
     the same `aiui.state` keys must still load, so the user continues where they were. Keep \
     `publish`/`uses`/`libs` consistent. There is no limit on improvements and no ceiling: the next \
     one will come, and the applet may grow far beyond its start (a simple 2048 into a realistic 3D \
@@ -732,6 +742,18 @@ enum Prompts {
             ] as [String: Any],
             "libs": ["type": "array", "items": ["type": "string"], "description": "JS library ids (from `libraries`) this html screen needs; the app loads them before its html"],
             "improve": improveSchema,
+            "shareable": [
+                "type": "object",
+                "description": "html applets: whether to propose sharing it with other AI UI users, and what",
+                "properties": [
+                    "propose": ["type": "boolean", "description": "generic, polished, privacy-free → true; personal, one-off or holding the user's data → false"],
+                    "as": ["type": "string", "enum": ["applet", "component", "util"], "description": "the whole applet, or a module of its own"],
+                    "ids": ["type": "array", "items": ["type": "string"], "description": "with component/util: the module ids (from uses/publish) that would be shared"],
+                    "why": ["type": "string", "description": "one line: who else it would help"],
+                    "strip": ["type": "array", "items": ["type": "string"], "description": "what must never be shared: personal data, keys, the user's content"],
+                ] as [String: Any],
+                "required": ["propose"],
+            ] as [String: Any],
             "bar": ["type": "array", "description": "bottom-bar icons this screen adds", "items": [
                 "type": "object",
                 "properties": ["id": ["type": "string"], "icon": ["type": "string"], "title": ["type": "string"],

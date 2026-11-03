@@ -62,6 +62,9 @@ Object.assign(STR, {
   instWithdraw: 'Withdraw this from the registry', instReport: 'Report this shared item', instAdopt: 'Review and adopt this',
   instPeople: 'People', instFindPeople: 'Find people', instAddPerson: 'Add a person by id', instCopyId: 'Copy my app id',
   instEditProfile: 'Edit my people profile', instCheckInbox: 'Check for new contacts',
+  sharedAdoptionsLabel: 'Adoptions', sharedStripNote: 'The applet says these must never be shared', sharedStripCheck: 'Its state is left out; check the content below for them.',
+  offerShareApplet: 'Share this applet with others?', offerShareComponent: 'Share its component with others?', offerNotNow: 'Not now',
+  offerNote: 'Worth sharing with other AI UI users', actShareable: 'Shareable', actShareableYes: 'proposed', actShareableNo: 'not proposed',
 });
 DEADLINES.shared = 240000;   // adopting includes an AI review
 DEADLINES.people = 30000;
@@ -83,15 +86,26 @@ async function copyText(text) {
 const strings = (keys) => Object.fromEntries(keys.map((k) => [k, t(k)]));
 const jsonForScript = (o) => JSON.stringify(o).replace(/</g, '\\u003c');
 
+// The theme's --muted moved 22% toward --fg (both hex), for small text on a surface.
+function mutedStrong() {
+  const cs = getComputedStyle(document.documentElement);
+  const hex = (v) => { const m = String(v).trim().match(/^#([0-9a-f]{6})$/i); return m ? [0, 2, 4].map((i) => parseInt(m[1].slice(i, i + 2), 16)) : null; };
+  const a = hex(cs.getPropertyValue('--muted')), b = hex(cs.getPropertyValue('--fg'));
+  if (!a || !b) return 'var(--muted)';
+  return '#' + a.map((x, i) => Math.round(x * 0.78 + b[i] * 0.22).toString(16).padStart(2, '0')).join('');
+}
+
 // An app-owned html screen: theme variables, the app's look, strings for its script.
 function appHtml(body, script, data) {
+  // --muted on a section's surface is just under 4.5:1 in the light theme: a slightly stronger one.
   return `<style>
+    :root{--muted2:${mutedStrong()}}
     body{font:14px/1.55 -apple-system,system-ui,sans-serif}
     section{margin:0 0 16px;padding:14px 18px;border-radius:14px;background:var(--surface)}
-    h2{margin:0 0 8px;font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
+    h2{margin:0 0 8px;font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted2)}
     h3{margin:12px 0 4px;font-size:14px}
-    p{margin:6px 0} .m{color:var(--muted)} .err{color:var(--danger)}
-    table{border-collapse:collapse;width:100%} th{text-align:left;font-weight:500;color:var(--muted);width:30%;padding:3px 10px 3px 0;vertical-align:top}
+    p{margin:6px 0} .m{color:var(--muted2)} .err{color:var(--danger)}
+    table{border-collapse:collapse;width:100%} th{text-align:left;font-weight:500;color:var(--muted2);width:30%;padding:3px 10px 3px 0;vertical-align:top}
     td{padding:3px 0;word-break:break-word}
     code,pre{font:12px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace}
     pre{margin:6px 0 0;padding:10px 12px;border-radius:10px;background:var(--chip);border:1px solid var(--line);max-height:46vh;overflow:auto;white-space:pre-wrap;word-break:break-word}
@@ -105,7 +119,7 @@ function appHtml(body, script, data) {
     button:disabled{opacity:.6;cursor:default}
     .verdict{padding:10px 14px;border-radius:10px;border:2px solid var(--line-strong);font-weight:600}
     .verdict.safe{border-color:var(--accent)} .verdict.unsafe{border-color:var(--danger);color:var(--danger)} .verdict.caution{border-style:dashed}
-    label.f{display:block;margin:10px 0 4px;color:var(--muted);font-size:13px}
+    label.f{display:block;margin:10px 0 4px;color:var(--muted2);font-size:13px}
     input[type=text],textarea{width:100%;box-sizing:border-box;padding:8px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--chip);color:var(--fg);font:inherit}
     input[type=text]:focus,textarea:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 2px var(--accent-glow)}
     .check{display:flex;gap:8px;align-items:center;margin:12px 0;min-height:30px}
@@ -280,6 +294,7 @@ async function showSharePreview(ref) {
     <p>${esc(t('sharedPreviewNote'))}</p>
     <p class="m">${esc(t('sharedSignedAs'))} <code title="${esc(p.author)}">${esc(shortId(p.author))}</code> · ${esc(fmtBytes(p.payloadBytes))}</p>
     ${(p.warnings || []).map((w) => `<p class="err">⚠ ${esc(w)}</p>`).join('')}
+    ${(p.strip || []).length ? `<p class="err">⚠ ${esc(t('sharedStripNote'))}: ${esc(p.strip.join('; '))}. ${esc(t('sharedStripCheck'))}</p>` : ''}
     <pre id="json"></pre>
     <div class="btns"><button type="button" class="primary" id="share">${esc(t('sharedPublish'))}</button><button type="button" id="cancel">${esc(t('sharedCancel'))}</button></div>
     <p id="out" role="status" aria-live="polite"></p></section>`;
@@ -315,7 +330,7 @@ async function showSharedItem(id, opts = {}) {
       ${row(t('sharedCategory'), esc((it.path || []).join(' › ')))}
       ${row(t('sharedBy'), `<code title="${esc(it.author)}">${esc(shortId(it.author))}</code>${it.authorName ? ' · ' + esc(it.authorName) : ''}${it.mine ? ' · ' + esc(t('sharedYours')) : ''}`)}
       ${row(t('sharedVersion'), esc('v' + it.version) + (it.adoptedVersion ? ` · ${esc(t('sharedAdoptedV'))} ${esc(it.adoptedVersion)}` : ''))}
-      ${row(t('sharedAdoptions'), esc(String(it.adoptions || 0)))}
+      ${row(t('sharedAdoptionsLabel'), esc(String(it.adoptions || 0)))}
       ${row(t('sharedUsage'), it.usage ? `<code>${esc(it.usage)}</code>` : '')}
       ${row(t('sharedLibs'), esc((it.libs || []).join(', ')))}
       ${row(t('sharedUses'), (it.uses || []).map((u) => `<button type="button" data-item="${esc(u)}">${esc(u)}</button>`).join(' '))}
@@ -648,3 +663,64 @@ if (typeof registerInstant === 'function') [
 ].forEach(registerInstant);
 // What the shared index holds (for the conditions above), once at start.
 if (NATIVE) callRaw('shared', { op: 'status' }).then((st) => { sharedStatus = st; }).catch(() => {});
+
+// ---------------------------------------------------------------- proposing to share (the applet's own `shareable`)
+// An applet says whether it is worth sharing (`shareable`: propose, as, ids, why, strip). Once the
+// user has used it a while (≥ 3 opens or ≥ 10 minutes) and hasn't said "Not now" to this version,
+// it is offered once, quietly: a status note and an instant circle on top of the proposals and
+// the Actions screen. Choosing it opens the share preview — nothing is published without the
+// confirmation there.
+const DECLINED = 'aiui.shareDeclined';
+const declined = () => { try { return JSON.parse(localStorage.getItem(DECLINED)) || {}; } catch { return {}; } };
+let shareOffer = null;                 // { key, version, as, ids, why }
+const offerChecked = new Map();        // key → time last checked
+const offerNoted = new Set();          // key@version noted in the status bar this session
+
+async function checkShareOffer() {
+  const s = current.screen, key = current.key;
+  if (!NATIVE || s.kind !== 'html' || s.local || !key || !s.shareable || !s.shareable.propose) return;
+  if (shareOffer && shareOffer.key === key) return;
+  if (Date.now() - (offerChecked.get(key) || 0) < 120000) return;
+  offerChecked.set(key, Date.now());
+  let live;
+  try { live = await callRaw('live', { key }); } catch { return; }
+  const sc = live && live.scene;
+  if (!sc || current.key !== key) return;
+  const version = sc.improves || 0;
+  if (!((sc.opens || 0) >= 3 || (sc.minutes || 0) >= 10)) return;
+  if (declined()[key] === version) return;
+  const sh = s.shareable;
+  shareOffer = { key, version, as: sh.as || 'applet', ids: sh.ids || [], why: sh.why || '' };
+  if (!offerNoted.has(key + '@' + version)) {
+    offerNoted.add(key + '@' + version);
+    flashStatus(`📤 ${t('offerNote')}${shareOffer.why ? ': ' + shareOffer.why : ''}`);
+  }
+}
+setInterval(checkShareOffer, 5000);
+
+function runShareOffer(o) {
+  if (o.as === 'applet' || !o.ids.length) return showSharePreview({ applet: o.key });
+  if (o.ids.length === 1) return showSharePreview({ module: o.ids[0] });
+  push({ kind: 'circles', local: 'shared', more: false, back: true, title: t('sharedShareTitle'), message: t('sharedShareMsg'),
+    circles: o.ids.map((id) => ({ id: 'shm:' + id, shareRef: { module: id }, icon: '🧩', label: id })) }, t('sharedShareTitle'));
+}
+
+function shareableRow(s) {
+  const sh = s && s.shareable;
+  if (!sh) return [];
+  return [[t('actShareable'), (sh.propose ? t('actShareableYes') : t('actShareableNo')) + (sh.as ? ` · ${sh.as}` : '') + (sh.why ? ` — ${sh.why}` : '')]];
+}
+
+if (typeof registerInstant === 'function') {
+  const offerFor = (c) => shareOffer && c.applet && shareOffer.key === c.applet && declined()[c.applet] !== shareOffer.version ? shareOffer : null;
+  registerInstant({ id: 'shareOffer', scene: true, icon: '📤',
+    label: () => (shareOffer && shareOffer.as !== 'applet' ? t('offerShareComponent') : t('offerShareApplet')),
+    when: (c) => !!offerFor(c), run: (c) => runShareOffer(offerFor(c)) });
+  registerInstant({ id: 'shareOfferDecline', scene: true, icon: '✕', label: () => t('offerNotNow'),
+    when: (c) => !!offerFor(c),
+    run: (c) => { const d = declined(); d[c.applet] = shareOffer.version; localStorage.setItem(DECLINED, JSON.stringify(d)); shareOffer = null; flashStatus('✕ ' + t('offerNotNow')); } });
+  // On top of the proposals and the Actions screen.
+  if (typeof INSTANT !== 'undefined') {
+    for (const id of ['shareOfferDecline', 'shareOffer']) { const i = INSTANT.findIndex((a) => a.id === id); if (i > 0) INSTANT.unshift(...INSTANT.splice(i, 1)); }
+  }
+}

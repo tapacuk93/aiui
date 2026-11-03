@@ -3413,6 +3413,7 @@ function renderActivityScreen() {
     [t('actNext'), sched ? `${sched.when || '—'} · ${sched.sub}` : '—'],
     [t('actImproves'), sc.improves ?? 0], [t('actOpens'), sc.opens ?? '—'], [t('actMinutes'), sc.minutes != null ? sc.minutes.toFixed(1) : '—'],
     [t('actInteractions'), sc.interactions ?? '—'], [t('actFindings'), sc.findings ?? '—'], [t('actScores'), scores],
+    ...(typeof shareableRow === 'function' ? shareableRow(current.screen) : []),
   ] : null;
   const where = current.screen.title || current.label || '';
   el.actBody.innerHTML =

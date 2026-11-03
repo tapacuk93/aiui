@@ -112,8 +112,8 @@ enum Services {
         }
         req.setValue("application/json", forHTTPHeaderField: "Accept")
         if signed {
-            // The exact request path the server sees (a base URL may carry a prefix).
-            for (h, v) in try identity.headers(method: method, path: url.path.isEmpty ? "/" : url.path, body: body) {
+            // The service path (`/v1/...`), also when a base URL carries a prefix (local servers).
+            for (h, v) in try identity.headers(method: method, path: path, body: body) {
                 req.setValue(v, forHTTPHeaderField: h)
             }
         }
@@ -128,8 +128,8 @@ enum Services {
 
     /// One request answered with a JSON object.
     static func call(_ base: String, _ method: String, _ path: String, query: [String: String] = [:],
-                     json: Any? = nil, signed: Bool = false) async throws -> [String: Any] {
-        let data = try await raw(base, method, path, query: query, json: json, signed: signed)
+                     json: Any? = nil, signed: Bool = false, identity: AppIdentity = .shared) async throws -> [String: Any] {
+        let data = try await raw(base, method, path, query: query, json: json, signed: signed, identity: identity)
         if data.isEmpty { return [:] }
         guard let obj = try? JSONSerialization.jsonObject(with: data) else { throw error(502, "The service answered with something that is not JSON.") }
         if let d = obj as? [String: Any] { return d }

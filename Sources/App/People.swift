@@ -198,7 +198,7 @@ final class People {
             x["verified"] = (c["state"] as? String) == "mutual"
             return x
         }
-        o["recent"] = recent.suffix(10)
+        o["recent"] = Array(recent.suffix(10))
         o["base"] = Services.usersURL
         if let d = lastCheck { o["lastCheck"] = Services.iso(d) }
         return o

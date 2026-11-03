@@ -265,7 +265,10 @@ final class SharedRegistry {
                 out["key"] = key
                 out["title"] = screen["title"]
             } else {
-                let code = obj["code"] as? String ?? "", css = obj["css"] as? String ?? ""
+                let raw = obj["code"] as? String ?? "", css = obj["css"] as? String ?? ""
+                // Only comments and whitespace (a css-only item): no js module.
+                let code = raw.replacingOccurrences(of: "/\\*[\\s\\S]*?\\*/", with: "", options: .regularExpression)
+                    .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "" : raw
                 guard !code.isEmpty || !css.isEmpty else { throw Services.error(422, "Refused: the payload has no code.") }
                 let role = kind == "component" ? "component" : "util"
                 var ids: [String] = []
@@ -318,7 +321,11 @@ final class SharedRegistry {
         var shown = body
         shown["_unshared"] = nil
         let shownData = try JSONSerialization.data(withJSONObject: shown, options: [.sortedKeys, .prettyPrinted])
-        return ["body": shown, "json": String(decoding: shownData, as: UTF8.self), "digest": AppIdentity.hex(SHA256.hash(data: data)),
+        // What the applet itself says must never be shared (its `shareable.strip`): shown with the preview.
+        let key = input["applet"] as? String ?? ""
+        let screen = key.isEmpty ? input["scene"] as? [String: Any] : appletScreen(key)
+        let strip = (screen?["shareable"] as? [String: Any])?["strip"] as? [String] ?? []
+        return ["strip": strip, "body": shown, "json": String(decoding: shownData, as: UTF8.self), "digest": AppIdentity.hex(SHA256.hash(data: data)),
                 "payloadBytes": payload.count, "warnings": warnings, "author": AppIdentity.shared.id ?? ""]
     }
 
@@ -377,7 +384,8 @@ final class SharedRegistry {
             let kind = (m.role ?? (m.kind == "css" ? "component" : "util")) == "component" ? "component" : "util"
             return ["kind": kind, "name": Self.safeName(m.name), "path": Self.safePath(m.path), "title": clip(Self.title(m.name), 80),
                     "description": clip(m.description, 4096), "usage": clip(m.usage, 4096), "libs": [String](), "uses": [String](),
-                    "payload": ["code": m.kind == "css" ? "" : m.code, "css": m.kind == "css" ? m.code : ""]]
+                    // The registry requires `code`: a css module carries a marker there.
+                    "payload": m.kind == "css" ? ["code": Self.cssOnly, "css": m.code] : ["code": m.code]]
         }
         // An applet by key, or a scene on display given whole (an html scene that isn't stored).
         let key = input["applet"] as? String ?? ""
@@ -461,6 +469,8 @@ final class SharedRegistry {
         for ch in name { if ch.isUppercase, !out.isEmpty { out.append(" ") }; out.append(ch) }
         return out.prefix(1).uppercased() + out.dropFirst()
     }
+
+    static let cssOnly = "/* css only: see css */"
 
     static func int(_ v: Any?) -> Int { (v as? NSNumber)?.intValue ?? (v as? String).flatMap { Int($0) } ?? 0 }
 
