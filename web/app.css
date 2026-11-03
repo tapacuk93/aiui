@@ -529,3 +529,26 @@ html.web #webnote:hover { color: var(--accent); }
 .circle.long .icon { margin-bottom: 4px; font-size: calc(26px * var(--s)); }
 .circle.longer .label { font-size: calc(13px * min(var(--s), 1.15)); }
 .circle.longer .hint { display: none; }
+
+/* ---------- full screen ---------- */
+
+#full {
+  position: fixed;
+  top: calc(14px + env(safe-area-inset-top));
+  right: 18px;
+  z-index: 8;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: 1px solid var(--line);
+  background: var(--chip);
+  color: var(--accent);
+  font: 600 16px/1 system-ui;
+  cursor: pointer;
+}
+#full[hidden] { display: none; }
+body.typing #full { right: 60px; }
+body.immersive #top, body.immersive #bottom, body.immersive #webnote, body.immersive #who { display: none; }
+body.immersive #stage { padding: 12px; }
+body.immersive #full { opacity: .35; }
+body.immersive #full:hover { opacity: 1; }

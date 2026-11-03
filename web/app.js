@@ -6,7 +6,7 @@ const el = {
   path: $('#path'), title: $('#title'), message: $('#message'),
   circles: $('#circles'), view: $('#view'), write: $('#write'),
   status: $('#status'), go: $('#go'), toast: $('#toast'),
-  prev: $('#prev'), more: $('#more'), stage: $('#stage'), close: $('#close'), top: $('#top'), who: $('#who'),
+  prev: $('#prev'), more: $('#more'), stage: $('#stage'), close: $('#close'), top: $('#top'), who: $('#who'), full: $('#full'),
 };
 
 // Human capabilities, each backed by technical ones.
@@ -77,6 +77,7 @@ window.aiui = {
   home: () => home(),
   setup: () => showSetup(),
   profile: () => showProfile([]),
+  library: () => showLibrary([]),
   get screen() { return current.screen; },
   _event(e) {
     if (e.type !== 'progress') return;
@@ -110,7 +111,7 @@ function circleSummary(c) {
   return o;
 }
 
-async function ask(evt, { label, replace = false, circle = null } = {}) {
+async function ask(evt, { label, replace = false, circle = null, retried = false } = {}) {
   if (busy) await cancel();
   const payload = {
     ...evt,
@@ -125,13 +126,12 @@ async function ask(evt, { label, replace = false, circle = null } = {}) {
   const my = ++seq;
   setBusy(true, circle);
   try {
-    const { screen, cached, savedUtility } = await call('ai', payload);
+    const { screen, cached, published } = await call('ai', payload);
     if (my !== seq) return; // cancelled or superseded
     if (!cached) learnSoon();
     if (savedUtility) {
       setTimeout(() => flashStatus('🧰 ' + [...savedUtility.path, savedUtility.name].join(' › ')), 300);
-      initLibrary();
-initUser();
+      initUser();
     }
     if (cached) flashStatus(t('fromMemory'));
     const next = normalize(screen);
@@ -146,6 +146,9 @@ initUser();
   } catch (e) {
     if (my === seq) {
       if (e.message === 'no-ai') { setBusy(false); return showSetup(); }
+      // Cancelled by something other than the user (another request took the AI session):
+      // try once more instead of showing an error.
+      if (e.message === 'cancelled' && !retried) { setBusy(false); return ask(evt, { label, replace, circle, retried: true }); }
       toast(e.message);
     }
   } finally {
@@ -242,10 +245,12 @@ async function showLibrary(path = []) {
   try { r = await call('utilities', { op: 'tree', path }); } catch (e) { return toast(e.message); }
   const circles = [
     ...r.categories.map((c) => ({ id: 'cat:' + c.name, icon: '📁', label: c.name, hint: String(c.count), cat: true })),
-    ...r.utilities.map((u) => ({ id: 'util:' + u.id, icon: u.icon || '🧰', label: u.name, hint: u.description, util: u.id })),
+    ...r.utilities.map((u) => ({ id: 'util:' + u.id, icon: u.icon || '🧩', label: u.name, hint: u.description,
+      util: u.id, value: u.uses })),
   ];
   push({ kind: 'circles', local: 'library', libPath: path, more: false, back: true,
-    title: path.length ? path[path.length - 1] : t('root.utilities'), circles }, path.length ? path[path.length - 1] : t('root.utilities'));
+    title: path.length ? path[path.length - 1] : t('library'),
+    message: path.length ? '' : (r.total ? t('libraryMsg') : t('libraryEmpty')), circles }, path.length ? path[path.length - 1] : t('library'));
 }
 
 async function localOpen(c) {
@@ -257,10 +262,7 @@ async function localOpen(c) {
   }
   if (kind === 'library') {
     if (c.cat) return showLibrary([...current.screen.libPath, c.label]);
-    try {
-      const { screen } = await call('utilities', { op: 'open', id: c.util });
-      return push(normalize(screen), c.label);
-    } catch (e) { return toast(e.message); }
+    return; // a module: nothing to open (× removes it)
   }
   if (kind !== 'setup') return;
   if (c.id === 'key') {
@@ -336,6 +338,8 @@ function render() {
   fitStage();
   layoutPages(typing());
   if (s.kind === 'circles') { initFocus(s); maybeRefine(s); }
+  el.full.hidden = !s.fullscreen;
+  if (!s.fullscreen && document.body.classList.contains('immersive')) setImmersive(false);
   shownAt = s.local ? 0 : performance.now();
   trail.length = 0;
 }
@@ -582,7 +586,6 @@ function openCircle(c, node) {
   if (shownAt) { observe('decideMs', performance.now() - shownAt); shownAt = 0; }
   if (c.typed) return submitText();
   if (current.screen.local) return localOpen(c);
-  if (c.id === 'utilities' && !stack.length) return showLibrary([]);
   const text = typing() ? el.write.value.trim() : '';
   const evt = { event: 'open', target: circleSummary(c) };
   if (text) evt.text = text;
@@ -712,6 +715,16 @@ window.addEventListener('message', async (e) => {
   }
 });
 
+async function libraryFor(s) {
+  if (!s.uses || !s.uses.length) return '';
+  try {
+    const b = await call('utilities', { op: 'bundle', ids: s.uses });
+    const safe = (x) => String(x || '').replace(/<\/(script|style)/gi, '<\\/$1');
+    return '<script>window.lib = window.lib || {};<\/script>' +
+      (b.css ? `<style>${safe(b.css)}</style>` : '') + (b.js ? `<script>${safe(b.js)}<\/script>` : '');
+  } catch { return '<script>window.lib = window.lib || {};<\/script>'; }
+}
+
 function renderHTML(s) {
   const frame = document.createElement('iframe');
   if (!NATIVE) frame.setAttribute('sandbox', 'allow-scripts allow-forms allow-popups allow-modals');
@@ -723,10 +736,16 @@ function renderHTML(s) {
     a{color:var(--accent)} ::selection{background:var(--accent-soft)}
     ::-webkit-scrollbar{width:8px}::-webkit-scrollbar-thumb{background:var(--line);border-radius:4px}
   </style>${NATIVE ? '<script>window.aiui = parent.aiui;<\/script>' : FRAME_SHIM}`;
-  let html = String(s.html || '');
-  if (/<head[^>]*>/i.test(html)) html = html.replace(/<head[^>]*>/i, (m) => m + base);
-  else html = `<!doctype html><html><head>${base}</head><body>${html}</body></html>`;
-  frame.srcdoc = html;
+  el.view.appendChild(frame);
+  const screen = s;
+  libraryFor(s).then((lib) => {
+    if (current.screen !== screen) return;
+    let html = String(s.html || '');
+    const head = base + lib;
+    if (/<head[^>]*>/i.test(html)) html = html.replace(/<head[^>]*>/i, (m) => m + head);
+    else html = `<!doctype html><html><head>${head}</head><body>${html}</body></html>`;
+    frame.srcdoc = html;
+  });
   frame.addEventListener('load', () => {
     if (!NATIVE) return; // sandboxed: the shim handles keys and links
     const doc = frame.contentDocument;
@@ -742,7 +761,6 @@ function renderHTML(s) {
       }
     });
   });
-  el.view.appendChild(frame);
 }
 
 // ---------------------------------------------------------------- Go
@@ -984,6 +1002,7 @@ function autosize() {
 
 // The circles area starts below the header, whatever the header holds.
 function fitStage() {
+  if (document.body.classList.contains('immersive')) { el.stage.style.paddingTop = '12px'; return; }
   const top = el.top.getBoundingClientRect().bottom;
   el.stage.style.paddingTop = Math.max(70, Math.round(top + 18)) + 'px';
 }
@@ -1028,7 +1047,7 @@ el.write.addEventListener('keydown', (e) => {
 document.addEventListener('pointerdown', (e) => {
   if (e.button !== 0 || e.pointerType === 'touch') return; // touch: handled as a tap below
   const t = e.target;
-  if (t === el.write || t.closest('.circle, #nav, #view iframe, #toast, #close, #who, #webnote')) return;
+  if (t === el.write || t.closest('.circle, #nav, #view iframe, #toast, #close, #who, #webnote, #full')) return;
   if (current.screen.kind === 'html' && t.closest('#view')) return;
   e.preventDefault();
   startWriting();
@@ -1061,7 +1080,7 @@ document.addEventListener('touchend', (e) => {
   }
   // A tap (no movement) on an empty place: start typing.
   if (Math.hypot(dx, dy) < 10 && dt < 400 && target.closest &&
-      !target.closest('.circle, #nav, #view, #toast, #close, #write, #who, a, button')) {
+      !target.closest('.circle, #nav, #view, #toast, #close, #write, #who, #full, a, button')) {
     startWriting();
   }
 }, { passive: true });
@@ -1074,6 +1093,7 @@ function isEditable(t) {
 
 function onKey(e) {
   if (e.key === 'Escape' && typing()) { e.preventDefault(); return escapeWriting(); }
+  if (e.key === 'Escape' && document.body.classList.contains('immersive')) { e.preventDefault(); return setImmersive(false); }
   if (isEditable(e.target)) return;
   const circles = current.screen.kind === 'circles';
   const arrows = { ArrowLeft: 'left', ArrowRight: 'right', ArrowUp: 'up', ArrowDown: 'down', Tab: e.shiftKey ? 'prev' : 'next' };
@@ -1145,22 +1165,12 @@ const STR = {
   whoGuestMsg: 'Guest mode: no personal history is used.',
   itsMe: "It's me", itsMeHint: 'keep going, learn this', someoneElse: 'Someone else', someoneElseHint: 'guest mode',
   aboutYou: 'About you', aboutYouEmpty: 'Nothing learned yet. It builds up as you use the app.',
+  library: 'Utility library', libraryMsg: 'Code the AI wrote once and reuses across screens. Reviewed now and then.',
+  libraryEmpty: 'Empty so far: screens publish reusable code here as the AI builds them.',
+  fullscreen: 'Full screen',
 };
-STR['root.utilities'] = 'Utilities'; STR['root.utilities.hint'] = 'your saved tools';
 for (const c of ROOT.circles) { STR['root.' + c.id] = c.label; STR['root.' + c.id + '.hint'] = c.hint; }
 
-// The root shows a Utilities circle once the library has something in it.
-async function initLibrary() {
-  try {
-    const r = await call('utilities', { op: 'tree', path: [] });
-    if (!r.total) return;
-    const circle = { id: 'utilities', icon: '🧰', label: t('root.utilities'), hint: t('root.utilities.hint') };
-    if (!ROOT.circles.some((c) => c.id === 'utilities')) ROOT.circles.unshift(circle);
-    const root = stack.length ? stack[0].screen : current.screen;
-    if (root.circles && !root.circles.some((c) => c.id === 'utilities')) root.circles.unshift({ ...circle });
-    if (!stack.length && !typing()) render();
-  } catch {}
-}
 let LANG = (navigator.language || 'en');
 let L10N = null;
 function t(k) { return (L10N && L10N[k]) || STR[k] || k; }
@@ -1487,7 +1497,28 @@ async function showProfile(path = []) {
   }, path.length ? path[path.length - 1] : t('aboutYou'));
 }
 
+// ---------------------------------------------------------------- full screen
+// A screen that promotes itself as full-screen (games, media, reading) gets a ⤢ button: the
+// window goes full screen (native on the Mac, the browser's on the web) and the chrome steps
+// aside; Esc or ⤡ comes back.
+
+function setImmersive(on) {
+  document.body.classList.toggle('immersive', on);
+  el.full.textContent = on ? '⤡' : '⤢';
+  el.full.title = on ? 'Esc' : t('fullscreen');
+  if (NATIVE && !IOS_BRIDGE) call('window', { op: 'fullscreen', on }).catch(() => {});
+  else if (!NATIVE && document.fullscreenEnabled) {
+    if (on && !document.fullscreenElement) document.documentElement.requestFullscreen().catch(() => {});
+    if (!on && document.fullscreenElement) document.exitFullscreen().catch(() => {});
+  }
+  fitStage();
+  requestAnimationFrame(() => layoutPages(true));
+}
+el.full.addEventListener('click', (e) => { e.stopPropagation(); setImmersive(!document.body.classList.contains('immersive')); });
+document.addEventListener('fullscreenchange', () => {
+  if (!document.fullscreenElement && document.body.classList.contains('immersive')) setImmersive(false);
+});
+
 render();
 // No AI available yet: ask for one.
 call('engine', { op: 'status' }).then((st) => { if (!st.active) showSetup(); else initLanguage(); }).catch(() => {});
-initLibrary();

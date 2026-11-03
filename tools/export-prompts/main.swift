@@ -10,6 +10,8 @@ let out: [String: Any] = [
     "refine": Prompts.refine,
     "translate": Prompts.translate,
     "profiler": Prompts.profiler,
+    "librarian": Prompts.librarian,
+    "librarySchema": Prompts.librarySchema,
     "profileSchema": Prompts.profileSchema,
     "patchSchema": Prompts.patchSchema,
     "translateSchema": Prompts.translateSchema,

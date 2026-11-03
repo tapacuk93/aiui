@@ -127,57 +127,123 @@ const WebBackend = (() => {
     return c[key];
   }
 
-  // ------------------------------------------------------------- utilities library
+  // ------------------------------------------------------------- utility library
+  // Reusable code modules screens publish and reuse (`publish` / `uses`), reviewed now and then.
 
-  const UTILS = 'aiui.utils', UTILS_LIMIT = 2 * 1024 * 1024;
-  const loadUtils = () => { try { return JSON.parse(localStorage.getItem(UTILS)) || {}; } catch { return {}; } };
-  function saveUtils(u) {
-    let json = JSON.stringify(u);
-    const ids = Object.keys(u).sort((a, b) => u[a].lastUsed - u[b].lastUsed);
-    while (json.length > UTILS_LIMIT && ids.length) { delete u[ids.shift()]; json = JSON.stringify(u); }
-    try { localStorage.setItem(UTILS, json); } catch {}
+  const LIB = 'aiui.library', LIB_LIMIT = 1.5 * 1024 * 1024;
+  const loadLib = () => { try { return JSON.parse(localStorage.getItem(LIB)) || { modules: {}, aliases: {}, since: 0 }; } catch { return { modules: {}, aliases: {}, since: 0 }; } };
+  function saveLib(l) {
+    let json = JSON.stringify(l);
+    const ids = Object.keys(l.modules).sort((a, b) => l.modules[a].lastUsed - l.modules[b].lastUsed);
+    while (json.length > LIB_LIMIT && ids.length) { delete l.modules[ids.shift()]; json = JSON.stringify(l); }
+    try { localStorage.setItem(LIB, json); } catch {}
   }
-  async function saveUtility(screen) {
-    const m = screen.utility;
-    if (!m || !m.name) return null;
-    const path = (m.path || []).filter(Boolean).slice(0, 3);
-    const h = await crypto.subtle.digest('SHA-256', new TextEncoder().encode((path.join('/') + '/' + m.name).toLowerCase()));
-    const id = 'u' + [...new Uint8Array(h)].slice(0, 6).map((b) => b.toString(16).padStart(2, '0')).join('');
-    const { utility, note, cacheable, reuse, ...stored } = screen;
-    const u = loadUtils(), prev = u[id];
-    u[id] = { id, name: m.name, icon: m.icon || '🧰', description: m.description || '', path: path.length ? path : ['General'],
-      screen: stored, created: prev ? prev.created : Date.now(), lastUsed: Date.now(), uses: prev ? prev.uses : 0 };
-    saveUtils(u);
-    return u[id];
+  async function modId(path, name) {
+    const h = await crypto.subtle.digest('SHA-256', new TextEncoder().encode([...path, name].join('/').toLowerCase()));
+    return 'm' + [...new Uint8Array(h)].slice(0, 5).map((b) => b.toString(16).padStart(2, '0')).join('');
   }
-  function utilTree(path) {
-    const all = Object.values(loadUtils());
-    const under = all.filter((i) => JSON.stringify(i.path.slice(0, path.length)) === JSON.stringify(path));
+  async function publish(screen) {
+    const l = loadLib(), ids = [];
+    for (const m of screen.publish || []) {
+      if (!m || !m.name || !m.code) continue;
+      const path = (m.path || []).filter(Boolean).slice(0, 3);
+      const id = await modId(path, m.name), prev = l.modules[id];
+      l.modules[id] = { id, path: path.length ? path : ['misc'], name: m.name, kind: m.kind === 'css' ? 'css' : 'js',
+        description: m.description || (prev && prev.description) || '', usage: m.usage || (prev && prev.usage) || '',
+        code: m.code, version: (prev ? prev.version : 0) + 1, uses: prev ? prev.uses : 0, lastUsed: Date.now() };
+      ids.push(id);
+    }
+    if (ids.length) { l.since = (l.since || 0) + ids.length; saveLib(l); }
+    return ids;
+  }
+  function resolveMod(l, ref) {
+    let id = ref, hops = 0;
+    while (!l.modules[id] && l.aliases[id] && hops++ < 8) id = l.aliases[id];
+    if (!l.modules[id] && ref.includes('/')) {
+      const m = Object.values(l.modules).find((x) => [...x.path, x.name].join('/').toLowerCase() === ref.toLowerCase());
+      if (m) id = m.id;
+    }
+    return l.modules[id] ? id : null;
+  }
+  function libBundle(refs) {
+    const l = loadLib(), js = [], css = [], seen = new Set();
+    for (const ref of refs || []) {
+      const id = resolveMod(l, ref);
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      const m = l.modules[id]; m.uses++; m.lastUsed = Date.now();
+      const head = `/* ${[...m.path, m.name].join('/')} v${m.version} */\n`;
+      (m.kind === 'css' ? css : js).push(head + m.code);
+    }
+    saveLib(l);
+    return { js: js.join('\n;\n'), css: css.join('\n'), ids: [...seen] };
+  }
+  function libOverview(words, limit = 40) {
+    const ws = words.join(' ').toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+    return Object.values(loadLib().modules).map((m) => {
+      const hay = (m.path.join(' ') + ' ' + m.name + ' ' + m.description).toLowerCase();
+      return [m, ws.reduce((n, w) => n + (hay.includes(w) ? 1 : 0), 0)];
+    }).sort((a, b) => b[1] - a[1] || b[0].uses - a[0].uses).slice(0, limit)
+      .map(([m]) => `${[...m.path, m.name].join(' › ')} (${m.kind}) — ${m.description}${m.usage ? ' · usage: ' + m.usage : ''} [${m.id}]`);
+  }
+  const libCategories = () => [...new Set(Object.values(loadLib().modules)
+    .flatMap((m) => m.path.map((_, n) => m.path.slice(0, n + 1).join(' › '))))].sort();
+  function libTree(path) {
+    const all = Object.values(loadLib().modules);
+    const under = all.filter((m) => JSON.stringify(m.path.slice(0, path.length)) === JSON.stringify(path));
     const cats = {}, here = [];
-    for (const i of under) {
-      if (i.path.length > path.length) {
-        const c = i.path[path.length];
+    for (const m of under) {
+      if (m.path.length > path.length) {
+        const c = m.path[path.length];
         cats[c] = cats[c] || { name: c, count: 0, uses: 0 };
-        cats[c].count++; cats[c].uses += i.uses;
-      } else here.push(i);
+        cats[c].count++; cats[c].uses += m.uses;
+      } else here.push(m);
     }
     return {
       categories: Object.values(cats).sort((a, b) => b.uses - a.uses || a.name.localeCompare(b.name)),
       utilities: here.sort((a, b) => b.uses - a.uses || a.name.localeCompare(b.name))
-        .map((i) => ({ id: i.id, name: i.name, icon: i.icon, description: i.description })),
+        .map((m) => ({ id: m.id, name: m.name, icon: m.kind === 'css' ? '🎨' : '🧩', description: m.description, uses: m.uses })),
       total: all.length,
     };
   }
-  function utilOverview(words, limit = 30) {
-    const ws = words.join(' ').toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(Boolean);
-    return Object.values(loadUtils()).map((i) => {
-      const hay = (i.path.join(' ') + ' ' + i.name + ' ' + i.description).toLowerCase();
-      return [i, ws.reduce((n, w) => n + (hay.includes(w) ? 1 : 0), 0)];
-    }).sort((a, b) => b[1] - a[1] || b[0].uses - a[0].uses).slice(0, limit)
-      .map(([i]) => `${[...i.path, i.name].join(' › ')} — ${i.description} [${i.id}]`);
+  let reviewing = false;
+  async function reviewLibrary(force) {
+    const l = loadLib(), n = Object.keys(l.modules).length;
+    if (reviewing || n < 2 || (!force && (l.since || 0) < 6 && Date.now() - (l.lastReview || 0) < 86400000)) return;
+    const k = getKey();
+    if (!k) return;
+    reviewing = true;
+    try {
+      const p = await loadPrompts();
+      const modules = Object.values(l.modules).sort((a, b) => b.uses - a.uses).slice(0, 60)
+        .map((m) => ({ id: m.id, path: m.path, name: m.name, kind: m.kind, description: m.description, usage: m.usage, uses: m.uses, code: m.code.slice(0, 12000) }));
+      const { screen: r } = await turn(k, instructions(p.system + p.librarian), JSON.parse(p.librarySchema), [],
+        'Review the utility library:\n' + json({ modules, categories: libCategories() }), null, 'librarian', () => {});
+      const lib = loadLib();
+      for (const u of r.updates || []) {
+        const m = lib.modules[u.id]; if (!m) continue;
+        if (u.code) { m.code = u.code; m.version++; }
+        for (const f of ['description', 'usage']) if (u[f] != null) m[f] = u[f];
+        if ((u.path && u.path.length) || u.name) {
+          m.path = u.path && u.path.length ? u.path : m.path; m.name = u.name || m.name;
+          const nid = await modId(m.path, m.name);
+          if (nid !== m.id) { delete lib.modules[m.id]; lib.aliases[m.id] = nid; m.id = nid; lib.modules[nid] = m; }
+        }
+      }
+      for (const g of r.merge || []) {
+        if (!g.from || !g.into || !g.into.code) continue;
+        const path = (g.into.path || []).filter(Boolean), nid = await modId(path, g.into.name);
+        const olds = g.from.map((id) => lib.modules[id]).filter(Boolean);
+        lib.modules[nid] = { id: nid, path, name: g.into.name, kind: g.into.kind === 'css' ? 'css' : 'js', description: g.into.description || '',
+          usage: g.into.usage || '', code: g.into.code, version: Math.max(0, ...olds.map((o) => o.version)) + 1,
+          uses: olds.reduce((n, o) => n + o.uses, 0), lastUsed: Date.now() };
+        for (const id of g.from) if (id !== nid) { delete lib.modules[id]; lib.aliases[id] = nid; }
+      }
+      for (const id of r.remove || []) delete lib.modules[id];
+      lib.lastReview = Date.now(); lib.since = 0;
+      saveLib(lib);
+    } catch {} finally { reviewing = false; }
   }
-  const utilCategories = () => [...new Set(Object.values(loadUtils())
-    .flatMap((i) => i.path.map((_, n) => i.path.slice(0, n + 1).join(' › '))))].sort();
 
   // ------------------------------------------------------------- user profile
   // Characteristic tree (from the profiler AI) + behavioral baseline, in localStorage.
@@ -337,8 +403,8 @@ const WebBackend = (() => {
     if (mem.length) event.memory = mem;
     const ov = overview();
     if (ov.length) event.flows = ov;
-    const uo = utilOverview(words);
-    if (uo.length) { event.utilities = uo; event.utilityCategories = utilCategories(); }
+    const lo = libOverview(words);
+    if (lo.length) { event.library = lo; event.libraryCategories = libCategories(); }
     const user = {};
     if (input.guest) user.guest = true;
     else { const pr = profileOverview(); if (pr.length) user.profile = pr; }
@@ -352,11 +418,6 @@ const WebBackend = (() => {
       openScreen, 'ai', progress);
     convo = messages; openScreen = callId; replayed = []; prefetchedShown = [];
     let out = screen;
-    if (out.reuse && /^u/.test(out.reuse) && loadUtils()[out.reuse]) {
-      const u = loadUtils(), item = u[out.reuse];
-      item.uses++; item.lastUsed = Date.now(); saveUtils(u);
-      out = { ...item.screen, ...(out.title ? { title: out.title } : {}), note: out.note, cacheable: out.cacheable };
-    }
     if (out.reuse) {
       const e = touch(out.reuse);
       if (e) {
@@ -366,9 +427,12 @@ const WebBackend = (() => {
       }
       delete out.reuse;
     }
-    const saved = await saveUtility(out);
-    const { utility, ...shown } = store(key, action, steps, out);
-    return { screen: shown, ...(saved ? { savedUtility: { id: saved.id, path: saved.path, name: saved.name } } : {}) };
+    const published = await publish(out);
+    const { publish: _p, ...kept } = out;
+    if (published.length) kept.uses = [...new Set([...(kept.uses || []), ...published])];
+    const shown = store(key, action, steps, kept);
+    reviewLibrary(false);
+    return { screen: shown, ...(published.length ? { published: published.length } : {}) };
   }
 
   async function side(channel, systemExtra, schemaName, input, intro) {
@@ -471,15 +535,12 @@ const WebBackend = (() => {
         return { traits: profileOverview(), baseline: p.baseline };
       }
       case 'utilities': {
-        if (body.op === 'open') {
-          const u = loadUtils(), item = u[body.id];
-          if (!item) throw err('Utility not found.');
-          item.uses++; item.lastUsed = Date.now(); saveUtils(u);
-          return { screen: item.screen };
-        }
-        if (body.op === 'delete') { const u = loadUtils(); delete u[body.id]; saveUtils(u); }
-        return utilTree(body.path || []);
+        if (body.op === 'bundle') return libBundle(body.ids);
+        if (body.op === 'review') { reviewLibrary(true); return { ok: true }; }
+        if (body.op === 'delete') { const l = loadLib(); delete l.modules[body.id]; saveLib(l); }
+        return libTree(body.path || []);
       }
+      case 'window': return { ok: true };
       case 'cache': {
         if (body.op === 'likely') return { label: likely(body.path) };
         if (body.op === 'clear') { localStorage.removeItem(CACHE); return {}; }

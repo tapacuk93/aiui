@@ -7,6 +7,8 @@ final class API: NSObject {
     typealias Reply = (Int, String, Data) -> Void
     /// Runs JavaScript in the page; set by the host (CEF on the Mac, WKWebView on iOS).
     static var evalJS: (String) -> Void = { _ in }
+    /// Puts the app window in or out of full screen (Mac); nil where the app is always full screen.
+    static var setFullScreen: ((Bool) -> Void)?
     let cache: Cache
     let utilities: Utilities
     let profile: Profile
@@ -21,6 +23,8 @@ final class API: NSObject {
     private(set) var refiner: AIEngine?
     private(set) var translator: AIEngine?
     private(set) var profiler: AIEngine?
+    private(set) var librarian: AIEngine?
+    private var reviewing = false
     /// The user's system language (BCP 47), sent with every event.
     let language = Locale.preferredLanguages.first ?? "en"
     private(set) var engineID: String?   // cli id, or "key"
@@ -90,6 +94,7 @@ final class API: NSObject {
         refiner = make(false, systemPrompt + Prompts.refine, Prompts.patchSchema)
         translator = make(false, Prompts.translate, Prompts.translateSchema)
         profiler = make(false, systemPrompt + Prompts.profiler, Prompts.profileSchema)
+        librarian = make(false, systemPrompt + Prompts.librarian, Prompts.librarySchema)
         engineID = id
         UserDefaults.standard.set(id, forKey: "engine")
         return true
@@ -110,6 +115,21 @@ final class API: NSObject {
         return out
     }
 
+    /// The librarian reviews the utility library after several publishes, or daily.
+    func reviewLibraryIfDue(force: Bool = false) {
+        guard let librarian, !reviewing, force || utilities.needsReview else { return }
+        reviewing = true
+        let data = (try? JSONSerialization.data(withJSONObject: ["modules": utilities.reviewInput(),
+                                                                   "categories": utilities.categories],
+                                                options: [.prettyPrinted, .sortedKeys])) ?? Data()
+        librarian.next(prompt: "Review the utility library:\n```json\n\(String(decoding: data, as: UTF8.self))\n```",
+                       progress: { _ in }, done: { [weak self] r in
+            guard let self else { return }
+            self.reviewing = false
+            if case .success(let result) = r { self.utilities.applyReview(result) }
+        })
+    }
+
     /// Pulls in what other devices wrote (called when the app becomes active, and every minute).
     func syncNow() {
         cache.reload(); utilities.reload(); profile.reload()
@@ -118,7 +138,7 @@ final class API: NSObject {
 
     func resetSession() { pager?.cancel(); suggester?.cancel(); scout?.cancel(); refiner?.cancel(); claude?.reset() }
     func shutdown() {
-        for e in [pager, suggester, scout, refiner, translator, profiler, claude] { e?.cancel() }
+        for e in [pager, suggester, scout, refiner, translator, profiler, librarian, claude] { e?.cancel() }
     }
 
     /// Runs a stateless side engine on `input` (plus flow index context) and replies with its JSON.
@@ -271,10 +291,10 @@ final class API: NSObject {
             if !memory.isEmpty { event["memory"] = memory }
             let flows = cache.overview()
             if !flows.isEmpty { event["flows"] = flows }
-            let utils = utilities.overview(words)
-            if !utils.isEmpty {
-                event["utilities"] = utils
-                event["utilityCategories"] = utilities.categories
+            let lib = utilities.overview(words)
+            if !lib.isEmpty {
+                event["library"] = lib
+                event["libraryCategories"] = utilities.categories
             }
             // Who the user is (unless a guest is using the app) and the page's behavioral check.
             var user: [String: Any] = [:]
@@ -297,11 +317,7 @@ final class API: NSObject {
                     self.replayed.removeAll()
                     self.prefetched.removeAll()
                     var screen = screen
-                    // `reuse`: the AI picked a stored outcome (or a saved utility) instead of rebuilding it.
-                    if let rk = screen["reuse"] as? String, rk.hasPrefix("u"), var util = self.utilities.open(rk) {
-                        for k in ["title", "message", "note", "cacheable"] { if let v = screen[k] { util[k] = v } }
-                        screen = util
-                    }
+                    // `reuse`: the AI picked a stored outcome instead of rebuilding it.
                     if let rk = screen.removeValue(forKey: "reuse") as? String, !rk.isEmpty,
                        var stored = self.cache.outcome(rk) {
                         for k in ["title", "message", "go", "more", "back", "note", "cacheable"] {
@@ -309,17 +325,30 @@ final class API: NSObject {
                         }
                         screen = stored
                     }
-                    self.cache.store(key: key, action: action, flow: steps, outcome: screen)
+                    var stored = screen
+                    if let pub = stored.removeValue(forKey: "publish") as? [[String: Any]], !pub.isEmpty {
+                        let ids = pub.compactMap { m -> String? in
+                            guard let n = m["name"] as? String else { return nil }
+                            return Utilities.id(path: (m["path"] as? [String] ?? []).filter { !$0.isEmpty }.prefix(3).map { $0 }, name: n)
+                        }
+                        stored["uses"] = Array(Set(((stored["uses"] as? [String]) ?? []) + ids))
+                    }
+                    self.cache.store(key: key, action: action, flow: steps, outcome: stored)
                     var clean = screen
                     clean["note"] = nil
                     clean["cacheable"] = nil
-                    var reply: [String: Any] = ["screen": clean]
-                    if let saved = self.utilities.save(from: screen) {
-                        reply["savedUtility"] = ["id": saved.id, "path": saved.path, "name": saved.name]
+                    var reply: [String: Any] = [:]
+                    // Modules the screen published join the shared library (the cached screen
+                    // keeps only `uses`, so replays resolve the current versions).
+                    let published = self.utilities.publish(from: screen)
+                    if !published.isEmpty { reply["published"] = published.count }
+                    clean["publish"] = nil
+                    if !published.isEmpty {
+                        clean["uses"] = Array(Set(((clean["uses"] as? [String]) ?? []) + published))
                     }
-                    clean["utility"] = nil
                     reply["screen"] = clean
                     send(reply)
+                    self.reviewLibraryIfDue()
                 case .failure(let e): fail(e.localizedDescription)
                 }
             })
@@ -360,11 +389,17 @@ final class API: NSObject {
                 send(["traits": profile.overview(), "baseline": profile.baseline.mapValues(\.value)])
             }
 
+        case "window":
+            DispatchQueue.main.async { Self.setFullScreen?((input["on"] as? Bool) ?? true) }
+            send(["ok": true])
+
         case "utilities":
             switch input["op"] as? String ?? "tree" {
-            case "open":
-                guard let screen = utilities.open(input["id"] as? String ?? "") else { return fail("Utility not found.") }
-                send(["screen": screen])
+            case "bundle":
+                send(utilities.bundle(input["ids"] as? [String] ?? []))
+            case "review":
+                reviewLibraryIfDue(force: true)
+                send(["ok": true])
             case "delete":
                 utilities.delete(input["id"] as? String ?? "")
                 send(utilities.tree(at: input["path"] as? [String] ?? []))

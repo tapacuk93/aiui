@@ -8,6 +8,10 @@ let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .u
     .appendingPathComponent("aiui", isDirectory: true)
 try? FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
 API.evalJS = { AIUICef.evalJS($0) }
+API.setFullScreen = { on in
+    guard let w = NSApp.windows.first(where: { $0.isVisible }) else { return }
+    if w.styleMask.contains(.fullScreen) != on { w.toggleFullScreen(nil) }
+}
 
 // Settings saved under the app's earlier bundle identifier (dev.aiui.app) carry over once.
 if UserDefaults.standard.string(forKey: "engine") == nil,

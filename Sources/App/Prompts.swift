@@ -117,19 +117,23 @@ enum Prompts {
     Events carry `attention` — where the cursor lingered or hesitated on the previous screen (circle \
     labels with dwell time) — and may list `prefetched` screens shown without you; use both.
 
-    Utilities: when a screen you build is a reusable utility (an HTML tool, calculator, converter, \
-    timer, game, template, checklist), set `utility` with a category `path` (broad → specific, 1–3 \
-    levels) and a short `name`; the app files it in the user's library tree, sorted by use. Reuse \
-    existing categories (`utilityCategories`) so the tree stays tidy. Events list relevant saved \
-    `utilities` as "path › name — description [id]"; to bring one back unchanged, set `reuse` to \
-    its id instead of rebuilding it.
+    Utility library: HTML screens share an internal library of small reusable code modules — JS \
+    helpers (charts, animations, formatters, game loops, storage, input handling) and CSS components. \
+    Events list it as `library` ("path › name (kind) — description · usage [id]") with \
+    `libraryCategories`. Before writing code, look there: declare what you reuse in `uses` (ids) and \
+    the app injects those modules before your HTML (JS modules attach to the global `lib`, e.g. \
+    `lib.barChart(el, data)`; CSS modules are plain rules). When you write a helper or component \
+    worth reusing elsewhere, `publish` it (path broad → specific, 1–3 levels, existing categories \
+    first; a short name; kind; description; usage; self-contained code that only assigns \
+    `lib.<name>`), and use it in this same screen via `uses`. Keep screens thin: logic that is not \
+    specific to this screen belongs in the library. Rule for every `html` screen: anything generic \
+    you write — a game loop, keyboard/touch/swipe input, canvas or animation helpers, scoring and \
+    high-score storage, formatters, chart drawing, a card or button style — goes to `publish` \
+    (or comes from `uses` if the library has it); only the screen-specific part stays in `html`. \
+    A librarian reviews the library now and then.
 
-    The user: events carry `user` — `profile`, an indexed tree of what is known about them (path: \
-    value (confidence)); use it to choose and order what you show. If `user.check.suspect` is true, \
-    the app's behavioral checks say this may be someone else (reasons listed): keep their personal \
-    data out of the screen, avoid anything destructive or outward-facing, and where it matters ask \
-    gently. If `user.guest` is true, the user confirmed it is someone else: treat them as a new \
-    person with no history.
+    Full screen: every game, video/media player, canvas, drawing or long reading view must set \
+    `fullscreen: true`; the app then offers a full-screen button.
 
     Every screen may have a `title` and a `go` label (Go button, bottom center) — decide per screen; \
     omit them when they add nothing. Go means "do it / continue with what is selected". `message` is an \
@@ -254,6 +258,45 @@ enum Prompts {
         "required": ["updates"],
     ])
 
+    static let librarian = """
+
+    ## Librarian mode
+    You are now the librarian, a separate background call reviewing the shared utility library \
+    (every module with its code and use count). Keep it small, sorted and dependable: merge \
+    duplicates or near-duplicates into one better module (`merge`: from ids → the merged module), \
+    fix bugs and tighten code, keep each module's public `lib.<name>` signature compatible \
+    (`updates` with id and only the changed fields; a new path/name re-files it), file modules \
+    under consistent categories (broad → specific, 1–3 levels), and remove dead or trivial code \
+    (`remove`). Change nothing that is fine. Do not perform any actions.
+    """
+
+    static let librarySchema: String = json([
+        "type": "object",
+        "properties": [
+            "updates": ["type": "array", "items": [
+                "type": "object",
+                "properties": ["id": ["type": "string"], "path": ["type": "array", "items": ["type": "string"]],
+                               "name": ["type": "string"], "description": ["type": "string"],
+                               "usage": ["type": "string"], "code": ["type": "string"]] as [String: Any],
+                "required": ["id"],
+            ] as [String: Any]],
+            "merge": ["type": "array", "items": [
+                "type": "object",
+                "properties": [
+                    "from": ["type": "array", "items": ["type": "string"]],
+                    "into": ["type": "object", "properties": [
+                        "path": ["type": "array", "items": ["type": "string"]], "name": ["type": "string"],
+                        "kind": ["type": "string", "enum": ["js", "css"]], "description": ["type": "string"],
+                        "usage": ["type": "string"], "code": ["type": "string"],
+                    ] as [String: Any], "required": ["path", "name", "kind", "code"]] as [String: Any],
+                ] as [String: Any],
+                "required": ["from", "into"],
+            ] as [String: Any]],
+            "remove": ["type": "array", "items": ["type": "string"]],
+        ] as [String: Any],
+        "required": ["updates"],
+    ])
+
     static let patchSchema: String = json([
         "type": "object",
         "properties": ["circles": ["type": "array", "items": [
@@ -314,15 +357,24 @@ enum Prompts {
             "more": ["type": "boolean", "description": "expandable: show the More button"],
             "back": ["type": "boolean", "description": "context needs a visible Back button"],
             "focus": ["type": "string", "description": "id of the circle the user most likely wants next; it starts pre-selected"],
-            "utility": [
-                "type": "object",
-                "description": "set when this screen is a reusable utility worth keeping (a tool, calculator, converter, game, template): it is saved to the user's library",
-                "properties": [
-                    "path": ["type": "array", "items": ["type": "string"], "description": "category path, broad to specific, 1-3 levels; reuse existing categories"],
-                    "name": ["type": "string"], "icon": ["type": "string"], "description": ["type": "string"],
-                ],
-                "required": ["path", "name"],
+            "publish": [
+                "type": "array",
+                "description": "reusable code modules this screen introduces, saved to the shared utility library for later screens",
+                "items": [
+                    "type": "object",
+                    "properties": [
+                        "path": ["type": "array", "items": ["type": "string"], "description": "category path, broad to specific, 1-3 levels; reuse existing categories"],
+                        "name": ["type": "string", "description": "identifier, e.g. barChart"],
+                        "kind": ["type": "string", "enum": ["js", "css"]],
+                        "description": ["type": "string"],
+                        "usage": ["type": "string", "description": "how to call it, e.g. lib.barChart(el, data)"],
+                        "code": ["type": "string", "description": "js: assigns to lib.<name> (lib is global); css: plain rules with a distinctive class prefix"],
+                    ] as [String: Any],
+                    "required": ["path", "name", "kind", "code"],
+                ] as [String: Any],
             ] as [String: Any],
+            "uses": ["type": "array", "items": ["type": "string"], "description": "library module ids (or path/name) this html screen needs; the app injects them before its html"],
+            "fullscreen": ["type": "boolean", "description": "this screen is best experienced full screen (games, media, reading, canvases); the app offers a full-screen button"],
             "live": ["type": "boolean", "description": "circles would gain from a background pass filling real data (counts, previews, statuses)"],
             "note": ["type": "string", "description": "one-line index description of this action and its outcome, for the memory index"],
             "reuse": ["type": "string", "description": "key of a stored outcome (from memory/index) to show instead of building a new one"],
