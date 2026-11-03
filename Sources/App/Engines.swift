@@ -355,6 +355,7 @@ final class APIEngine: AIEngine {
         let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
         let status = (resp as? HTTPURLResponse)?.statusCode ?? 0
         guard (200..<300).contains(status) else {
+            if status == 402, key.base == AICoin.proxy { throw AICoin.paymentError(obj) }
             let msg = ((obj["error"] as? [String: Any])?["message"] as? String) ?? String(decoding: data.prefix(400), as: UTF8.self)
             throw aiError("\(key.name) error \(status): \(msg)")
         }

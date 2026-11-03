@@ -2178,40 +2178,51 @@ const STR = {
 };
 for (const c of ROOT.circles) { STR['root.' + c.id] = c.label; STR['root.' + c.id + '.hint'] = c.hint; }
 
-// ---------------------------------------------------------------- AICoin wallet by QR
-// The Mac asks the AICoin proxy for an authorisation and shows its id as a code; the AICoin
-// wallet iPhone app scans it and the owner taps Allow. The native side keeps the secret, collects
-// the token, switches the AI to AICoin and reports back with an `aicoinLink` event.
+// ---------------------------------------------------------------- AICoin wallet link by QR
+// AI UI has a wallet of its own. The AICoin wallet iPhone app links it (CONTRACT.md, "Linked
+// wallets"): this screen shows a code with only AI UI's public address, the owner scans it and
+// confirms, and AI UI's calls are then paid from the owner's coins up to the limit set there.
+// The native side watches the balance for `linked_to` and reports with `aicoinLink` events.
 
 Object.assign(STR, {
-  aicoinLink: 'Connect AICoin wallet (scan QR)', aicoinLinkHint: 'with the AICoin wallet iPhone app',
-  aicoinLinked: 'wallet connected', aicoinUnlink: 'Disconnect wallet', aicoinCoins: 'coins',
-  aicoinLinkTitle: 'Connect your AICoin wallet',
-  aicoinLinkSteps: 'Open the AICoin wallet app on your iPhone, tap Scan and point the camera at this code. Then tap Allow.',
-  aicoinLinkNote: 'AI calls are then paid from that wallet. You can revoke access any time in the wallet app, under Authorised Services.',
-  aicoinLinkQrAlt: 'Code to scan with the AICoin wallet app',
-  aicoinLinkPreparing: 'Preparing the code…', aicoinLinkExpiresIn: 'Code expires in',
-  aicoinLinkDone: 'Wallet connected', aicoinLinkDoneMsg: 'AI UI now uses your AICoin wallet.',
-  aicoinLinkExpired: 'This code expired before it was approved.', aicoinLinkFailed: 'Could not connect the wallet.',
-  aicoinLinkNew: 'New code', aicoinLinkCancel: 'Cancel', aicoinLinkClose: 'Done',
+  aicoinLink: 'Link AICoin wallet (scan QR)', aicoinLinkHint: 'not linked · scan with the AICoin wallet app',
+  aicoinLinked: 'linked', aicoinUnlink: 'Unlink wallet', aicoinCoins: 'coins', aicoinSpendable: 'coins to spend',
+  aicoinLinkTitle: 'Link AI UI to your AICoin wallet',
+  aicoinLinkSteps: 'Open the AICoin wallet app on your iPhone, tap Scan and point the camera at this code. Check that the address it shows matches the one shown here, then confirm.',
+  aicoinLinkNote: 'The code holds only AI UI’s public wallet address. Calls are then paid from your wallet, up to the limit you set there. Unlink any time, here or in the wallet app.',
+  aicoinLinkQrAlt: 'Code to scan with the AICoin wallet app', aicoinLinkAddress: 'AI UI wallet',
+  aicoinLinkPreparing: 'Preparing the code…', aicoinLinkWaiting: 'Waiting for the AICoin wallet app…',
+  aicoinLinkDone: 'Linked to your AICoin wallet', aicoinLinkOwner: 'Owner wallet',
+  aicoinLimit: 'Limit', aicoinSpent: 'spent', aicoinNoLimit: 'No limit',
+  aicoinLimitReached: 'The link limit is reached. Raise it in the AICoin wallet app.',
+  aicoinOwnerEmpty: 'Your AICoin wallet is out of coins. Add coins in the AICoin wallet app.',
+  aicoinLinkTimeout: 'Stopped waiting for the wallet app.', aicoinLinkFailed: 'Could not show the code.',
+  aicoinUnlinked: 'AICoin wallet: not linked',
+  aicoinLinkNew: 'Show the code again', aicoinLinkCancel: 'Cancel', aicoinLinkClose: 'Done',
 });
 
 let aicoinLinkView = null;
 
-// Circles for the AI provider screen: connect by QR, and disconnect once connected.
+// Linked, but the next call can't be paid: the link's limit, or the owner's coins.
+function aicoinProblem(st) {
+  if (!st.linked || (st.spendable != null && st.spendable >= 1)) return '';
+  return st.limit != null && st.spent != null && st.spent >= st.limit ? t('aicoinLimitReached') : t('aicoinOwnerEmpty');
+}
+
+// Circles for the AI provider screen: link by QR, and unlink once linked.
 async function aicoinLinkCircles() {
   let st = {};
   try { st = await call('aicoin', { op: 'status' }); } catch {}
-  const coins = st.balance != null ? ` · ${Math.floor(st.balance)} ${t('aicoinCoins')}` : '';
-  const out = [{ id: 'aicoinLink', label: t('aicoinLink'), icon: '📱', size: 1.1,
-    hint: st.connected ? t('aicoinLinked') + coins : t('aicoinLinkHint') }];
-  if (st.connected) out.push({ id: 'aicoinUnlink', label: t('aicoinUnlink'), icon: '🔌', size: 0.8 });
+  const hint = !st.linked ? t('aicoinLinkHint')
+    : aicoinProblem(st) || `${t('aicoinLinked')} · ${Math.floor(st.spendable ?? 0)} ${t('aicoinSpendable')}`;
+  const out = [{ id: 'aicoinLink', label: t('aicoinLink'), icon: '📱', size: 1.1, hint }];
+  if (st.linked) out.push({ id: 'aicoinUnlink', label: t('aicoinUnlink'), icon: '🔌', size: 0.8 });
   return out;
 }
 
 async function aicoinLinkOpen(c) {
   if (c.id === 'aicoinLink') return showAicoinLink();
-  try { await call('aicoin', { op: 'disconnect' }); } catch (e) { return toast(e.message); }
+  try { await call('aicoin', { op: 'unlink' }); } catch (e) { return toast(e.message); }
   stack.pop();
   return showSetup();
 }
@@ -2225,17 +2236,24 @@ function showAicoinLink() {
   v.setAttribute('aria-labelledby', 'aicoinlink-title');
   v.innerHTML = `<h1 id="aicoinlink-title"></h1>
     <div class="qr" aria-busy="true"><img alt=""></div>
-    <p class="steps"></p><p class="count" aria-live="polite"></p><p class="note"></p>
-    <div class="buttons"><button type="button" class="again" hidden></button><button type="button" class="close"></button></div>`;
+    <p class="addr"><span class="who"></span> <code></code></p>
+    <p class="steps"></p><p class="count" aria-live="polite"></p><p class="limit"></p><p class="note"></p>
+    <div class="buttons"><button type="button" class="again" hidden></button><button type="button" class="unlink" hidden></button><button type="button" class="close"></button></div>`;
   const $ = (s) => v.querySelector(s);
   $('h1').textContent = t('aicoinLinkTitle');
   $('.steps').textContent = t('aicoinLinkSteps');
   $('.note').textContent = t('aicoinLinkNote');
   $('.count').textContent = t('aicoinLinkPreparing');
+  $('.who').textContent = t('aicoinLinkAddress');
   $('img').alt = t('aicoinLinkQrAlt');
   $('.again').textContent = t('aicoinLinkNew');
+  $('.unlink').textContent = t('aicoinUnlink');
   $('.close').textContent = t('aicoinLinkCancel');
   $('.again').onclick = () => showAicoinLink();
+  $('.unlink').onclick = async () => {
+    try { await call('aicoin', { op: 'unlink' }); } catch (e) { return toast(e.message); }
+    showAicoinLink();
+  };
   $('.close').onclick = () => closeAicoinLink(true);
   const keys = (e) => {
     e.stopPropagation();
@@ -2243,40 +2261,45 @@ function showAicoinLink() {
   };
   window.addEventListener('keydown', keys, true);
   document.body.appendChild(v);
-  const view = aicoinLinkView = { el: v, state: 'waiting', timer: 0, keys };
+  const view = aicoinLinkView = { el: v, state: 'waiting', keys };
   $('.close').focus();
-  call('aicoin', { op: 'connect' }).then((r) => {
+  call('aicoin', { op: 'link' }).then((r) => {
     if (aicoinLinkView !== view) { call('aicoin', { op: 'cancel' }).catch(() => {}); return; }
     $('img').src = r.qr;
     $('.qr').removeAttribute('aria-busy');
-    const ends = Date.now() + r.expiresIn * 1000;
-    const tick = () => {
-      const s = Math.max(0, Math.round((ends - Date.now()) / 1000));
-      $('.count').textContent = `${t('aicoinLinkExpiresIn')} ${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
-      if (!s) aicoinLinkState('expired');
-    };
-    tick();
-    view.timer = setInterval(tick, 1000);
-  }).catch((e) => aicoinLinkState('failed', e.message));
+    $('code').textContent = r.short;
+    $('code').title = r.address;
+    $('.count').textContent = t('aicoinLinkWaiting');
+    if (r.linked) aicoinLinkState('connected', r);
+  }).catch((e) => aicoinLinkState('failed', { error: e.message }));
 }
 
-function aicoinLinkState(state, detail) {
+function aicoinLinkState(state, e) {
   const view = aicoinLinkView;
   if (!view || view.state !== 'waiting') return;
   view.state = state;
-  clearInterval(view.timer);
   const v = view.el, $ = (s) => v.querySelector(s);
   v.className = state;
   $('.qr').hidden = true;
   $('.note').hidden = true;
   if (state === 'connected') {
     $('h1').textContent = '✓ ' + t('aicoinLinkDone');
-    $('.steps').textContent = t('aicoinLinkDoneMsg');
-    $('.count').textContent = detail != null ? `${Math.floor(detail)} ${t('aicoinCoins')}` : '';
+    $('.who').textContent = t('aicoinLinkOwner');
+    $('code').textContent = e.ownerShort || '';
+    $('code').title = e.owner || '';
+    const problem = aicoinProblem(e);
+    $('.steps').textContent = problem;
+    $('.steps').classList.toggle('problem', !!problem);
+    $('.count').textContent = `${Math.floor(e.spendable ?? e.balance ?? 0)} ${t('aicoinSpendable')}`;
+    $('.limit').textContent = e.limit != null
+      ? `${t('aicoinLimit')} ${e.limit} · ${t('aicoinSpent')} ${Math.round((e.spent ?? 0) * 10) / 10}`
+      : ('limit' in e || e.spent != null ? t('aicoinNoLimit') : '');
+    $('.unlink').hidden = false;
     $('.close').textContent = t('aicoinLinkClose');
   } else {
-    $('.steps').textContent = state === 'expired' ? t('aicoinLinkExpired') : t('aicoinLinkFailed');
-    $('.count').textContent = state === 'failed' && detail ? detail : '';
+    $('.addr').hidden = true;
+    $('.steps').textContent = state === 'timeout' ? t('aicoinLinkTimeout') : t('aicoinLinkFailed');
+    $('.count').textContent = state === 'failed' && e && e.error ? e.error : '';
     $('.again').hidden = false;
     $('.again').focus();
   }
@@ -2286,7 +2309,6 @@ function closeAicoinLink(user) {
   const view = aicoinLinkView;
   if (!view) return;
   aicoinLinkView = null;
-  clearInterval(view.timer);
   window.removeEventListener('keydown', view.keys, true);
   view.el.remove();
   if (view.state === 'waiting') call('aicoin', { op: 'cancel' }).catch(() => {});
@@ -2295,10 +2317,15 @@ function closeAicoinLink(user) {
 
 function onAicoinLink(e) {
   if (e.state === 'connected') {
-    log('done', '🪙 AICoin wallet connected');
-    if (aicoinLinkView) aicoinLinkState('connected', e.balance);
+    log('done', '🪙 AICoin wallet linked');
+    if (aicoinLinkView) aicoinLinkState('connected', e);
     else { home(); flashStatus('🪙 AICoin'); }
-  } else if (aicoinLinkView) aicoinLinkState(e.state, e.error);
+  } else if (e.state === 'unlinked') {
+    // The owner removed the link in the wallet app (or it was unlinked here).
+    flashStatus(t('aicoinUnlinked'));
+    if (aicoinLinkView && aicoinLinkView.state === 'connected') showAicoinLink();
+    else if (current.screen.local === 'setup') { stack.pop(); showSetup(); }
+  } else if (aicoinLinkView) aicoinLinkState(e.state, e);
 }
 
 let LANG = (navigator.language || 'en');
