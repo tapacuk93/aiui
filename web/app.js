@@ -963,14 +963,46 @@ el.write.addEventListener('keydown', (e) => {
 });
 
 // A click on any empty place opens the text input.
-document.addEventListener('mousedown', (e) => {
-  if (e.button !== 0) return;
+document.addEventListener('pointerdown', (e) => {
+  if (e.button !== 0 || e.pointerType === 'touch') return; // touch: handled as a tap below
   const t = e.target;
   if (t === el.write || t.closest('.circle, #nav, #view iframe, #toast, #close')) return;
   if (current.screen.kind === 'html' && t.closest('#view')) return;
   e.preventDefault();
   startWriting();
 });
+
+// ---------------------------------------------------------------- touch gestures (iPhone, iPad)
+// Swipe up: next page (like More). Swipe down: previous page, then back a screen. A tap on an
+// empty place opens the text input, as a click does with a mouse.
+
+let touch0 = null;
+document.addEventListener('touchstart', (e) => {
+  if (e.touches.length !== 1) { touch0 = null; return; }
+  const p = e.touches[0];
+  touch0 = { x: p.clientX, y: p.clientY, t: performance.now(), target: e.target };
+}, { passive: true });
+
+document.addEventListener('touchend', (e) => {
+  if (!touch0) return;
+  const p = e.changedTouches[0];
+  const dx = p.clientX - touch0.x, dy = p.clientY - touch0.y, dt = performance.now() - touch0.t;
+  const target = touch0.target;
+  touch0 = null;
+  if (target === el.write || (target.closest && target.closest('#view iframe'))) return;
+  const s = current.screen;
+  if (Math.abs(dy) > 50 && Math.abs(dy) > Math.abs(dx) * 1.5 && dt < 700) {
+    if (typing() || s.kind === 'html') return;
+    if (dy < 0) nextPage();
+    else if (!prevPage()) back();
+    return;
+  }
+  // A tap (no movement) on an empty place: start typing.
+  if (Math.hypot(dx, dy) < 10 && dt < 400 && target.closest &&
+      !target.closest('.circle, #nav, #view, #toast, #close, #write, a, button')) {
+    startWriting();
+  }
+}, { passive: true });
 
 // ---------------------------------------------------------------- keys
 
@@ -1121,7 +1153,8 @@ function circleAt(target) {
   return n && !n.hidden ? n : null;
 }
 
-el.circles.addEventListener('mouseover', (e) => {
+el.circles.addEventListener('pointerover', (e) => {
+  if (e.pointerType !== 'mouse') return; // touch: no hover, no trajectories
   const n = circleAt(e.target);
   if (!n || n.dataset.id === hoverId) return;
   endHover();
@@ -1131,7 +1164,7 @@ el.circles.addEventListener('mouseover', (e) => {
   const moved = performance.now() - lastPointerMove < 80;
   if (moved && !typing() && n.dataset.id !== focusedId()) setFocus(n.dataset.id, true);
 });
-el.circles.addEventListener('mouseleave', endHover);
+el.circles.addEventListener('pointerleave', (e) => { if (e.pointerType === 'mouse') endHover(); });
 function endHover() {
   if (!hoverId) return;
   const a = attentionOf(current.screen);
@@ -1142,7 +1175,8 @@ function endHover() {
 
 let lastPointerMove = 0;
 let lastPointer = { x: -1, y: -1 };
-document.addEventListener('mousemove', (e) => {
+document.addEventListener('pointermove', (e) => {
+  if (e.pointerType !== 'mouse') return;
   const now = performance.now();
   if (e.clientX === lastPointer.x && e.clientY === lastPointer.y) return; // synthetic, no motion
   lastPointer = { x: e.clientX, y: e.clientY };
