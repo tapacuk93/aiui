@@ -795,3 +795,16 @@ body.immersive #statusbar { display: none; }
 #aicoinlink button.again { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
 #aicoinlink button:hover { border-color: var(--accent); }
 #aicoinlink button:focus-visible { outline: 2.5px solid var(--accent); outline-offset: 3px; }
+
+/* ---------- other paths from the root (web / no title bar) ---------- */
+#paths { display: flex; gap: 6px; flex-wrap: wrap; justify-content: center; margin-top: 4px; }
+#paths:empty { display: none; }
+html.native-address #paths { display: none; }
+#paths .path-tab { display: inline-flex; align-items: center; border: 1px solid var(--line); border-radius: 999px; background: var(--chip); }
+#paths button { border: 0; background: transparent; color: var(--muted); font: 12px/1 -apple-system, system-ui, sans-serif; padding: 5px 4px 5px 10px; cursor: pointer; }
+#paths .path-x { padding: 5px 9px 5px 4px; }
+#paths button:hover, #paths button:focus-visible { color: var(--fg); outline: none; }
+
+/* transition hold: a screen waiting for its new content */
+#circles.holding { opacity: .45; pointer-events: none; animation: hold-pulse 1.2s ease-in-out infinite; transition: opacity .2s; }
+@keyframes hold-pulse { 50% { opacity: .3; } }

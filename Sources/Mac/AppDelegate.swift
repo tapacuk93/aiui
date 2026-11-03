@@ -39,7 +39,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTo
         }
         w.minSize = NSSize(width: 520, height: 420)
         addressBar.onSelect = { i in AIUICef.evalJS("window.aiui && aiui.menuUsed && aiui.menuUsed(), window.aiui && aiui.goTo(\(i))") }
-        API.setAddress = { [weak self] items in self?.setAddress(items) }
+        API.setAddress = { [weak self] items, others in self?.setAddress(items, others) }
+        addressBar.onSwitch = { i in AIUICef.evalJS("window.aiui && aiui.switchPath(\(i))") }
+        addressBar.onClose = { i in AIUICef.evalJS("window.aiui && aiui.closePath(\(i))") }
         w.delegate = self
         w.setFrameAutosaveName("aiui.main")
         if !w.setFrameUsingName("aiui.main") { w.center() }
@@ -68,7 +70,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTo
 
     // MARK: - Address bar
 
-    func setAddress(_ items: [String]) { addressBar.set(items) }
+    func setAddress(_ items: [String], _ others: [(String, String)]) { addressBar.set(items, others: others) }
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { [Self.addressItem, .flexibleSpace] }
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { [Self.addressItem, .flexibleSpace] }

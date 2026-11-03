@@ -172,7 +172,7 @@ window.aiui = {
   app: { get: (k) => appGet(k), set: (k, v) => appSet(k, v), subscribe: (k, fn) => appSubscribe(k, fn) },
   media: { play: (url, title) => mediaPlay(url, title), pause: () => mediaPause(), resume: () => mediaResume(),
     stop: () => mediaStop(), state: () => mediaInfo() },
-  goTo: (i) => goTo(i), setting: (k, v) => setSetting(k, v), action: (n, a) => settingsAction(n, a),
+  goTo: (i) => goTo(i), switchPath: (i) => switchPath(i), closePath: (i) => closePath(i), setting: (k, v) => setSetting(k, v), action: (n, a) => settingsAction(n, a),
   settings: () => ({ ...settings, paused }),
   reloadScene: () => reloadScene(), find: () => find(), forward: () => forward(), zoom: (d) => zoom(d), print: () => printScene(),
   jsLibraries: () => showJSLibraries(),
@@ -416,6 +416,48 @@ function setBusy(on, circle) {
 // ---------------------------------------------------------------- AI provider setup
 // Local screens (no AI involved): pick a detected agent CLI, or paste an API key of any provider.
 
+// Several paths from the root, one active (the others keep their place). App-owned screens
+// (network, settings, libraries, profile, AI provider…) open in a path of their own, and opening
+// one again returns to its path. The title bar shows them all; a click switches, × closes.
+let paths = []; // the inactive paths: { stack, current, forwardStack }
+const pathTop = (p) => (p.stack.length > 1 ? p.stack[1] : p.current);
+function pushPath(screen, label) {
+  const family = screen.local;
+  const top = pathTop({ stack, current });
+  if (!family || (stack.length && top.screen && top.screen.local === family)) return push(screen, label); // deeper in its own path
+  const i = paths.findIndex((p) => pathTop(p).screen && pathTop(p).screen.local === family);
+  if (i >= 0) {                      // its path exists: switch there, refreshed at its first level
+    const p = paths.splice(i, 1)[0];
+    saveActivePath();
+    ({ stack, current, forwardStack } = { stack: p.stack.slice(0, 1), current: { screen, label }, forwardStack: [] });
+  } else {
+    saveActivePath();
+    stack = [{ screen: clone(ROOT), label: null }];
+    current = { screen, label };
+    forwardStack = [];
+  }
+  stopWriting(true);
+  render();
+}
+function saveActivePath() {
+  if (!stack.length && current.screen.kind === 'circles' && !current.label) return; // just the root: nothing to keep
+  paths.push({ stack, current, forwardStack });
+}
+function switchPath(i) {
+  const p = paths[i];
+  if (!p) return;
+  if (busy) cancel();
+  paths.splice(i, 1);
+  saveActivePath();
+  ({ stack, current, forwardStack } = p);
+  stopWriting(true);
+  render();
+}
+function closePath(i) {
+  paths.splice(i, 1);
+  updateAddress();
+}
+
 function push(screen, label) {
   stack.push(current);
   current = { screen, label };
@@ -438,7 +480,7 @@ async function showSetup() {
   circles.push({ id: 'key', label: 'API Key', icon: '🔑', hint: 'any provider', size: 1.1 });
   if (NATIVE) circles.push(...await aicoinLinkCircles());
   if ((st.options || []).some((o) => o.kind === 'key')) circles.push({ id: 'forget', label: 'Forget Key', icon: '🗑️', size: 0.8 });
-  push({
+  pushPath({
     kind: 'circles', local: 'setup', more: false, back: stack.length > 0,
     title: st.active ? 'AI' : 'Connect an AI',
     message: !NATIVE
@@ -465,7 +507,7 @@ async function showLibrary(path = []) {
     ...r.utilities.map((u) => ({ id: 'util:' + u.id, icon: u.icon || '🧩', label: u.name, hint: u.description,
       util: u.id, value: u.uses })),
   ];
-  push({ kind: 'circles', local: 'library', libPath: path, more: false, back: true,
+  pushPath({ kind: 'circles', local: 'library', libPath: path, more: false, back: true,
     title: path.length ? path[path.length - 1] : t('library'),
     message: path.length ? '' : (r.total ? t('libraryMsg') : t('libraryEmpty')), circles }, path.length ? path[path.length - 1] : t('library'));
 }
@@ -2614,7 +2656,7 @@ function showWho() {
 }
 
 function showWhoScreen() {
-  push({
+  pushPath({
     kind: 'circles', local: 'who', more: false, back: true, title: t('whoTitle'),
     message: who.guest ? t('whoGuestMsg') : t('whoMsg') + (who.suspect ? ' (' + who.suspect.join('; ') + ')' : ''),
     circles: [
@@ -2644,7 +2686,7 @@ async function whoOpen(c) {
 async function showProfile(path = []) {
   let r;
   try { r = await call('profile', { op: 'tree', path }); } catch (e) { return toast(e.message); }
-  push({
+  pushPath({
     kind: 'circles', local: 'profile', profPath: path, more: false, back: true,
     title: path.length ? path[path.length - 1] : t('aboutYou'),
     message: r.total ? '' : t('aboutYouEmpty'),
@@ -2768,14 +2810,22 @@ async function showSystem() {
     row('Strategy', esc(median(ctxTiming.gen) != null && median(ctxTiming.use) != null && median(ctxTiming.gen) >= median(ctxTiming.use)
       ? 'generate as soon as a scene renders' : 'generate when the scene is idle'))])}
   </div><script>aiui.ready()<\/script>`;
-  push({ kind: 'html', local: 'system', title: t('system'), back: true, html }, t('system'));
+  pushPath({ kind: 'html', local: 'system', title: t('system'), back: true, html }, t('system'));
 }
 
 // ---------------------------------------------------------------- network (⌘N)
 async function showNetwork(refresh = false) {
-  flashStatus(t('netScan'));
+  // A transition hold: the network path shows at once ("looking for networks…"), and a rescan
+  // keeps the list dimmed and pulsing until the new one arrives; nothing unrelated in between.
+  if (refresh && current.screen.local === 'network') {
+    el.message.textContent = t('netScan');
+    el.circles.classList.add('holding');
+  } else {
+    pushPath({ kind: 'circles', local: 'network', more: false, back: true, title: t('network'), message: t('netScan'), circles: [] }, t('network'));
+  }
+  const entry = current;
   let r;
-  try { r = await call('network', { op: 'scan' }); } catch (e) { return toast(e.message); }
+  try { r = await call('network', { op: 'scan' }); } catch (e) { el.circles.classList.remove('holding'); return toast(e.message); }
   const bars = (rssi) => rssi >= -55 ? '▂▄▆█' : rssi >= -67 ? '▂▄▆' : rssi >= -78 ? '▂▄' : '▂';
   const circles = (r.networks || []).map((n) => ({
     id: 'net:' + n.ssid, ssid: n.ssid, secure: n.secure, known: n.known,
@@ -2787,7 +2837,9 @@ async function showNetwork(refresh = false) {
   const screen = { kind: 'circles', local: 'network', more: false, back: true, title: t('network'),
     message: r.error ? r.error : (r.hidden || r.locationAllowed === false) && !(r.networks || []).length ? t('netHidden') : !(r.networks || []).length ? t('netNone') : '',
     circles };
-  if (refresh && current.screen.local === 'network') { current.screen = screen; render(); } else push(screen, t('network'));
+  el.circles.classList.remove('holding');
+  entry.screen = screen;                // wherever the user is now; shown if still there
+  if (current === entry) render();
 }
 async function networkOpen(c) {
   if (c.selected && c.ssid) { flashStatus(`📶 ${c.ssid} · ${t('netConnected')}`); return; }
@@ -2818,7 +2870,7 @@ async function showJSLibraries() {
   let r;
   try { r = await call('libraries', { op: 'list' }); } catch (e) { return toast(e.message); }
   const inst = (r.libraries || []).filter((x) => x.installed);
-  push({
+  pushPath({
     kind: 'circles', local: 'jslibs', more: false, back: true, title: t('jsLibs'),
     message: `${inst.length} / ${(r.libraries || []).length} · ${fmtBytes(r.used)} / ${fmtBytes(r.budget)}`,
     circles: inst.sort((a, b) => (b.uses || 0) - (a.uses || 0)).map((x) => ({
@@ -3349,11 +3401,32 @@ async function settingsAction(name, arg) {
 applySettings();
 
 // The address (path of screens): in the Mac title bar, clickable; aiui.goTo(level) jumps there.
+function pathLabels(p) {
+  return [...p.stack.slice(1).map((e) => e.label || (e.screen && e.screen.title) || ''), p.stack.length ? (p.current.label || p.current.screen.title || '') : null]
+    .filter((x) => x != null);
+}
 function updateAddress() {
-  const items = [t('appName'), ...stack.slice(1).map((e) => e.label), stack.length ? current.label : null].filter(Boolean);
-  callRaw('window', { op: 'address', items }).then((r) => {
+  const items = [t('appName'), ...pathLabels({ stack, current })].filter(Boolean);
+  // The other paths, compact: their last place (the full path in the tooltip).
+  const others = paths.map((p) => { const l = pathLabels(p); return { title: l[l.length - 1] || t('appName'), full: [t('appName'), ...l].join(' › ') }; });
+  callRaw('window', { op: 'address', items, others }).then((r) => {
     document.documentElement.classList.toggle('native-address', !!(r && r.native));
   }).catch(() => {});
+  renderWebPaths(others);
+}
+// The page's own path line (web version, or when the title bar has none): the other paths after it.
+function renderWebPaths(others) {
+  let box = document.getElementById('paths');
+  if (!box) { box = document.createElement('div'); box.id = 'paths'; el.path.after(box); }
+  box.textContent = '';
+  others.forEach((o, i) => {
+    const b = document.createElement('span'); b.className = 'path-tab';
+    const go = document.createElement('button'); go.type = 'button'; go.textContent = o.title; go.title = o.full;
+    go.addEventListener('click', (e) => { e.stopPropagation(); switchPath(i); });
+    const x = document.createElement('button'); x.type = 'button'; x.className = 'path-x'; x.textContent = '×'; x.setAttribute('aria-label', '× ' + o.title);
+    x.addEventListener('click', (e) => { e.stopPropagation(); closePath(i); });
+    b.append(go, x); box.appendChild(b);
+  });
 }
 function goTo(level) {
   if (busy) cancel();

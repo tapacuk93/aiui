@@ -4,6 +4,9 @@ import Cocoa
 /// breadcrumbs (AI UI › Play › Games); each part is clickable and jumps to that level.
 final class AddressBar: NSView {
     var onSelect: ((Int) -> Void)?
+    /// The other paths from the root (shown after the active one): switch to one, or close it.
+    var onSwitch: ((Int) -> Void)?
+    var onClose: ((Int) -> Void)?
     private let stack = NSStackView()
 
     override init(frame: NSRect) {
@@ -32,8 +35,9 @@ final class AddressBar: NSView {
         layer?.backgroundColor = NSColor.clear.cgColor   // a plain path, no field
     }
 
-    func set(_ items: [String]) {
+    func set(_ items: [String], others: [(String, String)] = []) {
         stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        defer { addOthers(others) }
         for (i, title) in items.enumerated() {
             if i > 0 {
                 let sep = NSTextField(labelWithString: "›")
@@ -53,6 +57,31 @@ final class AddressBar: NSView {
             label.toolTip = title
             label.onClick = { [weak self] in self?.onSelect?(i) }
             stack.addArrangedSubview(label)
+        }
+    }
+
+    /// Each other path as a quiet tab: its last place (full path in the tooltip) and a ×.
+    private func addOthers(_ others: [(String, String)]) {
+        for (i, o) in others.enumerated() {
+            let gap = NSTextField(labelWithString: "  ·  ")
+            gap.font = NSFont.titleBarFont(ofSize: 13)
+            gap.textColor = .quaternaryLabelColor
+            stack.addArrangedSubview(gap)
+            let label = ClickLabel(labelWithString: o.0)
+            label.font = NSFont.titleBarFont(ofSize: 13)
+            label.textColor = .secondaryLabelColor
+            label.lineBreakMode = .byTruncatingTail
+            label.setContentCompressionResistancePriority(.defaultLow - 1, for: .horizontal)
+            label.toolTip = o.1
+            label.onClick = { [weak self] in self?.onSwitch?(i) }
+            stack.addArrangedSubview(label)
+            let close = ClickLabel(labelWithString: "×")
+            close.font = NSFont.titleBarFont(ofSize: 12)
+            close.textColor = .tertiaryLabelColor
+            close.toolTip = "Close"
+            close.setAccessibilityLabel("Close \(o.0)")
+            close.onClick = { [weak self] in self?.onClose?(i) }
+            stack.addArrangedSubview(close)
         }
     }
 

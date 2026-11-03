@@ -10,7 +10,7 @@ final class API: NSObject {
     /// Puts the app window in or out of full screen (Mac); nil where the app is always full screen.
     static var setFullScreen: ((Bool) -> Void)?
     /// Shows the address (path of screens) in the host's title bar, where there is one (Mac).
-    static var setAddress: (([String]) -> Void)?
+    static var setAddress: (([String], [(String, String)]) -> Void)?
     /// Background work paused by the user (status bar ⏸ / Settings).
     /// Background work paused by the user; kept across launches (the page also remembers it).
     static var paused = UserDefaults.standard.bool(forKey: "paused") { didSet { UserDefaults.standard.set(paused, forKey: "paused") } }
@@ -829,7 +829,8 @@ final class API: NSObject {
             switch input["op"] as? String ?? "fullscreen" {
             case "address":
                 let items = input["items"] as? [String] ?? []
-                DispatchQueue.main.async { Self.setAddress?(items) }
+                let others = (input["others"] as? [[String: Any]] ?? []).map { ($0["title"] as? String ?? "", $0["full"] as? String ?? "") }
+                DispatchQueue.main.async { Self.setAddress?(items, others) }
                 send(["ok": true, "native": Self.setAddress != nil])
             case "pause":
                 Self.paused = (input["on"] as? Bool) ?? !Self.paused
