@@ -431,6 +431,9 @@ final class API: NSObject {
             }
             send(engineStatus())
 
+        case "aicoin":                            // connect a wallet from the AICoin iOS app by QR (AICoin.swift)
+            AICoinLink.shared.handle(input, use: { [weak self] in self?.use("aicoin") ?? false }, send: send, fail: fail)
+
         case "suggest":
             guard let suggester else { return fail("no-ai") }
             var input = input
