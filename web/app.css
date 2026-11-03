@@ -205,8 +205,8 @@ html, body {
   outline: 2.5px solid var(--accent);
   outline-offset: 6px;
 }
-.circle.typed .face { border: 1.5px dashed var(--accent); }
-.circle.suggested .face { border-style: dashed; }
+.circle.typed .face { border: 1.5px solid color-mix(in srgb, var(--accent) 45%, transparent); }
+.circle.suggested .face { border-color: color-mix(in srgb, var(--accent) 30%, transparent); }
 
 /* ---------- pages: More / Back ---------- */
 

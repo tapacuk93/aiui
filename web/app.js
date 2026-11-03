@@ -158,6 +158,7 @@ window.aiui = {
   },
   next: (data) => ask({ event: 'html', data }, { label: data && data.label }),
   // A scene's own activity in the app's list, with quick actions: [{ icon, label, run }].
+  menuUsed: () => menuShortcut(),   // every native menu action (its ⌘ was not a lone press)
   network: () => showNetwork(),
   activityScreen: () => toggleActivityScreen(),
   activity: (id, title, actions) => sceneActivity(id, title, (actions || []).map((a) => ({ icon: a.icon, label: a.label, run: a.run }))),
@@ -1150,6 +1151,7 @@ const SCENE_SHIM = `<script>(() => {
     metaDown = 0;
   });
   realAdd.call(window, 'mousedown', () => { metaDown = 0; }, true);
+  realAdd.call(window, 'message', (e) => { if (e.data && e.data.aiuiMetaUsed) metaDown = 0; });
   // The app updates a scene only while the user is idle: it is told about input here.
   let inputAt = 0;
   const input = () => { const n = Date.now(); if (n - inputAt > 400) { inputAt = n; parent.postMessage({ aiuiInput: 1 }, '*'); } };
@@ -1767,6 +1769,12 @@ function typeFromScene(ch) {
 }
 // A lone ⌘ press opens the input on any screen.
 let metaDownAt = 0;
+// A ⌘ shortcut the native menu handled never reaches the page: its ⌘ was not a lone press.
+function menuShortcut() {
+  metaDownAt = 0;
+  const f = el.view.querySelector('iframe');
+  try { f && f.contentWindow.postMessage({ aiuiMetaUsed: true }, '*'); } catch {}
+}
 document.addEventListener('keydown', (e) => { metaDownAt = e.key === 'Meta' ? performance.now() : 0; }, true);
 document.addEventListener('keyup', (e) => {
   if (e.key === 'Meta' && metaDownAt && performance.now() - metaDownAt < 600 && !typing() && el.console.hidden) typeFromScene('');
@@ -2032,7 +2040,7 @@ function onKey(e) {
     const k = e.key.toLowerCase();
     const acts = { f: find, '=': () => zoom(1), '+': () => zoom(1), '-': () => zoom(-1), '0': () => zoom(0), p: printScene,
       ']': forward, r: () => (e.shiftKey ? location.reload() : reloadScene()), t: () => typeFromScene(''),
-      n: () => showNetwork(), i: () => toggleActivityScreen() };
+      ...(NATIVE ? {} : { n: () => showNetwork(), i: () => toggleActivityScreen() }) }; // the Mac app's menu has them
     if (acts[k]) { e.preventDefault(); return acts[k](); }
   }
   if (!isEditable(e.target) && current.screen.kind === 'circles' && (e.key === 'Home' || e.key === 'End')) {

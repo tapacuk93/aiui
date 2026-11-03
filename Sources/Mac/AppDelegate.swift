@@ -38,7 +38,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTo
                 : NSColor(red: 245 / 255, green: 245 / 255, blue: 248 / 255, alpha: 1)
         }
         w.minSize = NSSize(width: 520, height: 420)
-        addressBar.onSelect = { i in AIUICef.evalJS("window.aiui && aiui.goTo(\(i))") }
+        addressBar.onSelect = { i in AIUICef.evalJS("window.aiui && aiui.menuUsed && aiui.menuUsed(), window.aiui && aiui.goTo(\(i))") }
         API.setAddress = { [weak self] items in self?.setAddress(items) }
         w.delegate = self
         w.setFrameAutosaveName("aiui.main")
@@ -93,7 +93,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTo
 
     @objc func showDevTools(_ sender: Any?) { AIUICef.showDevTools() }
     @objc func reloadPage(_ sender: Any?) { AIUICef.reload() }
-    private func js(_ call: String) { AIUICef.evalJS("window.aiui && aiui.\(call)") }
+    private func js(_ call: String) { AIUICef.evalJS("window.aiui && aiui.menuUsed && aiui.menuUsed(), window.aiui && aiui.\(call)") }
     @objc func reloadScene(_ sender: Any?) { js("reloadScene()") }
     @objc func findInScene(_ sender: Any?) { js("find()") }
     @objc func goBack(_ sender: Any?) { js("back()") }
@@ -103,21 +103,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTo
     @objc func zoomReset(_ sender: Any?) { js("zoom(0)") }
     @objc func printScene(_ sender: Any?) { js("print()") }
 
-    @objc func showSystem(_ sender: Any?) { AIUICef.evalJS("window.aiui && aiui.system()") }
-    @objc func showNetwork(_ sender: Any?) { AIUICef.evalJS("window.aiui && aiui.network()") }
-    @objc func showActivity(_ sender: Any?) { AIUICef.evalJS("window.aiui && aiui.activityScreen()") }
-    @objc func showJSLibraries(_ sender: Any?) { AIUICef.evalJS("window.aiui && aiui.jsLibraries()") }
+    @objc func showSystem(_ sender: Any?) { AIUICef.evalJS("window.aiui && aiui.menuUsed && aiui.menuUsed(), window.aiui && aiui.system()") }
+    @objc func showNetwork(_ sender: Any?) { AIUICef.evalJS("window.aiui && aiui.menuUsed && aiui.menuUsed(), window.aiui && aiui.network()") }
+    @objc func showActivity(_ sender: Any?) { AIUICef.evalJS("window.aiui && aiui.menuUsed && aiui.menuUsed(), window.aiui && aiui.activityScreen()") }
+    @objc func showJSLibraries(_ sender: Any?) { AIUICef.evalJS("window.aiui && aiui.menuUsed && aiui.menuUsed(), window.aiui && aiui.jsLibraries()") }
 
     @objc func showLibrary(_ sender: Any?) {
-        AIUICef.evalJS("window.aiui && aiui.library()")
+        AIUICef.evalJS("window.aiui && aiui.menuUsed && aiui.menuUsed(), window.aiui && aiui.library()")
     }
 
     @objc func showProfile(_ sender: Any?) {
-        AIUICef.evalJS("window.aiui && aiui.profile()")
+        AIUICef.evalJS("window.aiui && aiui.menuUsed && aiui.menuUsed(), window.aiui && aiui.profile()")
     }
 
     @objc func chooseAI(_ sender: Any?) {
-        AIUICef.evalJS("window.aiui && aiui.setup()")
+        AIUICef.evalJS("window.aiui && aiui.menuUsed && aiui.menuUsed(), window.aiui && aiui.setup()")
     }
 
     @objc func clearCache(_ sender: Any?) {
@@ -126,7 +126,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTo
 
     @objc func newSession(_ sender: Any?) {
         api.resetSession()
-        AIUICef.evalJS("window.aiui && aiui.home()")
+        AIUICef.evalJS("window.aiui && aiui.menuUsed && aiui.menuUsed(), window.aiui && aiui.home()")
     }
 
     private func makeMenu() -> NSMenu {
