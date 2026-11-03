@@ -440,6 +440,22 @@ function refresh(c, node) {
   updateGo();
 }
 
+// The app's theme variables, resolved for the current appearance (light or dark).
+const THEME_VARS = ['color-scheme', '--bg', '--fg', '--muted', '--faint', '--accent', '--on-accent', '--surface',
+  '--line', '--line-strong', '--chip', '--danger', '--accent-soft', '--accent-glow'];
+function themeVars() {
+  const cs = getComputedStyle(document.documentElement);
+  return THEME_VARS.map((v) => `${v}:${cs.getPropertyValue(v).trim()}`).join(';');
+}
+
+// Re-theme AI-generated views when the system appearance flips.
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+  for (const f of el.view.querySelectorAll('iframe')) {
+    const root = f.contentDocument && f.contentDocument.documentElement;
+    if (root) root.style.cssText += ';' + themeVars();
+  }
+});
+
 function renderHTML(s) {
   const frame = document.createElement('iframe');
   frame.setAttribute('allow', 'clipboard-read; clipboard-write; autoplay; fullscreen; microphone; camera; geolocation');
