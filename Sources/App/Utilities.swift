@@ -165,7 +165,7 @@ final class Utilities {
     /// The module most due for its next improvement (used since its last one).
     func dueForImprovement() -> Module? {
         let now = Date()
-        return modules.values.filter { ($0.usedSinceImprove ?? 0) > 0 && ($0.nextImprove ?? .distantFuture) <= now }
+        return modules.values.filter { ($0.nextImprove ?? .distantFuture) <= now }   // no limit: every module keeps improving
             .max { a, b in
                 let wa = Double(a.uses) + Double(a.findings?.count ?? 0) * 5, wb = Double(b.uses) + Double(b.findings?.count ?? 0) * 5
                 return wa < wb
@@ -192,12 +192,14 @@ final class Utilities {
         m.improves = (m.improves ?? 0) + 1
         m.usedSinceImprove = 0
         let elapsed = now.timeIntervalSince(m.firstUsed ?? now)
-        m.nextImprove = now.addingTimeInterval(min(max(elapsed, 300), 7 * 86_400))
+        m.nextImprove = now.addingTimeInterval(min(max(elapsed, 300), 86_400))
         modules[id] = m
         persist()
     }
 
     // MARK: - Review (librarian)
+
+    var count: Int { modules.count }
 
     var needsReview: Bool {
         guard modules.count >= 2 else { return false }

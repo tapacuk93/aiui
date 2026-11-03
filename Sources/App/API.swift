@@ -12,7 +12,8 @@ final class API: NSObject {
     /// Shows the address (path of screens) in the host's title bar, where there is one (Mac).
     static var setAddress: (([String]) -> Void)?
     /// Background work paused by the user (status bar ⏸ / Settings).
-    static var paused = false
+    /// Background work paused by the user; kept across launches (the page also remembers it).
+    static var paused = UserDefaults.standard.bool(forKey: "paused") { didSet { UserDefaults.standard.set(paused, forKey: "paused") } }
     /// The web UI folder (for web/libraries.json); set by the host.
     static var webRoot: URL?
     let cache: Cache
@@ -32,6 +33,8 @@ final class API: NSObject {
     /// Prefetches the screen the cursor is heading for; refines live circles; translates UI text.
     private(set) var scout: AIEngine?
     private(set) var refiner: AIEngine?
+    /// Brings a screen shown from memory up to date in the background (read-only).
+    private(set) var reviser: AIEngine?
     private(set) var translator: AIEngine?
     private(set) var profiler: AIEngine?
     private(set) var librarian: AIEngine?
@@ -105,6 +108,11 @@ final class API: NSObject {
         // Background library maintenance: shortly after launch, then every 6 hours.
         DispatchQueue.main.asyncAfter(deadline: .now() + 20) { [weak self] in self?.libraries.maintain() }
         Timer.scheduledTimer(withTimeInterval: 6 * 3600, repeats: true) { [weak self] _ in self?.libraries.maintain() }
+        // Improvements follow each applet's own schedule, early ones within seconds: check often.
+        Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
+            guard let self, !Self.paused else { return }
+            self.improveIfDue(); self.improveComponentIfDue()
+        }
     }
 
     /// Switches the AI to a detected CLI ("claude", "codex", "gemini") or the saved API key ("key").
@@ -130,12 +138,13 @@ final class API: NSObject {
         default:
             return false
         }
-        claude?.cancel(); pager?.cancel(); suggester?.cancel(); scout?.cancel(); refiner?.cancel()
+        claude?.cancel(); pager?.cancel(); suggester?.cancel(); scout?.cancel(); refiner?.cancel(); reviser?.cancel()
         claude = make(true, systemPrompt, Prompts.screenSchema)
         pager = make(false, pagerPrompt, Prompts.pageSchema)
         suggester = make(false, suggestPrompt, Prompts.suggestSchema)
         scout = make(false, systemPrompt + Prompts.scout, Prompts.screenSchema)
         refiner = make(false, systemPrompt + Prompts.refine, Prompts.patchSchema)
+        reviser = make(false, systemPrompt + Prompts.reviser, Prompts.screenSchema)
         translator = make(false, Prompts.translate, Prompts.translateSchema)
         profiler = make(false, systemPrompt + Prompts.profiler, Prompts.profileSchema)
         librarian = make(false, systemPrompt + Prompts.librarian, Prompts.librarySchema)
@@ -176,7 +185,8 @@ final class API: NSObject {
         guard let improver, improving == nil, let scene = usage.due(), let current = cache.raw(scene.key),
               (current["kind"] as? String) == "html" else { return }
         improving = scene.key
-        Self.activity("improve", "improving «\(scene.title)» in the background", key: scene.key)
+        Self.activity("improve", "improving «\(scene.title)» in the background", key: scene.key,
+                      kind: "improve", name: scene.title, detail: "v\(scene.improves + 2)", actions: ["cancel", "pause"])
         var input: [String: Any] = [
             "scene": current,
             "usage": ["opens": scene.opens, "minutes": Int(scene.dwellMs / 60000), "interactions": scene.interactions,
@@ -201,6 +211,7 @@ final class API: NSObject {
                 self.utilities.publish(from: improved)
                 improved["publish"] = nil
                 self.cache.replace(key, with: improved)
+                self.usage.setSchedule(key, (improved["improve"] ?? current["improve"]) as? [String: Any])
                 self.usage.improved(key)
                 Self.emit(["type": "improved", "key": key, "title": scene.title])
             } else {
@@ -213,7 +224,8 @@ final class API: NSObject {
     func improveComponentIfDue() {
         guard let componentImprover, improvingComponent == nil, let m = utilities.dueForImprovement() else { return }
         improvingComponent = m.id
-        Self.activity("component", "improving component \(m.path.joined(separator: "/"))/\(m.name) v\(m.version)")
+        Self.activity("component", "improving component \(m.path.joined(separator: "/"))/\(m.name) v\(m.version)",
+                      kind: "component", name: (m.path + [m.name]).joined(separator: "/"), detail: "v\(m.version + 1)", actions: ["cancel"])
         let data = (try? JSONSerialization.data(withJSONObject: utilities.moduleInput(m), options: [.prettyPrinted, .sortedKeys])) ?? Data()
         componentImprover.next(prompt: "Improve this shared component:\n```json\n\(String(decoding: data, as: UTF8.self))\n```",
                                progress: { _ in }, done: { [weak self] r in
@@ -233,7 +245,7 @@ final class API: NSObject {
     func retrospectIfDue(force: Bool = false) {
         guard let retro, !retroRunning, force || hints.retroDue else { return }
         retroRunning = true
-        Self.activity("retro", "retrospective: learning from what went wrong")
+        Self.activity("retro", "retrospective: learning from what went wrong", kind: "retro", actions: ["cancel"])
         let data = (try? JSONSerialization.data(withJSONObject: hints.retroInput(), options: [.prettyPrinted, .sortedKeys])) ?? Data()
         retro.next(prompt: "Retrospective on what went wrong:\n```json\n\(String(decoding: data, as: UTF8.self))\n```",
                    progress: { _ in }, done: { [weak self] r in
@@ -248,7 +260,10 @@ final class API: NSObject {
     /// The applets' code for the unity pass (bounded).
     private func unityScenes() -> [[String: Any]] {
         var budget = 160_000
-        return usage.applets(limit: 30).compactMap { a in
+        // Least recently integrated first, so every applet gets its turn; then the most used.
+        let done = UserDefaults.standard.dictionary(forKey: Self.integratedKey) as? [String: Double] ?? [:]
+        let order = usage.applets(limit: 400).sorted { (done[$0["key"] as? String ?? ""] ?? 0) < (done[$1["key"] as? String ?? ""] ?? 0) }
+        return order.prefix(30).compactMap { a in
             guard budget > 0, let key = a["key"] as? String, let s = cache.raw(key), (s["kind"] as? String) == "html",
                   let html = s["html"] as? String else { return nil }
             budget -= html.count
@@ -258,10 +273,14 @@ final class API: NSObject {
             return r
         }
     }
-    private static let unityKey = "lastUnityPass"
+    private static let unityKey = "lastUnityPass", integrationKey = "integration", integratedKey = "integratedScenes"
+    /// Until the app is completely integrated the passes follow each other closely (10 min);
+    /// after that, a pass every 6 hours keeps it so.
     private var unityDue: Bool {
         let last = UserDefaults.standard.object(forKey: Self.unityKey) as? Date ?? .distantPast
-        return last < Date().addingTimeInterval(-6 * 3600) && usage.applets(limit: 3).count >= 2
+        let level = UserDefaults.standard.object(forKey: Self.integrationKey) as? Double ?? 0
+        let gap: TimeInterval = level < 100 ? 600 : 6 * 3600
+        return last < Date().addingTimeInterval(-gap) && (usage.applets(limit: 3).count >= 2 || utilities.count >= 2)
     }
 
     /// The periodic unity pass: one app without duplicated code — modules merged and tightened,
@@ -270,7 +289,9 @@ final class API: NSObject {
         guard let librarian, !reviewing, force || utilities.needsReview || unityDue else { return }
         reviewing = true
         UserDefaults.standard.set(Date(), forKey: Self.unityKey)
-        Self.activity("librarian", "unifying the app: shared code, no duplicates")
+        let level = UserDefaults.standard.object(forKey: Self.integrationKey) as? Double
+        Self.activity("librarian", "unifying the app: shared code, no duplicates", kind: "librarian",
+                      detail: level.map { "\(Int($0))%" }, actions: ["cancel"])
         let scenes = unityScenes()
         let data = (try? JSONSerialization.data(withJSONObject: ["modules": utilities.reviewInput(),
                                                                    "categories": utilities.categories,
@@ -283,6 +304,13 @@ final class API: NSObject {
             Self.activity("librarian", nil)
             guard case .success(let result) = r else { return }
             self.utilities.applyReview(result)
+            if let level = (result["integration"] as? NSNumber)?.doubleValue {
+                UserDefaults.standard.set(min(max(level, 0), 100), forKey: Self.integrationKey)
+                UserDefaults.standard.set(result["remaining"] as? String ?? "", forKey: "integrationRemaining")
+            }
+            var done = UserDefaults.standard.dictionary(forKey: Self.integratedKey) as? [String: Double] ?? [:]
+            for sc in scenes { if let k = sc["key"] as? String { done[k] = Date().timeIntervalSince1970 } }
+            UserDefaults.standard.set(done, forKey: Self.integratedKey)
             let known = Set(scenes.compactMap { $0["key"] as? String })
             for m in result["sceneMerges"] as? [[String: Any]] ?? [] {
                 guard let from = m["from"] as? String, let into = m["into"] as? String,
@@ -303,8 +331,12 @@ final class API: NSObject {
     }
 
     /// Native background activity, titled, for the status bar.
-    static func activity(_ id: String, _ title: String?, key: String? = nil) {
-        emit(["type": "activity", "id": id, "title": title ?? NSNull(), "done": title == nil, "key": key ?? NSNull()])
+    /// `kind`, `name` and `detail` let the page title it in the user's language; `actions` are the
+    /// quick actions it offers (sent back to the `activity` endpoint).
+    static func activity(_ id: String, _ title: String?, key: String? = nil, kind: String? = nil, name: String? = nil,
+                         detail: String? = nil, actions: [String] = []) {
+        emit(["type": "activity", "id": id, "title": title ?? NSNull(), "done": title == nil, "key": key ?? NSNull(),
+              "kind": kind ?? NSNull(), "name": name ?? NSNull(), "detail": detail ?? NSNull(), "actions": actions])
     }
 
     /// Pulls in what other devices wrote (called when the app becomes active, and every minute).
@@ -427,6 +459,18 @@ final class API: NSObject {
         case "quick":
             side(quick, "The full answer to this event is taking long. Give a quick interim screen now:", input, send: send, fail: fail)
 
+        case "revise":                            // a screen shown from memory, brought up to date
+            let action = Cache.action(from: input.merging(["language": language]) { _, b in b })
+            let key = usage.canonical(Cache.key(for: action))
+            side(reviser, "This screen was shown from memory. Return it up to date:", input, send: { [weak self] screen in
+                if let self, screen["kind"] != nil {
+                    var stored = screen
+                    for k in ["reuse", "merge", "publish"] { stored[k] = nil }
+                    self.cache.store(key: key, action: action, flow: self.cache.flow(key), outcome: stored)
+                }
+                send(["screen": screen, "key": key])
+            }, fail: fail)
+
         case "prefetch":
             side(scout, "The cursor is heading for this circle. Prepare the screen opening it would show:", input, send: send, fail: fail)
 
@@ -474,6 +518,17 @@ final class API: NSObject {
                 replayed.append(action)
                 if replayed.count > 20 { replayed.removeFirst(replayed.count - 20) }
                 send(["screen": screen, "cached": true, "key": key])
+                return
+            }
+            // Visited before (this or an earlier version of the app): shown at once as it was; a
+            // circles or text screen is then brought up to date in the background (`revise`), an
+            // applet keeps its own version (its improvements update it).
+            let revisitable: Set<String> = ["open", "go", "text", "html"]
+            if (input["fresh"] as? Bool) != true, revisitable.contains(input["event"] as? String ?? ""), let screen = cache.raw(key),
+               let kind = screen["kind"] as? String {
+                replayed.append(action)
+                if replayed.count > 20 { replayed.removeFirst(replayed.count - 20) }
+                send(["screen": screen, "cached": true, "visited": true, "stale": kind != "html", "key": key])
                 return
             }
             var event = input
@@ -667,14 +722,41 @@ final class API: NSObject {
         case "usage":
             switch input["op"] as? String ?? "record" {
             case "list": send(["scenes": usage.list()])
-            case "improve":                       // now, for the scene given (Settings)
-                if let k = input["key"] as? String, var u = usage.scene(k) { u.usedSinceImprove = max(1, u.usedSinceImprove); _ = u }
+            case "improve":                       // now, for the scene given (Settings, quick action)
+                if let k = input["key"] as? String { usage.improveNow(usage.canonical(k)) }
                 improveIfDue(); send(["ok": true])
+            case "pause":                         // pause / resume an applet's improvements
+                if let k = input["key"] as? String {
+                    let key = usage.canonical(k), on = (input["on"] as? Bool) ?? true
+                    usage.setPaused(key, on)
+                    if on, improving == key { improver?.cancel() }
+                }
+                send(["ok": true])
+            case "schedule":
+                let k = usage.canonical(input["key"] as? String ?? "")
+                if let raw = cache.raw(k) { usage.setSchedule(k, raw["improve"] as? [String: Any]) }
+                send(["schedule": usage.scheduleInfo(k) ?? NSNull()])
             case "outcome":
                 send(["screen": cache.raw(input["key"] as? String ?? "") ?? NSNull()])
             default:
-                usage.record(input); send(["ok": true])
+                usage.record(input)
+                if let k = input["key"] as? String, let raw = cache.raw(k) { usage.setSchedule(k, raw["improve"] as? [String: Any]) }
+                send(["ok": true])
             }
+
+        case "activity":                          // a quick action on a native activity
+            let action = input["action"] as? String ?? ""
+            switch (input["id"] as? String ?? "", action) {
+            case ("improve", "cancel"): improver?.cancel()
+            case ("improve", "pause"):
+                if let k = improving { usage.setPaused(k, true) }
+                improver?.cancel()
+            case ("component", "cancel"): componentImprover?.cancel()
+            case ("retro", "cancel"): retro?.cancel()
+            case ("librarian", "cancel"): librarian?.cancel()
+            default: break
+            }
+            send(["ok": true])
 
         case "journal":
             hints.add(kind: input["kind"] as? String ?? "issue", scene: input["scene"] as? String ?? "", detail: input["detail"] as? String ?? "")
@@ -784,6 +866,7 @@ final class API: NSObject {
             else if (input["suggest"] as? Bool) == true { suggester?.cancel() }
             else if (input["scout"] as? Bool) == true { scout?.cancel() }
             else if (input["refine"] as? Bool) == true { refiner?.cancel() }
+            else if (input["reviser"] as? Bool) == true { reviser?.cancel() }
             else if (input["quick"] as? Bool) == true { quick?.cancel() }
             else if (input["tester"] as? Bool) == true { tester?.cancel() }
             else if (input["menus"] as? Bool) == true { menus?.cancel() }

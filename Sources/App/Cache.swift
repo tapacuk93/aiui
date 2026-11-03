@@ -214,6 +214,9 @@ final class Cache {
                     "hits": $0.hits, "action": $0.action.mapValues { $0.value }] }
     }
 
+    /// The flow recorded with a key (the steps that led to it).
+    func flow(_ key: String) -> [String] { index[key]?.flow ?? [] }
+
     /// The stored outcome for a key, whatever its generation (for improvement and live reload).
     func raw(_ key: String) -> [String: Any]? {
         guard let data = try? Data(contentsOf: file(key)), let entry = try? dec.decode(Entry.self, from: data) else { return nil }

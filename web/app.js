@@ -58,11 +58,11 @@ document.documentElement.classList.toggle('ios', !!IOS_BRIDGE);
 // is governed by its screen's timeouts and the hard limit). A missed deadline rejects with
 // "timeout" and cancels that background channel.
 const DEADLINES = {
-  ai: 160000, quick: 45000, more: 90000, suggest: 25000, prefetch: 90000, refine: 90000,
+  ai: 160000, quick: 45000, more: 90000, suggest: 25000, prefetch: 90000, refine: 90000, revise: 120000,
   translate: 90000, profile: 180000, utilities: 10000, engine: 60000, cache: 10000, sys: 60000,
   info: 10000, adopt: 10000, cancel: 10000, reset: 10000, window: 10000,
 };
-const CHANNEL = { more: 'pager', suggest: 'suggest', prefetch: 'scout', refine: 'refine', quick: 'quick', tests: 'tester', menus: 'menus' };
+const CHANNEL = { more: 'pager', suggest: 'suggest', prefetch: 'scout', refine: 'refine', revise: 'reviser', quick: 'quick', tests: 'tester', menus: 'menus' };
 
 // AI requests still running, per channel, and what they are for. A request whose answer is no
 // longer needed (its screen was left, typing stopped, the full answer came) is cancelled at once.
@@ -97,6 +97,7 @@ function activityTitle(name, b = {}) {
     case 'suggest': return `${t('actSuggest')} «${String(b.input || '').slice(0, 30)}»`;
     case 'prefetch': return `${t('actPrefetch')} «${label}»`;
     case 'refine': return t('actRefine');
+    case 'revise': return `${t('actRevise')} «${(b.shown && b.shown.title) || label}»`;
     case 'tests': return t('actTests');
     case 'menus': return t('actMenus');
     case 'translate': return t('actTranslate');
@@ -155,6 +156,8 @@ window.aiui = {
     stats: () => call('cache', { op: 'stats' }),
   },
   next: (data) => ask({ event: 'html', data }, { label: data && data.label }),
+  // A scene's own activity in the app's list, with quick actions: [{ icon, label, run }].
+  activity: (id, title, actions) => sceneActivity(id, title, (actions || []).map((a) => ({ icon: a.icon, label: a.label, run: a.run }))),
   back: () => back(),
   home: () => home(),
   setup: () => showSetup(),
@@ -176,7 +179,7 @@ window.aiui = {
     if (e.type === 'improved') { log('done', `✨ improved «${e.title}»`); return onImproved(e); }
     if (e.type === 'componentImproved') return onComponentImproved(e);
     if (e.type === 'merged') { for (const x of [current, ...stack]) if (x.key === e.from) x.key = e.into; return onImproved({ key: e.into }); }
-    if (e.type === 'activity') { if (e.done) activityEnd(e.id); else activityStart(e.id, e.title, e.key || null, true); return; }
+    if (e.type === 'activity') { if (e.done) activityEnd(e.id); else activityStart(e.id, nativeTitle(e), e.key || null, true, nativeActions(e)); return; }
     if (e.type !== 'progress') return;
     activityDetail('ai', e.text);
     log('ai', e.text);
@@ -188,6 +191,23 @@ window.aiui = {
 };
 
 // ---------------------------------------------------------------- AI turns
+
+// A screen shown from memory (visited before) is brought up to date in the background and
+// replaced where it is (on screen or back in the history), keeping the page the user is on.
+async function revise(entry, payload) {
+  if (paused) return;
+  const shown = entry.screen;
+  try {
+    const r = await call('revise', { ...payload, shown });
+    if (!r || !r.screen || !r.screen.kind || entry.screen !== shown) return;
+    const { note, cacheable, reuse, publish, merge, ...x } = r.screen;
+    const next = normalize(x);
+    if (JSON.stringify(summary(next)) === JSON.stringify(summary(shown)) && next.kind !== 'html') return;
+    if (shown.page) next.page = shown.page;
+    entry.screen = next;
+    if (current === entry && !typing()) { render(); flashStatus(t('updated')); }
+  } catch {}
+}
 
 // Is `next` the screen `here` again: same title, mostly the same circles, or the clicked one again?
 function repeatsScreen(next, here, target) {
@@ -284,7 +304,7 @@ async function ask(evt, { label, replace = false, circle = null, retried = false
     journal('timeout', current.screen, `no screen within ${HARD_LIMIT_MS / 1000}s for ${evt.event} ${(evt.target && evt.target.label) || evt.text || ''}`);
   }, HARD_LIMIT_MS);
   try {
-    const { screen, cached, published, key: sceneKey, returned } = await call('ai', payload);
+    const { screen, cached, published, key: sceneKey, returned, stale } = await call('ai', payload);
     if (my !== seq) return; // cancelled or superseded
     if (cached) flashStatus(t('fromMemory'));
     if (published) setTimeout(() => flashStatus('🧩 +' + published), 300);
@@ -310,6 +330,7 @@ async function ask(evt, { label, replace = false, circle = null, retried = false
     }
     stopWriting(true);
     render();
+    if (stale) revise(current, payload);
   } catch (e) {
     if (my === seq) {
       if (e.message === 'no-ai') { setBusy(false); return showSetup(); }
@@ -544,6 +565,7 @@ function render() {
   focusManual = false;
   // A lab still testing a screen the user has left is dropped (its screen is gone).
   if (labFor && labFor.screen !== s) { labFor.frame.remove(); labFor = null; activityEnd('lab'); }
+  for (const [id, a] of activities) if (id.startsWith('scene:') && a.entry !== current && !stack.includes(a.entry)) activityEnd(id);
   paging.token++;
   paging.loading = false;
   paging.failed = false;
@@ -1184,7 +1206,7 @@ const LAB_MOCK = `<script>(() => {
   window.__realSetTimeout = window.setTimeout.bind(window);
   const mc = (v) => (...a) => { window.__mockCalls++; return Promise.resolve(v); };
   window.aiui = { ready() { window.postMessage({ aiuiReadySignal: true }, '*'); },
-    sys: mc({ ok: true, code: 0, stdout: '', stderr: '', text: '' }), next: mc(null), back: mc(null), home: mc(null),
+    sys: mc({ ok: true, code: 0, stdout: '', stderr: '', text: '' }), next: mc(null), back: mc(null), home: mc(null), activity: mc(null),
     memory: { search: mc([]), stats: mc({}) },
     onBack(fn) { window.__handlers.back = fn; }, onMore(fn) { window.__handlers.more = fn; },
     state: { _s: null, async load() { return this._s; }, save(o) { this._s = JSON.parse(JSON.stringify(o)); window.__mockCalls++; } },
@@ -1351,6 +1373,7 @@ function viewReview(r) {
   if (r && r.scores) log('qa', `«${s.title}» on screen — UX ${r.scores.ux} · readability ${r.scores.readability} · accessibility ${r.scores.accessibility}${(r.issues || []).length ? ' · ' + r.issues.length + ' issue(s): ' + r.issues.slice(0, 3).join(' | ') : ''}`);
   if (s.kind !== 'html' || s.reviewed) return;
   s.reviewed = true;
+  markChecked(s);
   revealView();
   (s.quality || (s.quality = {})).screen = r;
   lastQuality = { title: s.title, ...s.quality };
@@ -1362,6 +1385,22 @@ function viewReview(r) {
   }
 }
 let lastQuality = null;
+
+// Versions of HTML scenes that went through the hidden check (a hash of their html).
+const CHECKED = 'aiui.checked';
+function htmlHash(s) {
+  const x = String(s.html || '');
+  let h = 5381;
+  for (let i = 0; i < x.length; i++) h = ((h * 33) ^ x.charCodeAt(i)) >>> 0;
+  return h.toString(36) + ':' + x.length.toString(36);
+}
+function checkedBefore(s) { try { return (JSON.parse(localStorage.getItem(CHECKED)) || []).includes(htmlHash(s)); } catch { return false; } }
+function markChecked(s) {
+  try {
+    const h = htmlHash(s), list = (JSON.parse(localStorage.getItem(CHECKED)) || []).filter((x) => x !== h);
+    localStorage.setItem(CHECKED, JSON.stringify([...list, h].slice(-400)));
+  } catch {}
+}
 
 function revealView() {
   activityEnd('review');
@@ -1414,7 +1453,9 @@ async function selfFix(s, reason) {
 const FRAME_SHIM = `<script>(() => {
   let n = 0; const pend = {};
   addEventListener('message', (e) => {
-    const d = e.data; if (!d || d.aiuiReply == null || !pend[d.aiuiReply]) return;
+    const d = e.data;
+    if (d && d.aiuiActivityAction != null) { const f = (window.__actFns || {})[d.aiuiActivityAction]; if (f) f(); return; }
+    if (!d || d.aiuiReply == null || !pend[d.aiuiReply]) return;
     const p = pend[d.aiuiReply]; delete pend[d.aiuiReply];
     d.error ? p.rej(new Error(d.error)) : p.res(d.value);
   });
@@ -1426,6 +1467,9 @@ const FRAME_SHIM = `<script>(() => {
     media: { play: (u, t) => rpc('media.play', [u, t]), pause: () => rpc('media.pause'), resume: () => rpc('media.resume'),
       stop: () => rpc('media.stop'), state: () => rpc('media.state') },
     ready: () => rpc('ready'), setting: (k, v) => rpc('setting', [k, v]), action: (n, a) => rpc('action', [n, a]),
+    activity: (id, title, actions) => { const fns = window.__actFns = window.__actFns || {};
+      const acts = (actions || []).map((a, i) => { fns[id + '#' + i] = a.run; return { icon: a.icon, label: a.label, n: i }; });
+      return rpc('activity', [id, title, acts]); },
     settings: () => rpc('settings'), sys: (o) => rpc('sys', o), next: (d) => rpc('next', d), back: () => rpc('back'), home: () => rpc('home'),
     memory: { search: (q) => rpc('memory.search', q), stats: () => rpc('memory.stats') } };
   addEventListener('keydown', (e) => {
@@ -1475,6 +1519,7 @@ window.addEventListener('message', async (e) => {
   if (d.aiuiCall == null) return;
   if (d.aiuiHealth) return viewHealth(d.aiuiHealth);
   if (d.aiuiReview) return viewReview(d.aiuiReview);
+  const src = e.source;
   const fns = { sys: (a) => aiui.sys(a), next: (a) => aiui.next(a), back: () => aiui.back(), home: () => aiui.home(),
     'state.load': () => sceneState(), 'state.save': (o) => saveSceneState(o),
     'app.get': (k) => appGet(k), 'app.set': (a) => appSet(a[0], a[1]), 'app.subscribe': (k) => appSubscribeFrame(k, e.source),
@@ -1482,6 +1527,8 @@ window.addEventListener('message', async (e) => {
     'media.stop': () => mediaStop(), 'media.state': () => mediaInfo(),
     ready: () => viewReady(), setting: (a) => setSetting(a[0], a[1]), action: (a) => settingsAction(a[0], a[1]),
     settings: () => aiui.settings(),
+    activity: (a) => sceneActivity(a[0], a[1], (a[2] || []).map((x) => ({ icon: x.icon, label: x.label,
+      run: () => src.postMessage({ aiuiActivityAction: a[0] + '#' + x.n }, '*') }))),
     'memory.search': (q) => aiui.memory.search(q), 'memory.stats': () => aiui.memory.stats() };
   try {
     const value = await (fns[d.m] ? fns[d.m](d.a) : Promise.reject(new Error('unknown call')));
@@ -1515,11 +1562,15 @@ async function libraryFor(s) {
 function renderHTML(s) {
   const frame = document.createElement('iframe');
   // Rendered hidden first: the UI test runs on this very render, which is then revealed.
+  // A version already checked before (this session or an earlier one) shows at once; the check
+  // still runs on it in the background.
   if (!s.local && !s.reviewed) {
-    frame.classList.add('testing');
-    el.view.classList.add('checking');
+    if (!checkedBefore(s)) {
+      frame.classList.add('testing');
+      el.view.classList.add('checking');
+      setTimeout(() => { if (current.screen === s) revealView(); }, 2500); // never hidden for long
+    }
     activityStart('review', t('actReview'));
-    setTimeout(() => { if (current.screen === s) revealView(); }, 2500); // never hidden for long
   }
   if (!NATIVE) frame.setAttribute('sandbox', 'allow-scripts allow-forms allow-popups allow-modals');
   frame.setAttribute('allow', 'clipboard-read; clipboard-write; autoplay; fullscreen; microphone; camera; geolocation');
@@ -2083,6 +2134,12 @@ const STR = {
   actTranslate: 'translating the interface', actLearn: 'learning about you', actLibs: 'loading JS libraries',
   actLab: 'testing every interaction (phone, other theme)', actRunDoD: 'running the Definition of Done tests',
   actReview: 'checking layout, readability, accessibility', jsLibs: 'JS libraries',
+  actImprove: 'improving', actRevise: 'updating from memory', actComponent: 'improving component', actRetro: 'learning from what went wrong',
+  actLibrarian: 'integrating shared components and utilities',
+  qaCancel: 'Cancel', qaPause: 'Pause', qaResume: 'Resume', qaStop: 'Stop', qaSkip: 'Skip',
+  qaPauseImprove: 'Pause improvements', qaResumeImprove: 'Resume improvements', qaImproveNow: 'Improve now',
+  scheduled: 'Scheduled', nextImprove: 'next improvement', improvesPaused: 'improvements paused', dueNow: 'due now',
+  nothingRunning: 'Nothing running', versionWord: 'version',
 };
 for (const c of ROOT.circles) { STR['root.' + c.id] = c.label; STR['root.' + c.id + '.hint'] = c.hint; }
 
@@ -2716,9 +2773,50 @@ const activities = new Map(); // id → { title, detail, at }
 let lastDone = null;          // { title, ms }
 // Each activity remembers where it belongs: the history entry it started from, or the applet
 // (scene key) a native background job works on — clicking it in the list goes there.
-function activityStart(id, title, key, native = false) {
-  activities.set(id, { title, at: performance.now(), entry: native ? null : current, key: key || (native ? null : current.key) || null });
-  renderActivity(); log('activity', '▶ ' + title);
+function activityStart(id, title, key, native = false, actions = null) {
+  const prev = activities.get(id);
+  activities.set(id, { title, at: prev ? prev.at : performance.now(), entry: native ? null : current,
+    key: key || (native ? null : current.key) || null, actions, detail: prev && prev.detail });
+  renderActivity();
+  if (!prev || prev.title !== title) log('activity', '▶ ' + title);
+}
+// Native activities come with their kind and name, titled here in the user's language.
+function nativeTitle(e) {
+  const v = e.detail ? ' · ' + e.detail : '';
+  switch (e.kind) {
+    case 'improve': return `${t('actImprove')} «${e.name || ''}»${v}`;
+    case 'component': return `${t('actComponent')} ${e.name || ''}${v}`;
+    case 'retro': return t('actRetro');
+    case 'librarian': return t('actLibrarian') + v;
+    default: return e.title;
+  }
+}
+function nativeActions(e) {
+  const act = (action) => () => callRaw('activity', { id: e.id, action }).catch(() => {});
+  const all = {
+    cancel: { icon: '✕', label: t('qaCancel'), run: act('cancel') },
+    pause: { icon: '⏸', label: t('qaPauseImprove'), run: act('pause') },
+  };
+  return (e.actions || []).map((a) => all[a]).filter(Boolean);
+}
+// Quick actions of the app's own activities (by kind), unless the activity brought its own.
+function activityActions(id, a) {
+  if (a.actions) return a.actions;
+  const k = String(id).split(/[:\-]/)[0];
+  if (k === 'ai') return [{ icon: '✕', label: t('qaCancel'), run: () => (busy ? cancel() : callRaw('cancel').catch(() => {})) }];
+  if (CHANNEL[k]) return [{ icon: '✕', label: t('qaCancel'), run: () => callRaw('cancel', { [CHANNEL[k]]: true }).catch(() => {}) }];
+  if (k === 'lab') return [{ icon: '⏭', label: t('qaSkip'), run: () => { if (labFor) { labFor.frame.remove(); labFor = null; } activityEnd('lab'); } }];
+  if (k === 'review') return [{ icon: '⏭', label: t('qaSkip'), run: () => revealView() }];
+  if (k === 'media') return [
+    player.paused ? { icon: '▶', label: t('qaResume'), run: () => mediaResume() } : { icon: '⏸', label: t('qaPause'), run: () => mediaPause() },
+    { icon: '■', label: t('qaStop'), run: () => mediaStop() }];
+  return [];
+}
+// A scene's own activity (aiui.activity): it lasts while the scene is in the history.
+function sceneActivity(id, title, actions) {
+  const aid = 'scene:' + String(id);
+  if (!title) return activityEnd(aid);
+  activityStart(aid, String(title), null, false, actions.filter((a) => typeof a.run === 'function'));
 }
 function activityDetail(id, detail) { const a = activities.get(id); if (a) { a.detail = detail; renderActivity(); } }
 function activityEnd(id) {
@@ -2743,30 +2841,99 @@ async function refreshSnapshot() {
 // then background work; the newest wins a tie. The rest are counted and listed in the tooltip.
 const ACT_RANK = { ai: 100, fix: 95, quick: 90, more: 85, suggest: 80, review: 70, lab: 65, tests: 60, refine: 55, translate: 50,
   menus: 40, prefetch: 35, media: 30, improve: 20, component: 18, librarian: 15, retro: 12, lib: 10, discover: 5 };
+const BACKGROUND_KINDS = new Set(['menus', 'prefetch', 'refine', 'improve', 'component', 'librarian', 'retro', 'lib', 'discover', 'translate']);
 function actRank(id) {
   const k = String(id).split(/[:\-]/)[0];
   return ACT_RANK[k] ?? 25;
 }
-// Clicking the activity text expands the running processes upwards; each goes to its scene.
+// Clicking the activity text expands the running processes upwards: each row goes to its scene
+// and offers its quick actions; below, what is scheduled for the applet on screen.
 function toggleProcs(on = el.procs.hidden) {
-  el.procs.hidden = !on || !activities.size;
+  el.procs.hidden = !on;
+  if (!el.procs.hidden) { renderProcs(); loadSchedule(); }
+}
+let schedule = null; // the applet on screen: its next improvement
+async function loadSchedule() {
+  const key = current.key;
+  if (!key || current.screen.kind !== 'html') { schedule = null; return renderProcs(); }
+  try { const r = await callRaw('usage', { op: 'schedule', key }); schedule = r && r.schedule ? { ...r.schedule, entry: current } : null; } catch { schedule = null; }
   if (!el.procs.hidden) renderProcs();
 }
-function renderProcs() {
-  const list = [...activities.entries()].map(([id, a]) => ({ id, ...a, rank: actRank(id) })).sort((a, b) => b.rank - a.rank || b.at - a.at);
-  if (!list.length) { el.procs.hidden = true; return; }
-  el.procs.innerHTML = `<h4>${esc(t('processes'))}</h4>`;
-  for (const a of list) {
-    const b = document.createElement('button');
-    b.type = 'button'; b.setAttribute('role', 'menuitem');
-    const where = a.entry ? (a.entry.label || a.entry.screen.title || '') : (a.key ? '↗' : '');
-    b.innerHTML = `<span class="p-title">${esc(a.title)}${a.detail && a.detail !== a.title ? ' — ' + esc(a.detail) : ''}</span>` +
-      `<span class="p-where">${esc(where)}</span><span class="p-time">${fmtSecs((performance.now() - a.at) / 1000)}</span>`;
-    const target = a.entry || a.key;
-    if (!target) b.disabled = true;
-    b.addEventListener('click', (e) => { e.stopPropagation(); el.procs.hidden = true; goToActivity(a); });
-    el.procs.appendChild(b);
+function scheduleText(sc) {
+  const c = sc.schedule || {};
+  const curve = c.curve === 'formula' ? `ƒ ${c.formula || ''}` : c.curve + (c.factor ? ` ×${c.factor}` : '');
+  const left = sc.next ? Math.round((sc.next - Date.now()) / 1000) : null;
+  const when = sc.paused ? t('improvesPaused') : left == null ? '' : left <= 0 ? t('dueNow') : fmtSecs(left);
+  return { title: `${t('nextImprove')} «${sc.title || current.screen.title || ''}»`,
+    sub: `${t('versionWord')} ${(sc.improves || 0) + 1} · ${curve}${c.max ? ' · ≤ ' + fmtSecs(c.max) : ''}`, when };
+}
+function procRow(id) {
+  let row = el.procs.querySelector(`.proc[data-id="${CSS.escape(id)}"]`);
+  if (row) return row;
+  row = document.createElement('div');
+  row.className = 'proc'; row.dataset.id = id; row.setAttribute('role', 'group');
+  row.innerHTML = '<button type="button" class="p-main" role="menuitem"><span class="p-title"></span><span class="p-sub"></span></button>' +
+    '<span class="p-time"></span><span class="p-acts"></span>';
+  return row;
+}
+function fillRow(row, { title, sub, time, actions, go }) {
+  row.querySelector('.p-title').textContent = title;
+  const subEl = row.querySelector('.p-sub');
+  subEl.textContent = sub || ''; subEl.hidden = !sub;
+  row.querySelector('.p-time').textContent = time || '';
+  const main = row.querySelector('.p-main');
+  main.disabled = !go; main.onclick = go ? (e) => { e.stopPropagation(); el.procs.hidden = true; go(); } : null;
+  const sig = actions.map((a) => a.icon + a.label).join('|');
+  const box = row.querySelector('.p-acts');
+  if (box.dataset.sig !== sig) {
+    box.dataset.sig = sig; box.textContent = '';
+    for (const a of actions) {
+      const b = document.createElement('button');
+      b.type = 'button'; b.className = 'p-act'; b.textContent = a.icon; b.title = a.label; b.setAttribute('aria-label', a.label);
+      box.appendChild(b);
+    }
   }
+  // Always the current handlers (the row's state may have changed since it was built).
+  [...box.children].forEach((b, i) => {
+    const a = actions[i];
+    b.onclick = a ? async (e) => { e.stopPropagation(); try { await a.run(); } catch {} setTimeout(() => { renderActivity(); loadSchedule(); }, 150); } : null;
+  });
+}
+function renderProcs() {
+  if (el.procs.hidden) return;
+  const list = [...activities.entries()].map(([id, a]) => ({ id, ...a, rank: actRank(id) })).sort((a, b) => b.rank - a.rank || b.at - a.at);
+  let head = el.procs.querySelector('h4.p-now');
+  if (!head) { el.procs.textContent = ''; head = document.createElement('h4'); head.className = 'p-now'; el.procs.appendChild(head); }
+  head.textContent = t('processes');
+  const keep = new Set();
+  let after = head;
+  if (!list.length) {
+    const row = procRow('-none');
+    fillRow(row, { title: t('nothingRunning'), actions: [] }); row.classList.add('empty');
+    keep.add(row); after.after(row); after = row;
+  }
+  for (const a of list) {
+    const row = procRow(a.id);
+    const where = a.entry ? (a.entry.label || a.entry.screen.title || '') : '';
+    const detail = a.detail && a.detail !== a.title ? a.detail : '';
+    const target = a.entry && a.entry !== current ? a.entry : a.key ? a.key : null;
+    fillRow(row, { title: a.title, sub: [detail, where].filter(Boolean).join(' · '), time: fmtSecs((performance.now() - a.at) / 1000),
+      actions: activityActions(a.id, a), go: target ? () => goToActivity(a) : null });
+    keep.add(row); after.after(row); after = row;
+  }
+  let h2 = el.procs.querySelector('h4.p-sched');
+  if (schedule && schedule.entry === current) {
+    if (!h2) { h2 = document.createElement('h4'); h2.className = 'p-sched'; }
+    h2.textContent = t('scheduled'); keep.add(h2); after.after(h2); after = h2;
+    const row = procRow('-schedule');
+    const x = scheduleText(schedule), key = schedule.key;
+    fillRow(row, { title: x.title, sub: x.sub, time: x.when, actions: [
+      { icon: '↻', label: t('qaImproveNow'), run: () => callRaw('usage', { op: 'improve', key }) },
+      schedule.paused ? { icon: '▶', label: t('qaResumeImprove'), run: () => callRaw('usage', { op: 'pause', key, on: false }) }
+        : { icon: '⏸', label: t('qaPauseImprove'), run: () => callRaw('usage', { op: 'pause', key, on: true }) }] });
+    keep.add(row); after.after(row); after = row;
+  }
+  for (const n of [...el.procs.children]) if (!keep.has(n) && n !== head) n.remove();
 }
 function goToActivity(a) {
   // The entry it started from, wherever it is in the history now.
@@ -2780,13 +2947,22 @@ function goToActivity(a) {
 el.activity.addEventListener('click', (e) => { e.stopPropagation(); toggleProcs(); });
 el.activity.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleProcs(); } });
 document.addEventListener('pointerdown', (e) => { if (!el.procs.hidden && !el.procs.contains(e.target) && e.target !== el.activity) el.procs.hidden = true; });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !el.procs.hidden) { el.procs.hidden = true; el.activity.focus(); } }, true);
 setInterval(() => { if (!el.procs.hidden) renderProcs(); }, 1000);
+setInterval(() => { if (!el.procs.hidden) loadSchedule(); }, 10000);
 
 function renderActivity() {
   if (el.procs && !el.procs.hidden) renderProcs();
   const list = [...activities.entries()].map(([id, a]) => ({ ...a, rank: actRank(id) }))
     .sort((a, b) => b.rank - a.rank || b.at - a.at);
-  el.activity.classList.toggle('busy', list.length > 0);
+  // The dot pulses only for work in progress: not for what simply plays (media, a scene's own
+  // activity), nor for background work while it is paused. Those get a steady dot.
+  const working = [...activities.keys()].some((id) => {
+    const k = String(id).split(/[:\-]/)[0];
+    return k !== 'media' && k !== 'scene' && !(paused && BACKGROUND_KINDS.has(k));
+  });
+  el.activity.classList.toggle('busy', working);
+  el.activity.classList.toggle('steady', !working && list.length > 0);
   if (list.length) {
     const first = list[0];
     el.activity.textContent = first.title + (first.detail && first.detail !== first.title ? ' — ' + first.detail : '') +

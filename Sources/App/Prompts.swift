@@ -186,6 +186,16 @@ enum Prompts {
     (null the first time) and `aiui.state.save(obj)` whenever something meaningful changes \
     (progress, inputs, position, settings; plain JSON). The app reloads scenes live — improved \
     versions arrive in the background — and the state carries over, so keep keys stable.
+    Applets grow: an HTML applet ships a simple, working first version fast, then keeps improving \
+    in the background, without limit. Every HTML scene declares how with `improve`: `every` — \
+    seconds until its first improvement — and `curve`, how the gap grows with n, the improvements \
+    so far: `constant` (every), `linear` (every·(1+factor·n)), `exponential` (every·factorⁿ), \
+    `fibonacci` (every·Fib(n+1)), `log` (every·(1+factor·ln(1+n))) or `formula` (a JS expression \
+    of n and every, e.g. `every * (1 + n*n/4)`); optional `factor`, `max` (the longest gap, so it \
+    never goes quiet) and `why`. Fit it to the applet: one that starts primitive — a game, an \
+    editor, a tool — gets fast early improvements (e.g. every 30, exponential, factor 1.7, max \
+    21600); a settled reference view slow ones. Improved versions declare `improve` again and \
+    may change it as the applet matures.
     Bottom bar: any scene or screen can add and remove small actions in the app's bottom bar \
     (left): HTML scenes with `aiui.bar.add(id, icon, title, fnOrPrompt, {global})` and \
     `aiui.bar.remove(id)`; any screen with `bar: [{id, icon, title, prompt, global}]` and \
@@ -308,6 +318,17 @@ enum Prompts {
     buying, opening apps). If opening it would need such an action, return the confirmation screen.
     """
 
+    static let reviser = """
+
+    ## Revise mode
+    You are now the reviser, a separate background call. The user opened a screen they have \
+    visited before, and the app showed its stored version (`screen`) at once. Return it up to date: \
+    the same purpose and structure, with what changed since (real data, new options, what you \
+    know about the user now); keep the ids of circles that stay, so the user's place holds. If \
+    nothing meaningful changed, return it as it is. Read-only: look things up, but never perform \
+    an action with effects.
+    """
+
     static let refine = """
 
     ## Refine mode
@@ -403,9 +424,13 @@ enum Prompts {
     control panel, a chart) into a library module with a clear description and usage (`publish`, \
     existing categories first; role `component` for reusable UI meant for future scenes, \
     `util` for helper functions), and make the scene a thin composition of them (`uses`); reuse \
-    and improve existing modules rather than duplicating them. Keep its purpose, title and the state contract: \
+    and improve existing modules rather than duplicating them — the goal is complete integration, \
+    the scene built only from shared components and utilities. Keep its purpose, title and the state contract: \
     the same `aiui.state` keys must still load, so the user continues where they were. Keep \
-    `publish`/`uses`/`libs` consistent. Return the full screen. Do not perform any actions.
+    `publish`/`uses`/`libs` consistent. There is no limit on improvements and the next one \
+    will come: each version makes one real step (a missing feature, polish, speed, depth) rather \
+    than rewriting everything. Return `improve` with the schedule from here on — keep it, or \
+    slow it down as the applet matures. Return the full screen. Do not perform any actions.
     """
 
     static let componentImprover = """
@@ -417,6 +442,8 @@ enum Prompts {
     (bad input, missing elements, network failure), accessible (labels, contrast, keyboard, \
     focus), responsive and fast. Its public interface must stay compatible — the same \
     `lib.<name>` signature and behaviour every existing scene relies on (additions are fine). \
+    Toward complete integration: build on other shared modules instead of repeating what they \
+    do, and use the app's theme variables and shared look. There is no limit on improvements. \
     Return the full code, and description/usage only if they change. Do not perform any actions.
     """
 
@@ -507,8 +534,11 @@ enum Prompts {
     static let librarian = """
 
     ## Librarian mode — app unity
-    You are now the librarian, a periodic background call whose goal is one unified app without \
-    code duplication. You get the shared utility library (every module with its code and use \
+    You are now the librarian, a recurring background call whose goal is complete integration: \
+    one app in which every scene is a thin composition of shared components and utilities, \
+    components build on shared utilities and one shared look (theme variables, spacing, controls), \
+    and nothing is written twice. Each pass takes the next real step toward that; the passes \
+    continue until it is reached, so finish what you start and leave the rest for the next one. You get the shared utility library (every module with its code and use \
     count) and the user's applets (`scenes`: key, title, opens, uses, html). Find code written \
     twice — in two modules, or inline in scenes where a module (or a new shared `component`/`util`) \
     could serve all — and unify it: move it into one module, and return the scenes rewritten to \
@@ -520,7 +550,10 @@ enum Prompts {
     fix bugs and tighten code, keep each module's public `lib.<name>` signature compatible \
     (`updates` with id and only the changed fields; a new path/name re-files it), file modules \
     under consistent categories (broad → specific, 1–3 levels), and remove dead or trivial code \
-    (`remove`). Change nothing that is fine. Do not perform any actions.
+    (`remove`). Change nothing that is fine. Report `integration` — 0–100, how far the whole app \
+    (all scenes you saw, all modules) is from complete integration (100: nothing duplicated or \
+    inline that a shared module should serve) — and `remaining`: what is left, briefly. Do not \
+    perform any actions.
     """
 
     static let librarySchema: String = json([
@@ -558,8 +591,10 @@ enum Prompts {
                 "properties": ["from": ["type": "string"], "into": ["type": "string"], "why": ["type": "string"]],
                 "required": ["from", "into"],
             ] as [String: Any]],
+            "integration": ["type": "number", "description": "0–100: how completely the app is integrated after this pass"],
+            "remaining": ["type": "string", "description": "what is left for complete integration"],
         ] as [String: Any],
-        "required": ["updates"],
+        "required": ["updates", "integration"],
     ])
 
     static let patchSchema: String = json([
@@ -611,6 +646,21 @@ enum Prompts {
             "label": ["type": "string", "description": "what is happening, shown with the countdown (e.g. 'searching mail')"],
         ] as [String: Any],
         "required": ["seconds", "then"],
+    ]
+
+    /// An applet's improvement schedule: gap(n) after n improvements so far.
+    static let improveSchema: [String: Any] = [
+        "type": "object",
+        "description": "html applets: when background improvements come (never ending)",
+        "properties": [
+            "every": ["type": "number", "description": "seconds until the first improvement; the base of the curve"],
+            "curve": ["type": "string", "enum": ["constant", "linear", "exponential", "fibonacci", "log", "formula"]],
+            "factor": ["type": "number", "description": "linear step, exponential base or log multiplier"],
+            "formula": ["type": "string", "description": "curve 'formula': JS expression of n and every, in seconds"],
+            "max": ["type": "number", "description": "the longest gap in seconds"],
+            "why": ["type": "string"],
+        ] as [String: Any],
+        "required": ["every", "curve"],
     ]
 
     static let circleSchema: [String: Any] = [
@@ -665,6 +715,7 @@ enum Prompts {
                                "more": timeoutSchema, "render": timeoutSchema, "default": timeoutSchema] as [String: Any],
             ] as [String: Any],
             "libs": ["type": "array", "items": ["type": "string"], "description": "JS library ids (from `libraries`) this html screen needs; the app loads them before its html"],
+            "improve": improveSchema,
             "bar": ["type": "array", "description": "bottom-bar icons this screen adds", "items": [
                 "type": "object",
                 "properties": ["id": ["type": "string"], "icon": ["type": "string"], "title": ["type": "string"],

@@ -1,10 +1,11 @@
 import Foundation
+import JavaScriptCore
 
 /// How the user uses each AI scene (opens, time, interactions, quality findings, a live
-/// screenshot) and when it is due for its next background improvement. The first improvement
-/// starts right when the user starts using a scene; each next one when the time since that first
-/// use has doubled since the previous improvement (e.g. 3 min → 6 → 12 → 24 …; at least 5 min,
-/// at most a week apart) — and only for scenes used since their last improvement.
+/// screenshot) and when it is due for its next background improvement. Improvements never stop:
+/// each applet declares its own schedule (`improve`: a base interval and how the gap grows with
+/// the number of improvements so far: constant, linear, exponential, fibonacci, log or a formula),
+/// and each improved version may change it. Without one: 5 min, doubling, at most a day apart.
 /// Usage syncs through Storage; screenshots stay on this device.
 final class Usage {
     struct Scene: Codable {
@@ -22,12 +23,74 @@ final class Usage {
         var findings: [String]
         /// A near-duplicate merged into another scene: opening it returns to that one.
         var mergedInto: String?
+        /// The applet's own improvement schedule, and whether the user paused it.
+        var schedule: Schedule?
+        var paused: Bool?
+    }
+
+    /// When the next improvement comes: gap(n) for n improvements so far, in seconds.
+    struct Schedule: Codable, Equatable {
+        var every: Double
+        var curve: String
+        var factor: Double?
+        var formula: String?
+        var max: Double?
+        var why: String?
+
+        static let fallback = Schedule(every: 300, curve: "exponential", factor: 2, formula: nil, max: 86_400, why: nil)
+        static let minGap: Double = 10
+
+        init(every: Double, curve: String, factor: Double?, formula: String?, max: Double?, why: String?) {
+            self.every = every; self.curve = curve; self.factor = factor; self.formula = formula; self.max = max; self.why = why
+        }
+        init?(_ d: [String: Any]?) {
+            guard let d, let every = (d["every"] as? NSNumber)?.doubleValue, every > 0 else { return nil }
+            self.init(every: every, curve: (d["curve"] as? String ?? "exponential").lowercased(),
+                      factor: (d["factor"] as? NSNumber)?.doubleValue, formula: d["formula"] as? String,
+                      max: (d["max"] as? NSNumber)?.doubleValue, why: d["why"] as? String)
+        }
+
+        func gap(_ n: Int) -> TimeInterval {
+            let x = Double(n)
+            var g: Double
+            switch curve {
+            case "constant": g = every
+            case "linear": g = every * (1 + (factor ?? 1) * x)
+            case "fibonacci":
+                var (a, b) = (1.0, 1.0)
+                for _ in 0..<min(n, 80) { (a, b) = (b, a + b) }
+                g = every * a
+            case "log", "logarithmic": g = every * (1 + (factor ?? 1) * log(1 + x))
+            case "formula": g = Self.evaluate(formula, n: x, every: every) ?? every * pow(2, x)
+            default: g = every * pow(factor ?? 2, x)   // exponential
+            }
+            if !g.isFinite || g.isNaN { g = max ?? 86_400 * 30 }
+            if let m = max, m > 0 { g = Swift.min(g, m) }
+            return Swift.max(g, Self.minGap)
+        }
+
+        /// A JavaScript expression of `n` (improvements so far) and `every`, in seconds.
+        private static func evaluate(_ formula: String?, n: Double, every: Double) -> Double? {
+            guard let formula, !formula.isEmpty, formula.count < 300, let ctx = JSContext() else { return nil }
+            ctx.setObject(n, forKeyedSubscript: "n" as NSString)
+            ctx.setObject(every, forKeyedSubscript: "every" as NSString)
+            guard let v = ctx.evaluateScript("(function(){ with (Math) { return Number(\(formula)); } })()"), v.isNumber else { return nil }
+            return v.toDouble()
+        }
+
+        var json: [String: Any] {
+            var d: [String: Any] = ["every": every, "curve": curve]
+            if let factor { d["factor"] = factor }
+            if let formula { d["formula"] = formula }
+            if let max { d["max"] = max }
+            if let why { d["why"] = why }
+            return d
+        }
     }
 
     private let file: URL
     let shots: URL
     private var scenes: [String: Scene] = [:]
-    static let minGap: TimeInterval = 300, cap: TimeInterval = 7 * 86_400
 
     init(dir: URL, shots: URL) {
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -46,7 +109,8 @@ final class Usage {
         guard let key = r["key"] as? String, !key.isEmpty else { return }
         let now = Date()
         var s = scenes[key] ?? Scene(key: key, title: "", opens: 0, dwellMs: 0, interactions: 0, lastUsed: now, firstUsed: now,
-                                     usedSinceImprove: 0, improves: 0, lastImproved: nil, nextImprove: nil, findings: [], mergedInto: nil)
+                                     usedSinceImprove: 0, improves: 0, lastImproved: nil, nextImprove: nil, findings: [], mergedInto: nil,
+                                     schedule: nil, paused: nil)
         if let t = r["title"] as? String, !t.isEmpty { s.title = t }
         if (r["opened"] as? Bool) == true { s.opens += 1; s.usedSinceImprove += 1 }
         s.dwellMs += r["dwellMs"] as? Double ?? 0
@@ -64,17 +128,46 @@ final class Usage {
         persist()
     }
 
-    /// The scene most due for improvement (used since its last one), if any.
+    /// The scene most due for improvement, if any (not paused; no limit on how many).
     func due() -> Scene? {
         let now = Date()
-        return scenes.values.filter { $0.mergedInto == nil && $0.usedSinceImprove > 0 && ($0.nextImprove ?? .distantFuture) <= now }
+        return scenes.values.filter { $0.mergedInto == nil && $0.paused != true && ($0.nextImprove ?? .distantFuture) <= now }
             .max { Double($0.opens) * 1000 + $0.dwellMs / 1000 < Double($1.opens) * 1000 + $1.dwellMs / 1000 }
     }
 
-    /// Next: when the time since first use has doubled (elapsed now × 2), 5 min to a week away.
-    private static func next(after now: Date, first: Date) -> Date {
-        let elapsed = now.timeIntervalSince(first)
-        return now.addingTimeInterval(min(max(elapsed, minGap), cap))
+    /// The applet declared (or changed) its schedule. Before its first improvement, that one is
+    /// planned from first use.
+    func setSchedule(_ key: String, _ d: [String: Any]?) {
+        guard var s = scenes[key], let sch = Schedule(d), sch != s.schedule else { return }
+        s.schedule = sch
+        if s.improves == 0, s.lastImproved == nil { s.nextImprove = (s.firstUsed ?? Date()).addingTimeInterval(sch.gap(0)) }
+        scenes[key] = s
+        persist()
+    }
+
+    /// Quick actions: pause/resume an applet's improvements, or improve it now.
+    func setPaused(_ key: String, _ on: Bool) {
+        guard var s = scenes[key] else { return }
+        s.paused = on ? true : nil
+        if !on, (s.nextImprove ?? .distantFuture) < Date() { s.nextImprove = Date() }
+        scenes[key] = s
+        persist()
+    }
+    func improveNow(_ key: String) {
+        guard var s = scenes[key] else { return }
+        s.paused = nil
+        s.nextImprove = Date()
+        scenes[key] = s
+        persist()
+    }
+
+    func scheduleInfo(_ key: String) -> [String: Any]? {
+        guard let s = scenes[key] else { return nil }
+        let sch = s.schedule ?? .fallback
+        var r: [String: Any] = ["key": key, "title": s.title, "improves": s.improves, "paused": s.paused == true,
+                                "schedule": sch.json, "declared": s.schedule != nil, "gap": sch.gap(s.improves)]
+        if let n = s.nextImprove { r["next"] = n.timeIntervalSince1970 * 1000 }
+        return r
     }
 
     func improved(_ key: String) {
@@ -83,7 +176,7 @@ final class Usage {
         s.improves += 1
         s.lastImproved = now
         s.usedSinceImprove = 0
-        s.nextImprove = Self.next(after: now, first: s.firstUsed ?? now)
+        s.nextImprove = now.addingTimeInterval((s.schedule ?? .fallback).gap(s.improves))
         scenes[key] = s
         persist()
     }
@@ -91,7 +184,7 @@ final class Usage {
     /// Postpones a scene whose improvement failed (same doubling).
     func deferImprove(_ key: String) {
         guard var s = scenes[key] else { return }
-        s.nextImprove = Self.next(after: Date(), first: s.firstUsed ?? Date())
+        s.nextImprove = Date().addingTimeInterval(max((s.schedule ?? .fallback).gap(s.improves), 60))
         scenes[key] = s
         persist()
     }
