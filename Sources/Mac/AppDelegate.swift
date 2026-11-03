@@ -63,6 +63,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     @objc func showDevTools(_ sender: Any?) { AIUICef.showDevTools() }
     @objc func reloadPage(_ sender: Any?) { AIUICef.reload() }
+    @objc func showSystem(_ sender: Any?) { AIUICef.evalJS("window.aiui && aiui.system()") }
+    @objc func showJSLibraries(_ sender: Any?) { AIUICef.evalJS("window.aiui && aiui.jsLibraries()") }
+
     @objc func showLibrary(_ sender: Any?) {
         AIUICef.evalJS("window.aiui && aiui.library()")
     }
@@ -115,6 +118,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         view.addItem(withTitle: "AI Provider…", action: #selector(chooseAI(_:)), keyEquivalent: "").target = self
         view.addItem(withTitle: "What AI UI Knows About You…", action: #selector(showProfile(_:)), keyEquivalent: "").target = self
         view.addItem(withTitle: "Utility Library…", action: #selector(showLibrary(_:)), keyEquivalent: "").target = self
+        view.addItem(withTitle: "Installed JS Libraries…", action: #selector(showJSLibraries(_:)), keyEquivalent: "").target = self
+        let sys = view.addItem(withTitle: "System Info", action: #selector(showSystem(_:)), keyEquivalent: "d")
+        sys.keyEquivalentModifierMask = [.command, .shift]
+        sys.target = self
         view.addItem(withTitle: "Clear Memory Cache", action: #selector(clearCache(_:)), keyEquivalent: "").target = self
         view.addItem(withTitle: "Reload", action: #selector(reloadPage(_:)), keyEquivalent: "r").target = self
         let dev = view.addItem(withTitle: "Developer Tools", action: #selector(showDevTools(_:)), keyEquivalent: "i")

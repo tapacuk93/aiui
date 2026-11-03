@@ -19,12 +19,14 @@ if UserDefaults.standard.string(forKey: "engine") == nil,
     UserDefaults.standard.set(old, forKey: "engine")
 }
 
-let delegate = AppDelegate(support: Storage.root(local: support))
-app.delegate = delegate
-
 // AIUI_WEB=/path/to/web serves the UI straight from a source tree (live edits + Cmd-R).
 let webRoot = ProcessInfo.processInfo.environment["AIUI_WEB"]
     ?? Bundle.main.resourceURL!.appendingPathComponent("web").path
+API.webRoot = URL(fileURLWithPath: webRoot)
+
+let delegate = AppDelegate(support: Storage.root(local: support))
+AIUICef.setVendorRoot(delegate.api.libraries.dir.path)
+app.delegate = delegate
 
 guard AIUICef.start(
     withArgc: CommandLine.argc,

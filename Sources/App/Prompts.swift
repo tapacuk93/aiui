@@ -164,6 +164,13 @@ enum Prompts {
     cause (another source, a fallback, simpler code); if a library module was at fault, publish \
     its fixed version under the same path and name.
 
+    JS libraries: the app keeps a growing store of JS libraries on the device. Events carry \
+    `libraries` — `installed` (offline and instant: "id version (global) — what it does"), \
+    `installable` (installed on request), totals; any npm package name works too. Prefer \
+    installed ones; declare what an html screen needs in `libs` (ids) and the app loads \
+    them before your HTML (globals as listed, e.g. Chart, THREE, L, d3, marked, Tone). Never load \
+    libraries yourself from other CDNs.
+
     Full screen: every game, video/media player, canvas, drawing or long reading view must set \
     `fullscreen: true`; the app then offers a full-screen button.
 
@@ -435,6 +442,7 @@ enum Prompts {
                 "properties": ["open": timeoutSchema, "go": timeoutSchema, "text": timeoutSchema,
                                "more": timeoutSchema, "render": timeoutSchema, "default": timeoutSchema] as [String: Any],
             ] as [String: Any],
+            "libs": ["type": "array", "items": ["type": "string"], "description": "JS library ids (from `libraries`) this html screen needs; the app loads them before its html"],
             "fullscreen": ["type": "boolean", "description": "this screen is best experienced full screen (games, media, reading, canvases); the app offers a full-screen button"],
             "live": ["type": "boolean", "description": "circles would gain from a background pass filling real data (counts, previews, statuses)"],
             "note": ["type": "string", "description": "one-line index description of this action and its outcome, for the memory index"],

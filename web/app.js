@@ -101,6 +101,8 @@ window.aiui = {
   setup: () => showSetup(),
   profile: () => showProfile([]),
   library: () => showLibrary([]),
+  system: () => showSystem(),
+  jsLibraries: () => showJSLibraries(),
   get screen() { return current.screen; },
   _event(e) {
     if (e.type !== 'progress') return;
@@ -683,6 +685,13 @@ function toggleSelect(c, node) {
 }
 
 function minus(c, node) {
+  if (current.screen.local === 'jslibs' && c.jslib) {
+    call('libraries', { op: 'remove', id: c.jslib }).catch(() => {});
+    c.removed = true;
+    node.classList.add('leaving');
+    node.addEventListener('animationend', () => { node.remove(); layoutPages(); }, { once: true });
+    return;
+  }
   if (current.screen.local === 'profile' && c.trait) {
     call('profile', { op: 'remove', path: c.trait }).catch(() => {});
     c.removed = true;
@@ -798,6 +807,55 @@ const HEALTH_SHIM = `<script>(() => {
     .observe(document.documentElement, { childList: true, subtree: true });
 })();<\/script>`;
 
+// UI test run inside every view before it appears: after ready() (or 4 s), checks the real
+// layout and posts what is wrong. The tested render itself becomes the scene (no reload).
+const REVIEW_SHIM = `<script>(() => {
+  let done = false;
+  const desc = (el) => (el.tagName.toLowerCase() + (el.id ? '#' + el.id : '') + ' "' + (el.innerText || el.alt || '').trim().slice(0, 40) + '"');
+  const visible = (el) => { const r = el.getBoundingClientRect(); const cs = getComputedStyle(el);
+    return r.width > 1 && r.height > 1 && cs.visibility !== 'hidden' && cs.display !== 'none' && +cs.opacity > 0.05; };
+  const lum = (c) => { const m = String(c).match(/[\\d.]+/g); if (!m) return null; const [r, g, b, a = 1] = m.map(Number);
+    if (a < 0.5) return null; const f = (v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; };
+    return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b); };
+  const bgOf = (el) => { for (let e = el; e; e = e.parentElement) { const cs = getComputedStyle(e);
+    if (cs.backgroundImage !== 'none') return null; const l = lum(cs.backgroundColor); if (l != null) return l; }
+    // The page behind the frame: the parent's background, or the theme's --bg (sandboxed frames).
+    try { return lum(getComputedStyle(parent.document.body).backgroundColor) ?? 1; } catch {}
+    const hex = getComputedStyle(document.documentElement).getPropertyValue('--bg').trim().match(/^#?([\\da-f]{6})$/i);
+    if (!hex) return 1;
+    const n = parseInt(hex[1], 16);
+    return lum('rgb(' + (n >> 16) + ',' + ((n >> 8) & 255) + ',' + (n & 255) + ')'); };
+  function review() {
+    if (done) return; done = true;
+    const issues = [], W = innerWidth, doc = document.documentElement;
+    if (doc.scrollWidth > W + 4) issues.push('content wider than the screen (' + doc.scrollWidth + 'px > ' + W + 'px): horizontal overflow');
+    const texts = [...document.body.querySelectorAll('*')].filter((el) => visible(el) &&
+      [...el.childNodes].some((n) => n.nodeType === 3 && n.textContent.trim().length > 1)).slice(0, 200);
+    for (const el of texts) {
+      const r = el.getBoundingClientRect();
+      if (r.right > W + 4 || r.left < -4) issues.push(desc(el) + ' is cut off at the ' + (r.left < -4 ? 'left' : 'right') + ' edge');
+      const cs = getComputedStyle(el);
+      if ((el.scrollWidth > el.clientWidth + 2 || el.scrollHeight > el.clientHeight + 2) && /hidden|clip/.test(cs.overflow + cs.overflowX + cs.overflowY)
+          && cs.textOverflow !== 'ellipsis' && !cs.webkitLineClamp?.match(/\\d/)) issues.push(desc(el) + ' text is cropped by its box');
+      const fg = lum(cs.color), bg = bgOf(el);
+      if (fg != null && bg != null) { const ratio = (Math.max(fg, bg) + 0.05) / (Math.min(fg, bg) + 0.05);
+        if (ratio < 2.6) issues.push(desc(el) + ' has low contrast (' + ratio.toFixed(1) + ':1)'); }
+    }
+    for (let i = 0; i < texts.length; i++) for (let j = i + 1; j < texts.length; j++) {
+      const a = texts[i], b = texts[j]; if (a.contains(b) || b.contains(a)) continue;
+      const r1 = a.getBoundingClientRect(), r2 = b.getBoundingClientRect();
+      const ix = Math.max(0, Math.min(r1.right, r2.right) - Math.max(r1.left, r2.left)), iy = Math.max(0, Math.min(r1.bottom, r2.bottom) - Math.max(r1.top, r2.top));
+      if (ix * iy > 0.3 * Math.min(r1.width * r1.height, r2.width * r2.height)) issues.push(desc(a) + ' overlaps ' + desc(b));
+      if (issues.length > 14) break;
+    }
+    for (const img of document.images) if (img.complete && img.naturalWidth === 0 && img.src) issues.push('broken image ' + img.src.slice(0, 120));
+    if (!document.body.innerText.trim() && !document.querySelector('canvas,svg,img,video,iframe')) issues.push('the screen looks empty');
+    parent.postMessage({ aiuiReview: { issues: [...new Set(issues)].slice(0, 12), width: W, height: innerHeight } }, '*');
+  }
+  addEventListener('message', (e) => { if (e.data && e.data.aiuiReadySignal) setTimeout(review, 300); });
+  addEventListener('load', () => setTimeout(review, 4000));
+})();<\/script>`;
+
 // The view's health, its readiness, and the self-fix when it gets stuck.
 function viewHealth(h) {
   const s = current.screen;
@@ -828,7 +886,27 @@ function reportFailure(url, reason) {
 
 function viewReady() {
   const s = current.screen;
-  if (s.kind === 'html') s.ready = true;
+  if (s.kind !== 'html') return;
+  s.ready = true;
+  const f = el.view.querySelector('iframe');
+  try { f && f.contentWindow.postMessage({ aiuiReadySignal: true }, '*'); } catch {}
+}
+
+// The in-frame UI test reported: reveal the tested render; repair it if anything is wrong.
+function viewReview(r) {
+  const s = current.screen;
+  if (s.kind !== 'html' || s.reviewed) return;
+  s.reviewed = true;
+  revealView();
+  if (r.issues && r.issues.length && !s.fixed && !s.local) {
+    (s.health || (s.health = [])).push(...r.issues.map((x) => 'ui: ' + x));
+    selfFix(s, `UI review at ${r.width}×${r.height}: ${r.issues.length} problem(s)`);
+  }
+}
+
+function revealView() {
+  const f = el.view.querySelector('iframe');
+  if (f) f.classList.remove('testing');
 }
 
 function watchView(s) {
@@ -896,9 +974,11 @@ window.addEventListener('message', async (e) => {
   if (!frame || e.source !== frame.contentWindow) return;
   const d = e.data || {};
   if (d.aiuiHealth) return viewHealth(d.aiuiHealth);
+  if (d.aiuiReview) return viewReview(d.aiuiReview);
   if (d.aiuiKey) return onKey(new KeyboardEvent('keydown', { key: d.aiuiKey }));
   if (d.aiuiCall == null) return;
   if (d.aiuiHealth) return viewHealth(d.aiuiHealth);
+  if (d.aiuiReview) return viewReview(d.aiuiReview);
   const fns = { sys: (a) => aiui.sys(a), next: (a) => aiui.next(a), back: () => aiui.back(), home: () => aiui.home(),
     ready: () => viewReady(),
     'memory.search': (q) => aiui.memory.search(q), 'memory.stats': () => aiui.memory.stats() };
@@ -909,6 +989,17 @@ window.addEventListener('message', async (e) => {
     e.source.postMessage({ aiuiReply: d.aiuiCall, error: err.message }, '*');
   }
 });
+
+// The JS libraries a screen declares in `libs`: script/link tags (local when installed).
+async function jsLibsFor(s) {
+  if (!s.libs || !s.libs.length) return '';
+  try {
+    const { tags } = await call('libraries', { op: 'ensure', ids: s.libs });
+    const attr = (x) => String(x).replace(/"/g, '&quot;');
+    return (tags || []).map((t) => t.type === 'css' ? `<link rel="stylesheet" href="${attr(t.src)}">`
+      : `<script src="${attr(t.src)}"><\/script>`).join('');
+  } catch { return ''; }
+}
 
 async function libraryFor(s) {
   if (!s.uses || !s.uses.length) return '';
@@ -922,21 +1013,26 @@ async function libraryFor(s) {
 
 function renderHTML(s) {
   const frame = document.createElement('iframe');
+  // Rendered hidden first: the UI test runs on this very render, which is then revealed.
+  if (!s.local && !s.reviewed) {
+    frame.classList.add('testing');
+    setTimeout(() => { if (current.screen === s) revealView(); }, 6000); // never hidden for long
+  }
   if (!NATIVE) frame.setAttribute('sandbox', 'allow-scripts allow-forms allow-popups allow-modals');
   frame.setAttribute('allow', 'clipboard-read; clipboard-write; autoplay; fullscreen; microphone; camera; geolocation');
   const base = `<meta charset="utf-8"><style>
     :root{${themeVars()}}
     html,body{margin:0;background:transparent;color:var(--fg);font:15px/1.55 -apple-system,system-ui,sans-serif;-webkit-font-smoothing:antialiased}
-    body{padding:${s.title ? 120 : 64}px 48px 120px;max-width:1100px;margin:0 auto}
+    body{padding:16px 48px 110px;max-width:1100px;margin:0 auto}
     a{color:var(--accent)} ::selection{background:var(--accent-soft)}
     ::-webkit-scrollbar{width:8px}::-webkit-scrollbar-thumb{background:var(--line);border-radius:4px}
-  </style>${HEALTH_SHIM}${NATIVE ? '<script>window.aiui = parent.aiui;<\/script>' : FRAME_SHIM}`;
+  </style>${HEALTH_SHIM}${s.local ? '' : REVIEW_SHIM}${NATIVE ? '<script>window.aiui = parent.aiui;<\/script>' : FRAME_SHIM}`;
   el.view.appendChild(frame);
   const screen = s;
-  libraryFor(s).then((lib) => {
+  Promise.all([jsLibsFor(s), libraryFor(s)]).then(([libs, lib]) => {
     if (current.screen !== screen) return;
     let html = String(s.html || '');
-    const head = base + lib;
+    const head = base + libs + lib;
     if (/<head[^>]*>/i.test(html)) html = html.replace(/<head[^>]*>/i, (m) => m + head);
     else html = `<!doctype html><html><head>${head}</head><body>${html}</body></html>`;
     frame.srcdoc = html;
@@ -1202,8 +1298,10 @@ function autosize() {
 
 // The circles area starts below the header, whatever the header holds.
 function fitStage() {
-  if (document.body.classList.contains('immersive')) { el.stage.style.paddingTop = '12px'; return; }
+  if (document.body.classList.contains('immersive')) { el.stage.style.paddingTop = '12px'; el.view.style.top = '0'; return; }
   const top = el.top.getBoundingClientRect().bottom;
+  // AI views start right below the header, so the header never covers their content.
+  el.view.style.top = Math.round(top + 6) + 'px';
   el.stage.style.paddingTop = Math.max(70, Math.round(top + 18)) + 'px';
 }
 new ResizeObserver(fitStage).observe(el.top);
@@ -1294,6 +1392,7 @@ function isEditable(t) {
 }
 
 function onKey(e) {
+  if (e.metaKey && e.shiftKey && (e.key === 'd' || e.key === 'D')) { e.preventDefault(); return showSystem(); }
   if (e.key === 'Escape' && typing()) { e.preventDefault(); return escapeWriting(); }
   if (e.key === 'Escape' && document.body.classList.contains('immersive')) { e.preventDefault(); return setImmersive(false); }
   if (isEditable(e.target)) return;
@@ -1373,7 +1472,7 @@ const STR = {
   fixing: 'this screen got stuck — fixing…', fixed: 'fixed', couldNotFix: 'Could not fix this screen:', stillWorking: 'still working', updated: 'updated', updating: 'updating…',
   library: 'Utility library', libraryMsg: 'Code the AI wrote once and reuses across screens. Reviewed now and then.',
   libraryEmpty: 'Empty so far: screens publish reusable code here as the AI builds them.',
-  fullscreen: 'Full screen',
+  fullscreen: 'Full screen', system: 'System', jsLibs: 'JS libraries',
 };
 for (const c of ROOT.circles) { STR['root.' + c.id] = c.label; STR['root.' + c.id + '.hint'] = c.hint; }
 
@@ -1724,6 +1823,57 @@ el.full.addEventListener('click', (e) => { e.stopPropagation(); setImmersive(!do
 document.addEventListener('fullscreenchange', () => {
   if (!document.fullscreenElement && document.body.classList.contains('immersive')) setImmersive(false);
 });
+
+// ---------------------------------------------------------------- system scene (⇧⌘D)
+
+const fmtBytes = (n) => { n = Number(n) || 0; return n >= 1e9 ? (n / 1e9).toFixed(1) + ' GB' : n >= 1e6 ? (n / 1e6).toFixed(1) + ' MB' : n >= 1e3 ? Math.round(n / 1e3) + ' KB' : n + ' B'; };
+
+async function showSystem() {
+  let d;
+  try { d = await call('system'); } catch (e) { return toast(e.message); }
+  const row = (k, v) => `<tr><th>${esc(k)}</th><td>${v}</td></tr>`;
+  const list = (a) => (a && a.length) ? '<ul>' + a.map((x) => `<li>${esc(x)}</li>`).join('') + '</ul>' : '<span class="m">—</span>';
+  const sec = (title, rows) => `<section><h2>${esc(title)}</h2><table>${rows.join('')}</table></section>`;
+  const a = d.app || {}, ai = d.ai || {}, st = d.storage || {}, c = d.cache || {}, l = d.libraries || {}, u = d.utilities || {},
+    p = d.profile || {}, av = d.avoid || {};
+  const html = `<style>
+    body{font:13px/1.5 -apple-system,system-ui,sans-serif}
+    section{margin:0 0 18px;padding:14px 18px;border-radius:14px;background:var(--surface)}
+    h2{margin:0 0 8px;font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
+    table{border-collapse:collapse;width:100%} th{text-align:left;font-weight:500;color:var(--muted);width:34%;padding:3px 10px 3px 0;vertical-align:top}
+    td{padding:3px 0;word-break:break-word} ul{margin:0;padding-left:18px} .m{color:var(--faint)}
+    .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:0 18px}
+  </style><div class="grid">
+  ${sec('App', [row('Version', esc(`${a.version || '—'} (${a.build || '—'})`)), row('Bundle', esc(a.bundle || 'web')),
+    row('Platform', esc(a.platform || navigator.userAgent)), row('Language', esc(a.language || LANG)),
+    row('Prompt generation', esc(a.generation || '—'))])}
+  ${sec('AI', [row('Active', esc(ai.active ? ai.active.label : 'none')),
+    row('Available', esc((ai.options || []).map((o) => o.label).join(', ') || '—'))])}
+  ${sec('Storage', [row('Data', esc(st.icloud ? 'iCloud (synced)' : 'this device only')), row('Folder', esc(st.root || 'browser storage')),
+    row('Free disk', esc(fmtBytes(st.freeBytes))), row('Shared budget (libraries + cache)', esc(fmtBytes(st.sharedBudget)))])}
+  ${sec('Memory cache', [row('Entries', esc(c.entries)), row('Used', esc(fmtBytes(c.bytes) + ' of ' + fmtBytes(c.limitBytes)))])}
+  ${sec('JS libraries', [row('Installed', esc(`${l.installed ?? '—'} of ${l.catalog ?? '—'} in the catalog`)),
+    row('Disk', esc(fmtBytes(l.usedBytes) + ' of ' + fmtBytes(l.budgetBytes))),
+    row('Installing now', esc((l.installing || []).join(', ') || '—'))])}
+  ${sec('Utility library', [row('Modules', esc(u.total ?? 0)), row('Last review', esc(u.lastReview || '—'))])}
+  ${sec('You', [row('Traits learned', esc(p.traits ?? 0)), row('Most certain', list(p.top)),
+    row('Session check', esc(who.guest ? 'guest mode' : who.suspect ? 'looks like someone else: ' + who.suspect.join('; ') : 'normal'))])}
+  ${sec('Avoid record', [row('Active', list(av.active)), row('All entries', esc(av.all ?? 0))])}
+  </div><script>aiui.ready()<\/script>`;
+  push({ kind: 'html', local: 'system', title: t('system'), back: true, html }, t('system'));
+}
+
+async function showJSLibraries() {
+  let r;
+  try { r = await call('libraries', { op: 'list' }); } catch (e) { return toast(e.message); }
+  const inst = (r.libraries || []).filter((x) => x.installed);
+  push({
+    kind: 'circles', local: 'jslibs', more: false, back: true, title: t('jsLibs'),
+    message: `${inst.length} / ${(r.libraries || []).length} · ${fmtBytes(r.used)} / ${fmtBytes(r.budget)}`,
+    circles: inst.sort((a, b) => (b.uses || 0) - (a.uses || 0)).map((x) => ({
+      id: 'js:' + x.id, icon: '📦', label: x.id, hint: x.description, value: x.uses || undefined, jslib: x.id })),
+  }, t('jsLibs'));
+}
 
 render();
 // No AI available yet: ask for one.

@@ -48,8 +48,10 @@ namespace {
 
 CefScopedLibraryLoader *g_loader = nullptr;
 CefRefPtr<CefBrowser> g_browser;
+std::vector<CefRefPtr<CefBrowser>> g_others;
 id<AIUIHost> g_host = nil;
 NSString *g_web_root = nil;
+NSString *g_vendor_root = nil;
 bool g_quit_requested = false;
 
 // Page background before the first paint, matching the system appearance (light or dark).
@@ -122,10 +124,14 @@ class AIUIResourceHandler : public CefResourceHandler {
       return true;
     }
 
-    // Static file from the web root.
+    // Static file from the web root (or an installed library under /vendor/).
     if ([nsPath isEqualToString:@"/"] || nsPath.length == 0)
       nsPath = @"/index.html";
     NSString *root = g_web_root.stringByStandardizingPath;
+    if ([nsPath hasPrefix:@"/vendor/"] && g_vendor_root) {
+      root = g_vendor_root.stringByStandardizingPath;
+      nsPath = [nsPath substringFromIndex:7];
+    }
     NSString *file =
         [root stringByAppendingPathComponent:nsPath].stringByStandardizingPath;
     NSData *data = nil;
@@ -223,6 +229,8 @@ class AIUIClient : public CefClient,
   }
 
   void OnAfterCreated(CefRefPtr<CefBrowser> browser) override {
+    // The first browser is the app's window; others (DevTools targets, tests) never replace it.
+    if (g_browser) { g_others.push_back(browser); return; }
     g_browser = browser;
     NSView *view =
         (__bridge NSView *)browser->GetHost()->GetWindowHandle();
@@ -232,6 +240,10 @@ class AIUIClient : public CefClient,
   }
 
   void OnBeforeClose(CefRefPtr<CefBrowser> browser) override {
+    if (!g_browser || !browser->IsSame(g_browser)) {
+      std::erase_if(g_others, [&](const CefRefPtr<CefBrowser>& b) { return b->IsSame(browser); });
+      return;
+    }
     g_browser = nullptr;
     CefQuitMessageLoop();
   }
@@ -288,6 +300,10 @@ class AIUIClient : public CefClient,
   return CefInitialize(main_args, settings, app.get(), nullptr) ? YES : NO;
 }
 
++ (void)setVendorRoot:(NSString *)path {
+  g_vendor_root = [path copy];
+}
+
 + (void)createBrowserInView:(NSView *)view url:(NSString *)url {
   CefWindowInfo info;
   NSRect b = view.bounds;
@@ -318,10 +334,15 @@ class AIUIClient : public CefClient,
 
 + (void)requestClose {
   g_quit_requested = true;
+  for (auto& b : g_others) b->GetHost()->CloseBrowser(true);
   if (g_browser)
     g_browser->GetHost()->CloseBrowser(true);
   else
     CefQuitMessageLoop();
+  // Whatever happens, the app quits: a browser that never confirms closing can't keep it open.
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+    CefQuitMessageLoop();
+  });
 }
 
 + (void)runMessageLoop {

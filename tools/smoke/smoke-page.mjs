@@ -122,6 +122,30 @@ const result = await ev(`(async () => {
     if (!fixEvent || aiui.screen.title !== 'Fixed2' || !recorded.some((r) => r.url.includes('blocked.invalid')))
       throw new Error(JSON.stringify({ fixed: !!fixEvent, now: aiui.screen.title, recorded }));
   });
+  const reviewRun = async (html) => {
+    const realCall = WebBackend.call;
+    let fixEvent = null;
+    WebBackend.call = async (name, body) => {
+      if (name === 'ai' && body.event === 'fix') { fixEvent = body; return { screen: { kind: 'circles', title: 'Reviewed', circles: [] } }; }
+      if (name === 'ai') return { screen: { kind: 'html', title: 'V', html } };
+      return realCall(name, body);
+    };
+    home();
+    await ask({ event: 'open', target: { label: 'V' } }, { label: 'V' });
+    await new Promise(r => setTimeout(r, 2500));
+    const hidden = !!document.querySelector('#view iframe.testing');
+    WebBackend.call = realCall;
+    return { fixEvent, title: aiui.screen.title, hidden };
+  };
+  await step('ui test: overlapping text is caught and repaired', async () => {
+    const r = await reviewRun('<div style="position:relative;height:200px"><p style="position:absolute;top:0;font-size:30px">Overlapping title text</p><p style="position:absolute;top:6px;font-size:30px">Another heading here</p></div><script>aiui.ready()<\/script>');
+    const issues = r.fixEvent ? r.fixEvent.problem.errors.join(' ') : '';
+    if (!issues.includes('overlaps') || r.title !== 'Reviewed') throw new Error(JSON.stringify({ issues, title: r.title }));
+  });
+  await step('ui test: clean view is revealed as is (no reload, no repair)', async () => {
+    const r = await reviewRun('<section style="padding:20px"><h1>Hello</h1><p>All good here.</p></section><script>aiui.ready()<\/script>');
+    if (r.fixEvent || r.title !== 'V' || r.hidden) throw new Error(JSON.stringify({ fixed: !!r.fixEvent, title: r.title, hidden: r.hidden }));
+  });
   await step('policy wait: no interim, full screen arrives', async () => {
     const r = await slowFull({ open: { seconds: 0.3, then: 'wait', label: 'searching' } });
     if (r.quickCalled || r.title !== 'Full') throw new Error(JSON.stringify(r));

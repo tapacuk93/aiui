@@ -9,10 +9,13 @@ final class API: NSObject {
     static var evalJS: (String) -> Void = { _ in }
     /// Puts the app window in or out of full screen (Mac); nil where the app is always full screen.
     static var setFullScreen: ((Bool) -> Void)?
+    /// The web UI folder (for web/libraries.json); set by the host.
+    static var webRoot: URL?
     let cache: Cache
     let utilities: Utilities
     let profile: Profile
     let avoid: Avoid
+    let libraries: Libraries
     /// The AI behind screens (persistent session) and the stateless background pager.
     /// nil until a CLI is detected or an API key is given.
     private(set) var claude: AIEngine?
@@ -49,11 +52,20 @@ final class API: NSObject {
     }
 
     init(support: URL) {
-        let mb = Int(ProcessInfo.processInfo.environment["AIUI_CACHE_MB"] ?? "") ?? 64
+        // The cache shares one 10 GB budget with the JS libraries (Libraries.sharedBudget): up to
+        // 2 GB of it, or AIUI_CACHE_MB.
+        let shared = Libraries.sharedBudget / 1_048_576
+        let mb = Int(ProcessInfo.processInfo.environment["AIUI_CACHE_MB"] ?? "") ?? max(64, min(2048, shared / 5))
         cache = Cache(dir: support.appendingPathComponent("cache", isDirectory: true), limitMB: mb)
         utilities = Utilities(dir: support.appendingPathComponent("utilities", isDirectory: true))
         profile = Profile(dir: support.appendingPathComponent("profile", isDirectory: true))
         avoid = Avoid(dir: support.appendingPathComponent("avoid", isDirectory: true))
+        // Installed JS libraries stay on this device (re-downloadable), outside iCloud.
+        let local = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("aiui/vendor", isDirectory: true)
+        libraries = Libraries(dir: local, catalogFile: API.webRoot?.appendingPathComponent("libraries.json"))
+        let cache = self.cache
+        libraries.cacheBytes = { cache.totalBytes }
         cache.generation = Prompts.generation
         let memory = Prompts.memory(index: cache.indexText.path)
         systemPrompt = Prompts.system + memory
@@ -66,6 +78,9 @@ final class API: NSObject {
         let clis = Provider.detectedCLIs()
         if let want = env ?? saved, use(want) { return }
         if let first = clis.first { _ = use(first) } else if !use("key") { _ = use("aicoin") }
+        // Background library maintenance: shortly after launch, then every 6 hours.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 20) { [weak self] in self?.libraries.maintain() }
+        Timer.scheduledTimer(withTimeInterval: 6 * 3600, repeats: true) { [weak self] _ in self?.libraries.maintain() }
     }
 
     /// Switches the AI to a detected CLI ("claude", "codex", "gemini") or the saved API key ("key").
@@ -168,6 +183,7 @@ final class API: NSObject {
         if !flows.isEmpty { input["flows"] = flows }
         let bad = avoid.overview(limit: 20)
         if !bad.isEmpty { input["avoid"] = bad }
+        input["libraries"] = libraries.overview()
         let data = (try? JSONSerialization.data(withJSONObject: input, options: [.prettyPrinted, .sortedKeys])) ?? Data()
         engine.next(prompt: intro + "\n```json\n" + String(decoding: data, as: UTF8.self) + "\n```", progress: { _ in }, done: { r in
             switch r {
@@ -310,6 +326,7 @@ final class API: NSObject {
             if !flows.isEmpty { event["flows"] = flows }
             let bad = avoid.overview()
             if !bad.isEmpty { event["avoid"] = bad }
+            event["libraries"] = libraries.overview(words)
             let lib = utilities.overview(words)
             if !lib.isEmpty {
                 event["library"] = lib
@@ -406,6 +423,49 @@ final class API: NSObject {
                 send(profile.tree(at: Array((input["path"] as? [String] ?? []).dropLast())))
             default:
                 send(["traits": profile.overview(), "baseline": profile.baseline.mapValues(\.value)])
+            }
+
+        case "system":
+            // Everything about the app's state, for the System scene (⇧⌘D).
+            let free = (try? URL(fileURLWithPath: NSHomeDirectory())
+                .resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]))?
+                .volumeAvailableCapacityForImportantUsage ?? 0
+            let libs = libraries.list()
+            let installedCount = (libs["libraries"] as? [[String: Any]] ?? []).filter { ($0["installed"] as? Bool) == true }.count
+            let info = Bundle.main.infoDictionary ?? [:]
+            #if os(macOS)
+            let platform = "macOS \(ProcessInfo.processInfo.operatingSystemVersionString) · CEF/Blink"
+            #else
+            let platform = "iOS \(ProcessInfo.processInfo.operatingSystemVersionString) · WebKit"
+            #endif
+            send([
+                "app": ["version": info["CFBundleShortVersionString"] ?? "", "build": info["CFBundleVersion"] ?? "",
+                        "bundle": Bundle.main.bundleIdentifier ?? "", "platform": platform,
+                        "generation": Prompts.generation, "language": language],
+                "ai": engineStatus(),
+                "storage": ["root": cache.dir.deletingLastPathComponent().path, "icloud": Storage.isICloud,
+                            "freeBytes": free, "sharedBudget": Libraries.sharedBudget],
+                "cache": cache.stats(),
+                "libraries": ["installed": installedCount, "catalog": (libs["libraries"] as? [Any])?.count ?? 0,
+                              "usedBytes": libs["used"] ?? 0, "budgetBytes": libs["budget"] ?? 0,
+                              "installing": libs["installing"] ?? [], "folder": libraries.dir.path],
+                "utilities": utilities.tree(at: []),
+                "profile": ["traits": profile.overview(limit: 300).count, "top": profile.overview(limit: 6)],
+                "avoid": ["active": avoid.overview(), "all": avoid.list().count],
+            ])
+
+        case "libraries":
+            switch input["op"] as? String ?? "list" {
+            case "ensure":
+                libraries.ensure(input["ids"] as? [String] ?? []) { send(["tags": $0]) }
+            case "remove":
+                libraries.remove(input["id"] as? String ?? ""); send(libraries.list())
+            case "install":
+                libraries.install(input["id"] as? String ?? "") { [weak self] _ in send(self?.libraries.list() ?? [:]) }
+            case "maintain":
+                libraries.maintain(); send(libraries.list())
+            default:
+                send(libraries.list())
             }
 
         case "avoid":

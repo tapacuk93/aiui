@@ -6,6 +6,7 @@
 const WebBackend = (() => {
   const KEY = 'aiui.key', CACHE = 'aiui.cache', LIMIT = 3 * 1024 * 1024; // cache size limit (bytes)
   let prompts = null;
+  let libCatalog = null;
   const aborts = {};      // channel -> AbortController
   let convo = [];         // main conversation (append-only), provider wire format
   let openScreen = null;  // id of the last `screen` call awaiting its tool result
@@ -469,6 +470,11 @@ const WebBackend = (() => {
     if (ov.length) event.flows = ov;
     const av = avoidOverview();
     if (av.length) event.avoid = av;
+    if (!libCatalog) { try { libCatalog = (await (await fetch('libraries.json')).json()).libraries; } catch { libCatalog = []; } }
+    const ws = words.join(' ').toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((w) => w.length > 2);
+    const rel = libCatalog.map((e) => [e, ws.reduce((n, w) => n + ((e.id + ' ' + e.description).toLowerCase().includes(w) ? 100 : 0), 0) + e.priority])
+      .sort((a, b) => b[1] - a[1]).slice(0, 25).map(([e]) => `${e.id} ${e.version} (${e.global || 'CSS'}) — ${e.description}`);
+    event.libraries = { installable: rel, totals: { catalog: libCatalog.length }, note: 'web: libraries load from jsDelivr; any npm package name works in libs' };
     const lo = libOverview(words);
     if (lo.length) { event.library = lo; event.libraryCategories = libCategories(); }
     const user = {};
@@ -609,6 +615,34 @@ const WebBackend = (() => {
         return libTree(body.path || []);
       }
       case 'window': return { ok: true };
+      case 'libraries': {
+        // The web version can't install: libraries load from jsDelivr (browser-cached).
+        if (!libCatalog) { try { libCatalog = (await (await fetch('libraries.json')).json()).libraries; } catch { libCatalog = []; } }
+        if (body.op === 'ensure') {
+          const tags = [];
+          for (const id of body.ids || []) {
+            const e = libCatalog.find((x) => x.id === id);
+            if (e) for (const f of e.files) tags.push({ type: f.type, src: f.url });
+            else if (/^(@[\w.-]+\/)?[\w.-]+$/.test(id)) tags.push({ type: 'js', src: 'https://cdn.jsdelivr.net/npm/' + id });
+          }
+          return { tags };
+        }
+        return { libraries: libCatalog.map((x) => ({ id: x.id, description: x.description, category: x.category, bytes: x.bytes, installed: false })), used: 0, budget: 0 };
+      }
+      case 'system': {
+        const k = getKey();
+        return {
+          app: { platform: 'web · ' + navigator.userAgent, generation: await gen(), language: navigator.language },
+          ai: status(),
+          storage: { icloud: false, root: 'this browser (localStorage)' },
+          cache: { entries: Object.keys(loadCache()).length, bytes: (localStorage.getItem(CACHE) || '').length, limitBytes: LIMIT },
+          libraries: { installed: 0, catalog: (libCatalog || []).length, usedBytes: 0, budgetBytes: 0, installing: [] },
+          utilities: libTree([]),
+          profile: { traits: profileOverview(300).length, top: profileOverview(6) },
+          avoid: { active: avoidOverview(), all: Object.keys(loadAvoid()).length },
+          key: k ? k.name : null,
+        };
+      }
       case 'avoid':
         if (body.op === 'record') { avoidRecord(body.items); return { ok: true }; }
         if (body.op === 'clear') { localStorage.removeItem(AVOID); return { ok: true }; }

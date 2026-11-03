@@ -294,6 +294,7 @@ body.busy .circle:not(.pending) { opacity: .8; transition: opacity .3s; }
 #view {
   position: absolute;
   inset: 0;
+  bottom: 0;
   display: none;
 }
 #view iframe {
@@ -305,8 +306,7 @@ body.busy .circle:not(.pending) { opacity: .8; transition: opacity .3s; }
 body.mode-html #view { display: block; }
 body.mode-html #circles { display: none; }
 body.mode-html #stage { padding: 0; }
-body.mode-html #top { background: linear-gradient(var(--bg) 60%, transparent); padding-bottom: 14px; }
-body.mode-html.has-title #view { top: 0; }
+body.mode-html #top { padding-bottom: 6px; }
 body.busy #view { opacity: .7; transition: opacity .3s; }
 
 /* ---------- the text input (under the title, or in its place) ---------- */
@@ -582,3 +582,6 @@ body.updating #title::after {
   font-size: 10px;
   white-space: nowrap;
 }
+
+/* A view under its UI test: laid out at full size, not yet shown. */
+#view iframe.testing { visibility: hidden; }

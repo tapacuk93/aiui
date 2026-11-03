@@ -29,6 +29,18 @@ A native macOS app whose whole UI is one Blink webview (CEF), driven by the `cla
 - **Utilities library**: reusable things the AI builds (tools, calculators, converters, games) are
   saved to a category tree, sorted by use, and reachable from the root's Utilities circle. The AI
   sees the library and can bring any utility back by id.
+- **JS libraries**: a catalog of 1,100+ verified browser libraries (`web/libraries.json`,
+  `tools/libraries/`). Curated ones are on top, the rest discovered among jsDelivr's top 8,000, and
+  the catalog keeps growing in the background on each device. The app installs libraries locally in the
+  background within a budget it shares with the memory cache: 10 GB, at most 10% of the free disk,
+  nothing below 5 GB free; least recently used go first. Screens declare `libs` and get local copies.
+  View › Installed JS Libraries…
+- **Self-checking screens**: every AI view renders hidden first while a UI test checks its real
+  layout (overlaps, cropped text, overflow, contrast, broken images, emptiness). The tested render
+  is then shown, and problems are repaired by the AI in place. Views also report errors and failed or slow
+  resources, and must call `aiui.ready()`; stuck or failing views are repaired automatically. Failing
+  hosts go to an avoid record that is rechecked with exponential backoff.
+- **System scene** (⇧⌘D): AI, storage, cache, libraries, utilities, profile, avoid record.
 - The app gives the AI full system access: `claude` runs with `--permission-mode bypassPermissions`, and
   `aiui.sys` exposes shell, JXA/AppleScript (every Cocoa API), open, file read/write, clipboard and notifications.
 

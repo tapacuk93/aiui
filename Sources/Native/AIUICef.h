@@ -26,6 +26,9 @@ typedef void (^AIUIReply)(NSInteger status, NSString *mime, NSData *body);
             cachePath:(NSString *)cachePath
               onReady:(void (^)(void))onReady;
 
+/// Folder served at aiui://app/vendor/ (installed JS libraries).
++ (void)setVendorRoot:(NSString *)path;
+
 /// Creates the Blink browser filling `view` (resizes with it).
 + (void)createBrowserInView:(NSView *)view url:(NSString *)url;
 

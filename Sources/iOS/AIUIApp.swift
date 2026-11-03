@@ -11,6 +11,7 @@ struct AIUIApp: App {
     init() {
         let local = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("aiui", isDirectory: true)
+        API.webRoot = Bundle.main.resourceURL?.appendingPathComponent("web")
         api = API(support: Storage.root(local: local))
         let api = self.api
         Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { _ in api.syncNow() }

@@ -44,8 +44,12 @@ struct WebView: UIViewRepresentable {
         func webView(_ webView: WKWebView, start task: WKURLSchemeTask) {
             var path = task.request.url?.path ?? "/"
             if path == "/" || path.isEmpty { path = "/index.html" }
-            let file = root.appendingPathComponent(path).standardizedFileURL
-            guard file.path.hasPrefix(root.standardizedFileURL.path + "/"), let data = try? Data(contentsOf: file) else {
+            var file = root.appendingPathComponent(path).standardizedFileURL
+            var base = root.standardizedFileURL.path
+            if path.hasPrefix("/vendor/"), let v = api.libraries.filePath(String(path.dropFirst(8))) {
+                file = v; base = api.libraries.dir.standardizedFileURL.path
+            }
+            guard file.path.hasPrefix(base + "/"), let data = try? Data(contentsOf: file) else {
                 task.didFailWithError(URLError(.fileDoesNotExist))
                 return
             }
