@@ -129,6 +129,9 @@ final class APIEngine: AIEngine {
 
     /// Thinking effort for Anthropic models ("low" for quick interim screens).
     var effort = "medium"
+    /// An image (JPEG) to send with the next call — e.g. a live screenshot for the improver.
+    private var pendingImage: Data?
+    func attachImage(_ data: Data) { pendingImage = data }
 
     init(key: Provider.Key, persistent: Bool, systemPrompt: String, schema: String) {
         self.key = key; self.persistent = persistent; self.systemPrompt = systemPrompt
@@ -220,6 +223,10 @@ final class APIEngine: AIEngine {
                                progress: @escaping (String) -> Void) async throws -> (screen: [String: Any], callID: String?) {
         var first: [[String: Any]] = []
         if let id = pendingScreen { first.append(["type": "tool_result", "tool_use_id": id, "content": "Screen shown."]) }
+        if let img = pendingImage {
+            pendingImage = nil
+            first.append(["type": "image", "source": ["type": "base64", "media_type": "image/jpeg", "data": img.base64EncodedString()]])
+        }
         first.append(["type": "text", "text": prompt])
         convo.append(["role": "user", "content": first])
         let tools: [[String: Any]] = availableTools.map {
@@ -276,7 +283,14 @@ final class APIEngine: AIEngine {
     private func openAILoop(_ convo: inout [[String: Any]], prompt: String, pendingScreen: String?,
                             progress: @escaping (String) -> Void) async throws -> (screen: [String: Any], callID: String?) {
         if let id = pendingScreen { convo.append(["role": "tool", "tool_call_id": id, "content": "Screen shown."]) }
-        convo.append(["role": "user", "content": prompt])
+        if let img = pendingImage {
+            pendingImage = nil
+            convo.append(["role": "user", "content": [
+                ["type": "image_url", "image_url": ["url": "data:image/jpeg;base64," + img.base64EncodedString()]],
+                ["type": "text", "text": prompt]]])
+        } else {
+            convo.append(["role": "user", "content": prompt])
+        }
         let tools: [[String: Any]] = availableTools.map {
             ["type": "function", "function": ["name": $0.name, "description": $0.description, "parameters": $0.schema]]
         }

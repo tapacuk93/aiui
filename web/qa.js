@@ -7,6 +7,7 @@
 (() => {
   const mode = window.__qaMode || 'review';
   const lab = mode === 'lab';
+  const testsMode = mode === 'tests';
   // Keep the real timer: the lab counts scheduling done by the view as activity, not ours.
   const wait = (ms) => new Promise((r) => (window.__realSetTimeout || setTimeout)(r, ms));
   const errors = [];
@@ -262,9 +263,57 @@
     };
   }
 
+  // ---- the classes of objects on the scene (for context menus)
+  function classesPresent() {
+    const found = new Set();
+    for (const el of document.body.querySelectorAll('*')) {
+      if (!visible(el)) continue;
+      const c = window.__aiuiClassify ? window.__aiuiClassify(el) : null;
+      if (c && c !== 'empty-space') found.add(c);
+      if (found.size > 12) break;
+    }
+    found.add('empty-space');
+    return [...found];
+  }
+
+  // ---- AI-written tests for this scene (tests mode)
+  async function aiTests() {
+    const results = [];
+    const T = {
+      click: async (sel) => { const el = document.querySelector(sel); if (!el) throw new Error('no element ' + sel); el.click(); await wait(150); },
+      type: async (sel, text) => { const el = document.querySelector(sel); if (!el) throw new Error('no element ' + sel); el.focus(); el.value = text;
+        el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); await wait(150); },
+      key: async (key, sel) => { const el = sel ? document.querySelector(sel) : (document.activeElement || document.body);
+        el.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true })); el.dispatchEvent(new KeyboardEvent('keyup', { key, bubbles: true })); await wait(150); },
+      wait: (ms) => wait(Math.min(ms, 2000)),
+      text: (sel) => { const el = document.querySelector(sel); return el ? (el.innerText || el.value || '').trim() : ''; },
+      count: (sel) => document.querySelectorAll(sel).length,
+      exists: (sel) => !!document.querySelector(sel),
+      expect: (cond, msg) => { if (!cond) throw new Error(msg || 'expectation failed'); },
+    };
+    for (const test of (window.__aiTests || []).slice(0, 8)) {
+      const before = errors.length;
+      try {
+        const fn = new Function('t', 'aiui', `return (async () => { ${test.code} })();`);
+        await Promise.race([fn(T, window.aiui), wait(3000).then(() => { throw new Error('timed out after 3 s'); })]);
+        const err = errors.slice(before);
+        results.push({ name: test.name, ok: !err.length, note: err.length ? err.join('; ').slice(0, 160) : 'passed' });
+      } catch (e) {
+        results.push({ name: test.name, ok: false, note: String(e && e.message || e).slice(0, 160) });
+      }
+    }
+    return results;
+  }
+
   let started = false;
   async function run() {
     if (started) return; started = true;
+    if (testsMode) {
+      let results = [];
+      try { results = await aiTests(); } catch (e) { results = [{ name: 'tests', ok: false, note: String(e).slice(0, 160) }]; }
+      parent.postMessage({ aiuiTests: { results } }, '*');
+      return;
+    }
     // Always report, even if a check itself breaks (with what broke).
     try { await runChecks(); } catch (err) {
       parent.postMessage({ [lab ? 'aiuiInteract' : 'aiuiReview']: { issues: [], scores: {}, qaError: String(err && err.stack || err).slice(0, 400),
@@ -284,10 +333,10 @@
     const payload = {
       issues: [...new Set(issues.map(([a, t]) => `${a}: ${t}`))].slice(0, 16), scores: sc,
       report: { ...rd, ...ax, ...ix, errors: errors.length, readyMs: Math.round((readyAt || performance.now()) - t0) },
-      corners, tested: ix.tested || 0, listens: Object.keys(window.__handlers || {}), width: innerWidth, height: innerHeight,
+      corners, classes: lab ? [] : classesPresent(), tested: ix.tested || 0, listens: Object.keys(window.__handlers || {}), width: innerWidth, height: innerHeight,
     };
     parent.postMessage(lab ? { aiuiInteract: payload } : { aiuiReview: payload }, '*');
   }
   addEventListener('message', (e) => { if (e.data && e.data.aiuiReadySignal) { readyAt = performance.now(); wait(300).then(run); } });
-  addEventListener('load', () => wait(lab ? 4500 : 4000).then(run));
+  addEventListener('load', () => wait(lab || testsMode ? 4500 : 4000).then(run));
 })();

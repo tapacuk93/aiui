@@ -78,7 +78,11 @@ final class Libraries {
     var cacheBytes: () -> Int = { 0 }
 
     /// Libraries get the shared budget minus what the cache uses.
-    var budget: Int { max(0, Self.sharedBudget - cacheBytes()) }
+    var budget: Int {
+        let capGB = UserDefaults.standard.double(forKey: "budgetGB")
+        let shared = capGB > 0 ? min(Self.sharedBudget, Int(capGB * 1_000_000_000)) : Self.sharedBudget
+        return max(0, shared - cacheBytes())
+    }
 
     var used: Int { installed.values.reduce(0) { $0 + $1.bytes } }
 
@@ -100,6 +104,7 @@ final class Libraries {
     private var lastDiscovery = Date.distantPast
 
     func maintain() {
+        if API.paused { return }
         // Growing the catalog is a network walk: every 6 hours, not on every maintenance pass.
         if lastDiscovery < Date().addingTimeInterval(-6 * 3600) { lastDiscovery = Date(); discoverMore() }
         evict()
@@ -121,6 +126,7 @@ final class Libraries {
     func discoverMore(pages: Int = 3) {
         guard !discovering else { return }
         discovering = true
+        API.activity("discover", "discovering more JS libraries")
         let start = Int((try? String(contentsOf: cursorFile, encoding: .utf8))?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "") ?? 81
         let known = Set(catalog.compactMap { $0["id"] as? String })
         Task {
@@ -143,6 +149,7 @@ final class Libraries {
             let (more, next) = (found, page)
             await MainActor.run {
                 self.discovering = false
+                API.activity("discover", nil)
                 try? String(next).write(to: self.cursorFile, atomically: true, encoding: .utf8)
                 guard !more.isEmpty else { return }
                 self.catalog += more
@@ -191,6 +198,7 @@ final class Libraries {
         waiters[id, default: []].append(done)
         guard !installing.contains(id) else { return }
         installing.insert(id)
+        API.activity("lib-" + id, "installing \(id)")
         let target = dir.appendingPathComponent(Self.folder(id), isDirectory: true)
         let tmp = dir.appendingPathComponent(".\(Self.folder(id))-\(UUID().uuidString)", isDirectory: true)
         try? FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
@@ -209,6 +217,7 @@ final class Libraries {
             await MainActor.run {
                 let (ok, names, bytes) = (success, fileNames, total)
                 self.installing.remove(id)
+                API.activity("lib-" + id, nil)
                 if ok {
                     self.evict(toFit: bytes)
                     try? FileManager.default.removeItem(at: target)

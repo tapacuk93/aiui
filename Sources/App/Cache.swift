@@ -214,6 +214,18 @@ final class Cache {
                     "hits": $0.hits, "action": $0.action.mapValues { $0.value }] }
     }
 
+    /// The stored outcome for a key, whatever its generation (for improvement and live reload).
+    func raw(_ key: String) -> [String: Any]? {
+        guard let data = try? Data(contentsOf: file(key)), let entry = try? dec.decode(Entry.self, from: data) else { return nil }
+        return entry.outcome.mapValues { $0.value }
+    }
+
+    /// Replaces a stored outcome in place (an improved version), keeping its action and flow.
+    func replace(_ key: String, with outcome: [String: Any]) {
+        guard let row = index[key] else { return }
+        store(key: key, action: row.action.mapValues { $0.value }, flow: row.flow, outcome: outcome)
+    }
+
     /// Drops one stored outcome (a screen that turned out broken).
     func invalidate(_ key: String) {
         try? fm.removeItem(at: file(key))

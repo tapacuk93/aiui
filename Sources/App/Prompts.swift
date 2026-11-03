@@ -170,6 +170,19 @@ enum Prompts {
     Back/More listeners too); text ≥ 12px and lines ≤ ~90 characters; WCAG contrast (4.5:1, \
     3:1 large); alt text, accessible names, labelled inputs; touch targets ≥ 44px on phones; \
     responsive layout that works from 360px wide.
+    State: HTML scenes keep their state with `aiui.state` — `await aiui.state.load()` at start \
+    (null the first time) and `aiui.state.save(obj)` whenever something meaningful changes \
+    (progress, inputs, position, settings; plain JSON). The app reloads scenes live — improved \
+    versions arrive in the background — and the state carries over, so keep keys stable.
+    Hints: events carry `hints` — lessons from this app's own retrospectives on what went wrong \
+    before (text (scope, ×evidence)). Follow them.
+    Keyboard: scenes implement the well-known browser keys where they apply — arrows, Space and \
+    Enter for their controls, Escape closes overlays, Home/End and PageUp/PageDown in long \
+    content, ⌘/Ctrl+Z undo in editors, ⌘/Ctrl+F through `aiui.onFind(fn)` when they have \
+    searchable content. The app itself handles ⌘F, zoom (⌘= ⌘- ⌘0), ⌘R reload scene, ⌘[ / ⌘] \
+    back/forward, ⌘P print.
+    Event `context`: the user chose a context-menu action — `action` (with your `prompt`), \
+    `class` and `object` (its text, link or circle). Return the screen that does it.
     Event `fix`: a screen you made failed. `problem` lists what went wrong (errors, failed \
     resources, timeouts) and `broken` shows the screen. Return a corrected screen that avoids the \
     cause (another source, a fallback, simpler code); if a library module was at fault, publish \
@@ -317,6 +330,124 @@ enum Prompts {
     `message` that more is on the way if the full answer will add real data. The full screen \
     replaces yours when it is ready. Do not perform any actions.
     """
+
+    static let tester = """
+
+    ## Tester mode
+    You are now the tester, a separate background call. For the given scene (an AI-made HTML view), \
+    first write its Definition of Done (`dod`): 4–8 concrete, checkable criteria for what this \
+    scene must do and show for its purpose and this user (behaviour, content, states, inputs and \
+    results, edge values, Back/More listeners, keyboard) — beyond the generic checks already done \
+    (layout, contrast, dead controls). Then write one test per criterion (`criterion` = its index \
+    in `dod`). Each test is the body of `async (t) => { ... }` using only: \
+    `await t.click(selector)`, `await t.type(selector, text)`, `await t.key(key, selector?)`, \
+    `await t.wait(ms)`, `t.text(selector)`, `t.count(selector)`, `t.exists(selector)`, \
+    `t.expect(condition, message)`; `aiui` is mocked (no real effects, network may fail). Use \
+    selectors that exist in the HTML. Keep each test under 3 seconds. Do not perform any actions.
+    """
+
+    static let testsSchema: String = json([
+        "type": "object",
+        "properties": [
+            "dod": ["type": "array", "items": ["type": "string"], "description": "Definition of Done: checkable criteria"],
+            "tests": ["type": "array", "items": [
+                "type": "object",
+                "properties": ["criterion": ["type": "integer"], "name": ["type": "string"], "code": ["type": "string"]],
+                "required": ["criterion", "name", "code"],
+            ] as [String: Any]],
+        ] as [String: Any],
+        "required": ["dod", "tests"],
+    ])
+
+    static let improver = """
+
+    ## Improver mode
+    You are now the improver, a separate background call. You get a scene the user keeps using \
+    (its current screen JSON with its HTML), how they use it (opens, minutes, interactions), what \
+    the app's tests found (scores, Definition of Done, failures), related hints and their profile, \
+    and — when there is one — a live screenshot of it as they saw it (an image file to look at). \
+    Return an improved version of the same scene: fix what was found, make what they use most \
+    better and faster to reach, keep what works. Keep its purpose, title and the state contract: \
+    the same `aiui.state` keys must still load, so the user continues where they were. Keep \
+    `publish`/`uses`/`libs` consistent. Return the full screen. Do not perform any actions.
+    """
+
+    static let componentImprover = """
+
+    ## Component improver mode
+    You are now the component improver, a separate background call. You get one shared component \
+    of the utility library (its code, how many scenes use it, findings and scores from those \
+    scenes). Return a better version of it: fix what the findings point to, make it more robust \
+    (bad input, missing elements, network failure), accessible (labels, contrast, keyboard, \
+    focus), responsive and fast. Its public interface must stay compatible — the same \
+    `lib.<name>` signature and behaviour every existing scene relies on (additions are fine). \
+    Return the full code, and description/usage only if they change. Do not perform any actions.
+    """
+
+    static let componentSchema: String = json([
+        "type": "object",
+        "properties": ["code": ["type": "string"], "description": ["type": "string"], "usage": ["type": "string"],
+                       "changes": ["type": "string", "description": "what improved, one line"]] as [String: Any],
+        "required": ["code", "changes"],
+    ])
+
+    static let retro = """
+
+    ## Retrospective mode
+    You are now the retrospective, a separate background call. You get the app's journal of what \
+    went wrong since the last retrospective (repairs, failed QA with their findings, timeouts, \
+    errors, screens the user left at once, cancels) and the current hints. Find the patterns and \
+    write hints for future screens: short, actionable rules (`text`), with `scope` (all, html, \
+    circles, or a topic such as gallery, game, maps), `why` (the evidence) and `confidence`. Update \
+    a hint by reusing its `id`; `retire` hints the evidence contradicts. Add a one-paragraph \
+    `summary` of what went wrong and what changes. Do not perform any actions.
+    """
+
+    static let retroSchema: String = json([
+        "type": "object",
+        "properties": [
+            "hints": ["type": "array", "items": [
+                "type": "object",
+                "properties": ["id": ["type": "string"], "text": ["type": "string"], "scope": ["type": "string"],
+                               "why": ["type": "string"], "confidence": ["type": "number"]] as [String: Any],
+                "required": ["text", "scope", "confidence"],
+            ] as [String: Any]],
+            "retire": ["type": "array", "items": ["type": "string"]],
+            "summary": ["type": "string"],
+        ] as [String: Any],
+        "required": ["hints", "summary"],
+    ])
+
+    static let menus = """
+
+    ## Context menu mode
+    You are now the context-menu designer, a separate background call. Given a scene and the \
+    classes of objects on it (e.g. circle, image, link, heading, text, button, input, canvas, \
+    media, table, code, list-item, empty-space), decide for each class whether a context menu \
+    makes sense here (`enabled`), and if so its 2–6 most useful actions for this user (their \
+    profile is in context), in their language. Action `kind`: copy (copy the object's text or \
+    link), open (open its link/source), select (select the circle), share (share it), or ai (you \
+    get the object and `prompt` as an event and return a screen). Short labels, one emoji icon.
+    """
+
+    static let menusSchema: String = json([
+        "type": "object",
+        "properties": ["classes": ["type": "array", "items": [
+            "type": "object",
+            "properties": [
+                "class": ["type": "string"], "enabled": ["type": "boolean"], "reason": ["type": "string"],
+                "actions": ["type": "array", "items": [
+                    "type": "object",
+                    "properties": ["id": ["type": "string"], "label": ["type": "string"], "icon": ["type": "string"],
+                                   "kind": ["type": "string", "enum": ["copy", "open", "select", "share", "ai"]],
+                                   "prompt": ["type": "string"]] as [String: Any],
+                    "required": ["id", "label", "kind"],
+                ] as [String: Any]],
+            ] as [String: Any],
+            "required": ["class", "enabled"],
+        ] as [String: Any]]],
+        "required": ["classes"],
+    ])
 
     static let librarian = """
 

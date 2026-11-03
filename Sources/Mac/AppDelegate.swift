@@ -1,6 +1,9 @@
 import Cocoa
 
-final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSToolbarDelegate {
+    /// The address bar in the title bar: where you are, each level clickable.
+    private let addressBar = AddressBar(frame: NSRect(x: 0, y: 0, width: 420, height: 24))
+    private static let addressItem = NSToolbarItem.Identifier("aiui.address")
     let api: API
 
     init(support: URL) {
@@ -35,6 +38,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 : NSColor(red: 245 / 255, green: 245 / 255, blue: 248 / 255, alpha: 1)
         }
         w.minSize = NSSize(width: 520, height: 420)
+        // Address bar centred in the title bar (a unified compact toolbar keeps the window draggable).
+        let toolbar = NSToolbar(identifier: "aiui.toolbar")
+        toolbar.delegate = self
+        toolbar.displayMode = .iconOnly
+        toolbar.centeredItemIdentifiers = [Self.addressItem]
+        w.toolbar = toolbar
+        w.toolbarStyle = .unifiedCompact
+        addressBar.onSelect = { i in AIUICef.evalJS("window.aiui && aiui.goTo(\(i))") }
+        API.setAddress = { [weak self] items in self?.setAddress(items) }
         w.delegate = self
         w.setFrameAutosaveName("aiui.main")
         if !w.setFrameUsingName("aiui.main") { w.center() }
@@ -50,6 +62,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         AIUICef.createBrowser(in: content, url: "aiui://app/index.html")
     }
 
+    // MARK: - Address bar
+
+    func setAddress(_ items: [String]) { addressBar.set(items) }
+
+    func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { [Self.addressItem, .flexibleSpace] }
+    func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { [.flexibleSpace, Self.addressItem, .flexibleSpace] }
+    func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier id: NSToolbarItem.Identifier, willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
+        guard id == Self.addressItem else { return nil }
+        let item = NSToolbarItem(itemIdentifier: id)
+        item.view = addressBar
+        item.label = "Address"
+        return item
+    }
+
     // Closing the window closes the browser; CEF then ends the message loop.
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         AIUICef.requestClose()
@@ -63,6 +89,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     @objc func showDevTools(_ sender: Any?) { AIUICef.showDevTools() }
     @objc func reloadPage(_ sender: Any?) { AIUICef.reload() }
+    private func js(_ call: String) { AIUICef.evalJS("window.aiui && aiui.\(call)") }
+    @objc func reloadScene(_ sender: Any?) { js("reloadScene()") }
+    @objc func findInScene(_ sender: Any?) { js("find()") }
+    @objc func goBack(_ sender: Any?) { js("back()") }
+    @objc func goForward(_ sender: Any?) { js("forward()") }
+    @objc func zoomIn(_ sender: Any?) { js("zoom(1)") }
+    @objc func zoomOut(_ sender: Any?) { js("zoom(-1)") }
+    @objc func zoomReset(_ sender: Any?) { js("zoom(0)") }
+    @objc func printScene(_ sender: Any?) { js("print()") }
+
     @objc func showSystem(_ sender: Any?) { AIUICef.evalJS("window.aiui && aiui.system()") }
     @objc func showJSLibraries(_ sender: Any?) { AIUICef.evalJS("window.aiui && aiui.jsLibraries()") }
 
@@ -94,6 +130,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let appMenu = NSMenu()
         appMenu.addItem(withTitle: "About AI UI", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
         appMenu.addItem(.separator())
+        appMenu.addItem(withTitle: "Settings…", action: #selector(showSystem(_:)), keyEquivalent: ",").target = self
+        appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "Hide AI UI", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
         appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "Quit AI UI", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
@@ -119,11 +157,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         view.addItem(withTitle: "What AI UI Knows About You…", action: #selector(showProfile(_:)), keyEquivalent: "").target = self
         view.addItem(withTitle: "Utility Library…", action: #selector(showLibrary(_:)), keyEquivalent: "").target = self
         view.addItem(withTitle: "Installed JS Libraries…", action: #selector(showJSLibraries(_:)), keyEquivalent: "").target = self
-        let sys = view.addItem(withTitle: "System Info", action: #selector(showSystem(_:)), keyEquivalent: "d")
+        let sys = view.addItem(withTitle: "Settings & System", action: #selector(showSystem(_:)), keyEquivalent: "d")
         sys.keyEquivalentModifierMask = [.command, .shift]
         sys.target = self
         view.addItem(withTitle: "Clear Memory Cache", action: #selector(clearCache(_:)), keyEquivalent: "").target = self
-        view.addItem(withTitle: "Reload", action: #selector(reloadPage(_:)), keyEquivalent: "r").target = self
+        view.addItem(withTitle: "Reload Scene", action: #selector(reloadScene(_:)), keyEquivalent: "r").target = self
+        let reloadApp = view.addItem(withTitle: "Reload App", action: #selector(reloadPage(_:)), keyEquivalent: "r")
+        reloadApp.keyEquivalentModifierMask = [.command, .shift]
+        reloadApp.target = self
+        view.addItem(.separator())
+        view.addItem(withTitle: "Find…", action: #selector(findInScene(_:)), keyEquivalent: "f").target = self
+        view.addItem(withTitle: "Back", action: #selector(goBack(_:)), keyEquivalent: "[").target = self
+        view.addItem(withTitle: "Forward", action: #selector(goForward(_:)), keyEquivalent: "]").target = self
+        view.addItem(withTitle: "Zoom In", action: #selector(zoomIn(_:)), keyEquivalent: "=").target = self
+        view.addItem(withTitle: "Zoom Out", action: #selector(zoomOut(_:)), keyEquivalent: "-").target = self
+        view.addItem(withTitle: "Actual Size", action: #selector(zoomReset(_:)), keyEquivalent: "0").target = self
+        view.addItem(withTitle: "Print…", action: #selector(printScene(_:)), keyEquivalent: "p").target = self
+        view.addItem(.separator())
         let dev = view.addItem(withTitle: "Developer Tools", action: #selector(showDevTools(_:)), keyEquivalent: "i")
         dev.keyEquivalentModifierMask = [.command, .option]
         dev.target = self

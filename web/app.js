@@ -6,7 +6,8 @@ const el = {
   path: $('#path'), title: $('#title'), message: $('#message'),
   circles: $('#circles'), view: $('#view'), write: $('#write'),
   status: $('#status'), go: $('#go'), toast: $('#toast'),
-  prev: $('#prev'), more: $('#more'), stage: $('#stage'), close: $('#close'), top: $('#top'), who: $('#who'), full: $('#full'),
+  prev: $('#prev'), more: $('#more'), stage: $('#stage'), close: $('#close'), top: $('#top'), who: $('#who'), full: $('#full'), ctx: $('#ctx'),
+  activity: $('#activity'), pauseBtn: $('#pauseBtn'), settingsBtn: $('#settingsBtn'),
 };
 
 // Human capabilities, each backed by technical ones.
@@ -61,7 +62,39 @@ const DEADLINES = {
 };
 const CHANNEL = { more: 'pager', suggest: 'suggest', prefetch: 'scout', refine: 'refine', quick: 'quick' };
 
+// What each kind of call is, in words, for the status bar (trivial calls stay silent).
+function activityTitle(name, b = {}) {
+  const label = (b.target && b.target.label) || '';
+  switch (name) {
+    case 'ai':
+      if (b.event === 'open') return `${t('actOpening')} «${label}»`;
+      if (b.event === 'text') return `${t('actAsking')} «${String(b.text || '').slice(0, 40)}»`;
+      if (b.event === 'fix') return t('actRepairing');
+      if (b.event === 'context') return `${(b.action && b.action.label) || ''}`;
+      return `${t('actThinking')}: ${b.event}`;
+    case 'quick': return t('actQuick');
+    case 'more': return t('actMore');
+    case 'suggest': return `${t('actSuggest')} «${String(b.input || '').slice(0, 30)}»`;
+    case 'prefetch': return `${t('actPrefetch')} «${label}»`;
+    case 'refine': return t('actRefine');
+    case 'tests': return t('actTests');
+    case 'menus': return t('actMenus');
+    case 'translate': return t('actTranslate');
+    case 'profile': return b.op === 'learn' ? t('actLearn') : null;
+    case 'libraries': return b.op === 'ensure' ? t('actLibs') : null;
+    default: return null;
+  }
+}
+
+let actSeq = 0;
 function call(name, body) {
+  const title = activityTitle(name, body || {});
+  const aid = title ? name + ':' + (++actSeq) : null;
+  if (aid) activityStart(aid, title);
+  return callRaw(name, body).finally(() => { if (aid) activityEnd(aid); });
+}
+
+function callRaw(name, body) {
   const ms = DEADLINES[name] || 30000;
   let timer;
   const deadline = new Promise((_, reject) => {
@@ -102,10 +135,18 @@ window.aiui = {
   profile: () => showProfile([]),
   library: () => showLibrary([]),
   system: () => showSystem(),
+  state: { load: async () => sceneState(), save: (obj) => saveSceneState(obj) },
+  goTo: (i) => goTo(i), setting: (k, v) => setSetting(k, v), action: (n, a) => settingsAction(n, a),
+  settings: () => ({ ...settings, paused }),
+  reloadScene: () => reloadScene(), find: () => find(), forward: () => forward(), zoom: (d) => zoom(d), print: () => printScene(),
   jsLibraries: () => showJSLibraries(),
   get screen() { return current.screen; },
   _event(e) {
+    if (e.type === 'improved') return onImproved(e);
+    if (e.type === 'componentImproved') return onComponentImproved(e);
+    if (e.type === 'activity') { if (e.done) activityEnd(e.id); else activityStart(e.id, e.title); return; }
     if (e.type !== 'progress') return;
+    activityDetail('ai', e.text);
     el.status.textContent = e.text;
     // The circle being opened shows what is happening inside it.
     const hint = pendingCircle && pendingCircle.querySelector('.progress');
@@ -159,7 +200,9 @@ async function ask(evt, { label, replace = false, circle = null, retried = false
   const countdown = setInterval(() => {
     if (my !== seq) return clearInterval(countdown);
     const left = Math.max(0, Math.round(policy.seconds - (performance.now() - started) / 1000));
-    if (policy.label) el.status.textContent = policy.label + (left ? ` · ${left}s` : ' · …');
+    if (policy.label) { el.status.textContent = policy.label + (left ? ` · ${left}s` : ' · …'); }
+    for (const [id, a] of activities) if (id.startsWith('ai:')) { a.detail = (policy.label || t('actThinking')) + (left ? ` · ${left}s` : ''); }
+    renderActivity();
   }, 1000);
   const quickTimer = setTimeout(async () => {
     if (my !== seq || replace) return;
@@ -189,9 +232,10 @@ async function ask(evt, { label, replace = false, circle = null, retried = false
     setBusy(false);
     document.body.classList.remove('updating');
     if (!interim) toast(t('tooLong'));
+    journal('timeout', current.screen, `no screen within ${HARD_LIMIT_MS / 1000}s for ${evt.event} ${(evt.target && evt.target.label) || evt.text || ''}`);
   }, HARD_LIMIT_MS);
   try {
-    const { screen, cached, published } = await call('ai', payload);
+    const { screen, cached, published, key: sceneKey } = await call('ai', payload);
     if (my !== seq) return; // cancelled or superseded
     if (cached) flashStatus(t('fromMemory'));
     if (published) setTimeout(() => flashStatus('🧩 +' + published), 300);
@@ -200,6 +244,7 @@ async function ask(evt, { label, replace = false, circle = null, retried = false
     if (interim) {
       // Replace the interim screen wherever it is now: on screen, or back in the history.
       interim.screen = next;
+      interim.key = sceneKey;
       document.body.classList.remove('updating');
       if (current === interim && !typing()) { render(); flashStatus(t('updated')); }
       return;
@@ -207,8 +252,9 @@ async function ask(evt, { label, replace = false, circle = null, retried = false
     if (replace) {
       current.screen = next;
     } else {
+      forwardStack = [];
       stack.push(current);
-      current = { screen: next, label: label || next.title || evt.event, evt: payload };
+      current = { screen: next, label: label || next.title || evt.event, evt: payload, key: sceneKey };
     }
     stopWriting(true);
     render();
@@ -219,6 +265,7 @@ async function ask(evt, { label, replace = false, circle = null, retried = false
       // try once more instead of showing an error.
       if (e.message === 'cancelled' && !retried && !interim) { setBusy(false); return ask(evt, { label, replace, circle, retried: true }); }
       if (!interim) toast(e.message);
+      if (e.message !== 'cancelled') journal('error', current.screen, `${evt.event}: ${e.message}`);
     }
   } finally {
     clearTimeout(quickTimer);
@@ -228,7 +275,7 @@ async function ask(evt, { label, replace = false, circle = null, retried = false
   }
 }
 
-let QUICK_AFTER_MS = 6000;       // default budget: no screen yet → interim screen
+let QUICK_AFTER_MS = 6000;       // default budget: no screen yet → interim screen (Settings)
 
 // The budget for an action: the circle's `expect`, else the screen's `timeouts[event]`,
 // else its `timeouts.default`, else 6 s → interim.
@@ -258,6 +305,7 @@ function normalize(s) {
 
 async function cancel() {
   if (!busy) return;
+  journal('cancel', current.screen, 'the user cancelled a request in progress');
   seq++;
   setBusy(false);
   try { await call('cancel'); } catch {}
@@ -391,6 +439,10 @@ function back() {
 
 function leaveBack() {
   if (!stack.length) return;
+  // Left an AI screen within 3 seconds of it appearing: probably not what was wanted.
+  const s = current.screen;
+  if (!s.local && s.shownAt && Date.now() - s.shownAt < 3000) journal('bounce', s, `left ${s.kind} screen after ${Date.now() - s.shownAt} ms`);
+  forwardStack.push(current);
   current = stack.pop();
   stopWriting(true);
   render();
@@ -409,6 +461,8 @@ function home() {
 function render() {
   const s = current.screen;
   focusManual = false;
+  // A lab still testing a screen the user has left is dropped (its screen is gone).
+  if (labFor && labFor.screen !== s) { labFor.frame.remove(); labFor = null; activityEnd('lab'); }
   paging.token++;
   paging.loading = false;
   paging.failed = false;
@@ -430,7 +484,11 @@ function render() {
   updateGo();
   fitStage();
   layoutPages(typing());
-  if (s.kind === 'circles') { initFocus(s); maybeRefine(s); }
+  if (s.kind === 'circles') { initFocus(s); maybeRefine(s); if (!s.local) scheduleMenus(s, ['circle', 'empty-space']); }
+  updateAddress();
+  renderActivity();
+  trackUsage();
+  s.shownAt = s.shownAt || Date.now();
   el.full.hidden = !s.fullscreen;
   if (!s.fullscreen && document.body.classList.contains('immersive')) setImmersive(false);
   shownAt = s.local ? 0 : performance.now();
@@ -589,7 +647,7 @@ function prevPage() {
 // Keep one full page ready beyond the one shown.
 function maybePreload() {
   const s = current.screen;
-  if (s.kind !== 'circles' || !s.more || s.local || typing() || paging.loading || paging.failed || busy) return;
+  if (s.kind !== 'circles' || !s.more || s.local || typing() || paging.loading || paging.failed || busy || paused) return;
   const page = s.page || 0, last = lastPage();
   const capacity = Math.max(...pages.map((p) => p.length), 1);
   const nextReady = last > page + 1 || (last === page + 1 && pages[last].length >= capacity);
@@ -678,7 +736,6 @@ function circleEl(c, i) {
   node.title = c.hint || '';
   const showValue = c.value != null && (c.plus === 'increment' || c.minus === 'decrement' || c.value > 1);
   node.innerHTML = `
-    <button class="ear minus" type="button" title="Remove / reduce">×</button>
     <div class="face">
       ${c.icon ? `<span class="icon">${esc(c.icon)}</span>` : ''}
       <span class="label">${esc(c.label)}</span>
@@ -686,12 +743,12 @@ function circleEl(c, i) {
       ${showValue ? `<span class="value">${esc(String(c.value))}</span>` : ''}
       ${c.expect && c.expect.seconds >= 8 ? `<span class="expect" title="${esc(c.expect.label || '')}">⏱ ${fmtSecs(c.expect.seconds)}</span>` : ''}
     </div>
-    <button class="ear plus" type="button" title="Add / select / increase">+</button>`;
+`;
 
-  node.querySelector('.minus').addEventListener('click', (e) => { e.stopPropagation(); minus(c, node); });
-  node.querySelector('.plus').addEventListener('click', (e) => { e.stopPropagation(); plus(c, node); });
   node.querySelector('.face').addEventListener('click', (e) => {
     e.stopPropagation();
+    // While a circle is generating the others are locked; the generating one cancels it.
+    if (busy) { if (node.classList.contains('pending')) cancel(); return; }
     setFocus(c.id, true);
     // Shift/Cmd-click selects instead of opening.
     if (e.shiftKey || e.metaKey) return toggleSelect(c, node);
@@ -860,10 +917,52 @@ const qaShim = (mode) => QA_SRC ? `<script>window.__qaMode = '${mode}';<\/script
 // Scene listeners: a view registers aiui.onBack(fn) / aiui.onMore(fn); the app's Back and More
 // (buttons, Backspace, swipes) go to the scene first. A handler returning false passes it on.
 const SCENE_SHIM = `<script>(() => {
+  // Object classes for context menus.
+  window.__aiuiClassify = (el) => {
+    const t = el.closest('img,picture,a[href],h1,h2,h3,h4,h5,h6,button,[role=button],input,textarea,select,canvas,svg,video,audio,table,pre,code,li');
+    if (t) { const n = t.tagName.toLowerCase();
+      if (n === 'img' || n === 'picture') return 'image'; if (n === 'a') return 'link'; if (/^h\\d$/.test(n)) return 'heading';
+      if (n === 'button' || t.getAttribute('role') === 'button') return 'button'; if (/^(input|textarea|select)$/.test(n)) return 'input';
+      if (n === 'canvas' || n === 'svg') return 'canvas'; if (n === 'video' || n === 'audio') return 'media';
+      if (n === 'table') return 'table'; if (n === 'pre' || n === 'code') return 'code'; if (n === 'li') return 'list-item'; }
+    return [...el.childNodes].some((x) => x.nodeType === 3 && x.textContent.trim().length > 1) ? 'text' : 'empty-space';
+  };
+  const ctx = (el, x, y) => {
+    const c = window.__aiuiClassify(el), a = el.closest && el.closest('a[href]'), img = el.closest && el.closest('img');
+    parent.postMessage({ aiuiContext: { cls: c, x, y, text: (el.innerText || el.alt || el.value || '').trim().slice(0, 500),
+      href: a ? a.href : '', src: img ? img.currentSrc || img.src : '' } }, '*');
+  };
+  addEventListener('contextmenu', (e) => { e.preventDefault(); ctx(e.target, e.clientX, e.clientY); });
+  let hold = 0;
+  addEventListener('touchstart', (e) => { const p = e.touches[0], t = e.target; hold = setTimeout(() => ctx(t, p.clientX, p.clientY), 550); }, { passive: true });
+  for (const ev of ['touchend', 'touchmove', 'touchcancel']) addEventListener(ev, () => clearTimeout(hold), { passive: true });
   const handlers = {};
   const reg = (k) => (fn) => { handlers[k] = fn; parent.postMessage({ aiuiListen: k }, '*'); };
   aiui.onBack = reg('back');
   aiui.onMore = reg('more');
+  aiui.onFind = (fn) => { handlers.find = fn; };
+  // Usage: interactions, reported every few seconds.
+  let interactions = 0;
+  for (const ev of ['pointerdown', 'keydown']) addEventListener(ev, () => { interactions++; }, true);
+  setInterval(() => { if (interactions) { parent.postMessage({ aiuiUsage: interactions }, '*'); interactions = 0; } }, 5000);
+  // Live screenshot on request (html2canvas from the library store, else the CDN).
+  addEventListener('message', async (e) => {
+    if (!e.data || !e.data.aiuiShotRequest) return;
+    try {
+      if (!window.html2canvas) await new Promise((ok, no) => {
+        const tryLoad = (src, next) => { const sc = document.createElement('script'); sc.src = src; sc.onload = ok; sc.onerror = next; document.head.appendChild(sc); };
+        tryLoad(e.data.local, () => tryLoad('https://cdn.jsdelivr.net/npm/html2canvas@1/dist/html2canvas.min.js', no));
+      });
+      const scale = Math.min(1, 900 / Math.max(1, innerWidth));
+      const c = await html2canvas(document.body, { scale, logging: false, useCORS: true, backgroundColor: null });
+      parent.postMessage({ aiuiShot: c.toDataURL('image/jpeg', 0.6) }, '*');
+    } catch (err) { parent.postMessage({ aiuiShot: null }, '*'); }
+  });
+  addEventListener('message', (e) => {
+    const d = e.data || {};
+    if (d.aiuiFind) { if (handlers.find) handlers.find(d.aiuiFind); else if (window.find) window.find(d.aiuiFind); }
+    if (d.aiuiPrint) print();
+  });
   addEventListener('message', async (e) => {
     const d = e.data || {};
     if (!d.aiuiInvoke) return;
@@ -884,7 +983,8 @@ const LAB_MOCK = `<script>(() => {
   window.aiui = { ready() { window.postMessage({ aiuiReadySignal: true }, '*'); },
     sys: mc({ ok: true, code: 0, stdout: '', stderr: '', text: '' }), next: mc(null), back: mc(null), home: mc(null),
     memory: { search: mc([]), stats: mc({}) },
-    onBack(fn) { window.__handlers.back = fn; }, onMore(fn) { window.__handlers.more = fn; } };
+    onBack(fn) { window.__handlers.back = fn; }, onMore(fn) { window.__handlers.more = fn; },
+    state: { _s: null, async load() { return this._s; }, save(o) { this._s = JSON.parse(JSON.stringify(o)); window.__mockCalls++; } } };
   const of = window.fetch.bind(window); window.fetch = (...a) => { window.__activity++; return of(...a); };
   for (const k of ['setTimeout', 'setInterval', 'requestAnimationFrame']) { const o = window[k].bind(window); window[k] = (...a) => { window.__activity++; return o(...a); }; }
   const op = HTMLMediaElement.prototype.play; HTMLMediaElement.prototype.play = function () { window.__activity++; return op.call(this).catch(() => {}); };
@@ -893,9 +993,11 @@ const LAB_MOCK = `<script>(() => {
 })();<\/script>`;
 
 // Starts the hidden lab clone for a view; reports interaction problems to the repair.
-function runLab(s, sharedHead, html) {
-  if (s.local || s.labbed) return;
-  s.labbed = true;
+function runLab(s, sharedHead, html, mode = 'lab', tests = null) {
+  if (s.local || paused || !settings.qa) return;
+  if (mode === 'lab') { if (s.labbed) return; s.labbed = true; }
+  if (labFor) return setTimeout(() => runLab(s, sharedHead, html, mode, tests), 1500); // one lab at a time
+  s.labHead = sharedHead;
   let lab = document.getElementById('lab');
   if (!lab) { lab = document.createElement('div'); lab.id = 'lab'; document.body.appendChild(lab); }
   // Another screen mode than the one on display: phone size, the other colour theme.
@@ -904,24 +1006,65 @@ function runLab(s, sharedHead, html) {
   const f = document.createElement('iframe');
   if (!NATIVE) f.setAttribute('sandbox', 'allow-scripts allow-forms allow-modals');
   const otherTheme = `<style>:root{${themeVars(!matchMedia('(prefers-color-scheme: dark)').matches)}}</style>`;
-  const head = sharedHead.base + otherTheme + LAB_MOCK + qaShim('lab') + sharedHead.libs;
+  const testData = tests ? `<script>window.__aiTests = ${JSON.stringify(tests).replace(/</g, '\\u003c')};<\/script>` : '';
+  const head = sharedHead.base + otherTheme + LAB_MOCK + testData + qaShim(mode) + sharedHead.libs;
   f.srcdoc = /<head[^>]*>/i.test(html) ? html.replace(/<head[^>]*>/i, (m) => m + head)
     : `<!doctype html><html><head>${head}</head><body>${html}</body></html>`;
   lab.appendChild(f);
   labFor = { frame: f, screen: s };
+  activityStart('lab', mode === 'tests' ? t('actRunDoD') : t('actLab'));
   setTimeout(() => { if (labFor && labFor.frame === f) { f.remove(); labFor = null; } }, 25000);
 }
 let labFor = null;
 
 function labResult(r) {
+  activityEnd('lab');
   if (!labFor) return;
   const { frame, screen: s } = labFor;
   frame.remove(); labFor = null;
   (s.quality || (s.quality = {})).lab = r;
   lastQuality = { title: s.title, ...s.quality };
+  componentFeedback(s, r);
+  requestSceneTests(s);
   if (!qaFails(r) || s.fixed) return;
   (s.health || (s.health = [])).push(...(r.issues || []).map((x) => 'phone/other theme: ' + x));
   if (current.screen === s && !s.fixing) selfFix(s, qaReason(`interaction lab (${r.tested} controls, phone, other theme)`, r));
+}
+
+// "What should be tested for this scene?" — the AI writes scene-specific tests; they run in a
+// second lab pass; failures go to the repair like any other finding.
+async function requestSceneTests(s) {
+  if (paused || !settings.dod) return;
+  if (s.testsRequested || s.local || s.kind !== 'html' || !s.labHead) return;
+  s.testsRequested = true;
+  try {
+    const r = await call('tests', { screen: { title: s.title, html: String(s.html || '').slice(0, 14000), uses: s.uses, libs: s.libs },
+      path: [...stack.map((e) => e.label), current.label].filter(Boolean), language: LANG });
+    s.dod = (r.dod || []).slice(0, 10);
+    const tests = (r.tests || []).filter((x) => x && x.code).slice(0, 10);
+    if (tests.length && !s.fixed) { s.aiTests = tests; runLab(s, s.labHead, String(s.html || ''), 'tests', tests); }
+  } catch {}
+}
+
+function testsResult(r) {
+  activityEnd('lab');
+  if (!labFor) return;
+  const { frame, screen: s } = labFor;
+  frame.remove(); labFor = null;
+  const results = (r.results || []).map((x, i) => ({ ...x, criterion: (s.aiTests[i] || {}).criterion }));
+  (s.quality || (s.quality = {})).tests = results;
+  // The Definition of Done, each criterion met when all its tests passed.
+  s.quality.dod = (s.dod || []).map((text, i) => {
+    const mine = results.filter((x) => x.criterion === i);
+    return { text, ok: mine.length ? mine.every((x) => x.ok) : null, notes: mine.filter((x) => !x.ok).map((x) => x.note) };
+  });
+  lastQuality = { title: s.title, ...s.quality };
+  const unmet = s.quality.dod.filter((d) => d.ok === false);
+  const failed = results.filter((x) => !x.ok);
+  if (!failed.length || s.fixed) return;
+  (s.health || (s.health = [])).push(...failed.map((x) => `DoD test "${x.name}" failed: ${x.note}`));
+  journal('dod', s, `${unmet.length} DoD criteria unmet: ${unmet.map((d) => d.text).join(' | ')}`);
+  if (current.screen === s && !s.fixing) selfFix(s, `Definition of Done not met (${unmet.length} of ${s.dod.length}): ${unmet.map((d) => d.text).join('; ')}`);
 }
 
 // Scene listeners from the real frame, and the round trip to invoke them.
@@ -977,7 +1120,7 @@ function viewReady() {
 
 // The in-frame UI test reported: reveal the tested render; repair it if anything is wrong.
 // Repair needed: hard failures (layout, broken interactions) or any score under 70.
-const QA_MIN = 70;
+let QA_MIN = 70;                 // Settings
 function qaFails(r) {
   const hard = (r.issues || []).some((x) => /^(layout|ux|security):/.test(x));
   const low = Object.values(r.scores || {}).some((v) => v < QA_MIN);
@@ -998,6 +1141,8 @@ function viewReview(r) {
   revealView();
   (s.quality || (s.quality = {})).screen = r;
   lastQuality = { title: s.title, ...s.quality };
+  if (r.classes) scheduleMenus(s, r.classes);
+  componentFeedback(s, r);
   if (qaFails(r) && !s.fixed && !s.local) {
     (s.health || (s.health = [])).push(...(r.issues || []));
     selfFix(s, qaReason('UI test on screen', r));
@@ -1006,6 +1151,7 @@ function viewReview(r) {
 let lastQuality = null;
 
 function revealView() {
+  activityEnd('review');
   const f = el.view.querySelector('iframe');
   if (f) f.classList.remove('testing');
 }
@@ -1022,6 +1168,7 @@ function watchView(s) {
 // Asks the AI to repair a stuck or broken view; replaces it in place; drops the broken cached copy.
 async function selfFix(s, reason) {
   if (s.fixing || (s.fixAttempts || 0) >= 1) return;
+  journal('repair', s, reason + ' · ' + (s.health || []).slice(-6).join(' | '));
   s.fixing = true; s.fixAttempts = (s.fixAttempts || 0) + 1;
   const entry = current;
   document.body.classList.add('updating');
@@ -1058,7 +1205,9 @@ const FRAME_SHIM = `<script>(() => {
   });
   const rpc = (m, a) => new Promise((res, rej) => { const id = ++n; pend[id] = { res, rej }; parent.postMessage({ aiuiCall: id, m, a }, '*'); });
   window.aiui = {
-    ready: () => rpc('ready'), sys: (o) => rpc('sys', o), next: (d) => rpc('next', d), back: () => rpc('back'), home: () => rpc('home'),
+    state: { load: () => rpc('state.load'), save: (o) => rpc('state.save', o) },
+    ready: () => rpc('ready'), setting: (k, v) => rpc('setting', [k, v]), action: (n, a) => rpc('action', [n, a]),
+    settings: () => rpc('settings'), sys: (o) => rpc('sys', o), next: (d) => rpc('next', d), back: () => rpc('back'), home: () => rpc('home'),
     memory: { search: (q) => rpc('memory.search', q), stats: () => rpc('memory.stats') } };
   addEventListener('keydown', (e) => {
     const t = e.target; if (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName)) return;
@@ -1073,6 +1222,7 @@ const FRAME_SHIM = `<script>(() => {
 window.addEventListener('message', async (e) => {
   if (labFor && e.source === labFor.frame.contentWindow) {
     if (e.data && e.data.aiuiInteract) labResult(e.data.aiuiInteract);
+    if (e.data && e.data.aiuiTests) testsResult(e.data.aiuiTests);
     return;
   }
   const frame = el.view.querySelector('iframe');
@@ -1083,6 +1233,13 @@ window.addEventListener('message', async (e) => {
     (s.listens || (s.listens = {}))[d.aiuiListen] = true;
     return updatePager();
   }
+  if (d.aiuiUsage) { usageNote(current, { interactions: d.aiuiUsage }); return; }
+  if ('aiuiShot' in d) { if (d.aiuiShot) usageNote(current, { screenshot: d.aiuiShot }); return; }
+  if (d.aiuiContext) {
+    const r = frame.getBoundingClientRect();
+    return openContext(d.aiuiContext.cls, { text: d.aiuiContext.text, href: d.aiuiContext.href, src: d.aiuiContext.src },
+      r.left + d.aiuiContext.x, r.top + d.aiuiContext.y);
+  }
   if (d.aiuiInvoked != null) { const r = sceneCalls[d.aiuiInvoked]; delete sceneCalls[d.aiuiInvoked]; if (r) r(!!d.handled); return; }
   if (d.aiuiHealth) return viewHealth(d.aiuiHealth);
   if (d.aiuiReview) return viewReview(d.aiuiReview);
@@ -1091,7 +1248,9 @@ window.addEventListener('message', async (e) => {
   if (d.aiuiHealth) return viewHealth(d.aiuiHealth);
   if (d.aiuiReview) return viewReview(d.aiuiReview);
   const fns = { sys: (a) => aiui.sys(a), next: (a) => aiui.next(a), back: () => aiui.back(), home: () => aiui.home(),
-    ready: () => viewReady(),
+    'state.load': () => sceneState(), 'state.save': (o) => saveSceneState(o),
+    ready: () => viewReady(), setting: (a) => setSetting(a[0], a[1]), action: (a) => settingsAction(a[0], a[1]),
+    settings: () => aiui.settings(),
     'memory.search': (q) => aiui.memory.search(q), 'memory.stats': () => aiui.memory.stats() };
   try {
     const value = await (fns[d.m] ? fns[d.m](d.a) : Promise.reject(new Error('unknown call')));
@@ -1127,6 +1286,7 @@ function renderHTML(s) {
   // Rendered hidden first: the UI test runs on this very render, which is then revealed.
   if (!s.local && !s.reviewed) {
     frame.classList.add('testing');
+    activityStart('review', t('actReview'));
     setTimeout(() => { if (current.screen === s) revealView(); }, 6000); // never hidden for long
   }
   if (!NATIVE) frame.setAttribute('sandbox', 'allow-scripts allow-forms allow-popups allow-modals');
@@ -1377,7 +1537,7 @@ function onInput() {
   // Ask the AI for circles inspired by the input once typing pauses.
   clearTimeout(live.timer);
   if (!q || s.local) return;
-  live.timer = setTimeout(() => suggestFor(q), 650);
+  if (!paused) live.timer = setTimeout(() => suggestFor(q), 650);
 }
 
 async function suggestFor(q) {
@@ -1508,10 +1668,23 @@ function isEditable(t) {
 
 function onKey(e) {
   if (e.metaKey && e.shiftKey && (e.key === 'd' || e.key === 'D')) { e.preventDefault(); return showSystem(); }
+  const mod = e.metaKey || e.ctrlKey;
+  if (mod && !e.altKey) {
+    const k = e.key.toLowerCase();
+    const acts = { f: find, '=': () => zoom(1), '+': () => zoom(1), '-': () => zoom(-1), '0': () => zoom(0), p: printScene,
+      ']': forward, r: () => (e.shiftKey ? location.reload() : reloadScene()) };
+    if (acts[k]) { e.preventDefault(); return acts[k](); }
+  }
+  if (!isEditable(e.target) && current.screen.kind === 'circles' && (e.key === 'Home' || e.key === 'End')) {
+    e.preventDefault();
+    current.screen.page = e.key === 'Home' ? 0 : lastPage();
+    return showPage();
+  }
+  if (e.key === 'Escape' && ctxOpen) { e.preventDefault(); return closeContext(); }
   if (e.key === 'Escape' && typing()) { e.preventDefault(); return escapeWriting(); }
   if (e.key === 'Escape' && document.body.classList.contains('immersive')) { e.preventDefault(); return setImmersive(false); }
   if (isEditable(e.target)) return;
-  const circles = current.screen.kind === 'circles';
+  const circles = current.screen.kind === 'circles' && !busy; // locked while a circle is generating
   const arrows = { ArrowLeft: 'left', ArrowRight: 'right', ArrowUp: 'up', ArrowDown: 'down', Tab: e.shiftKey ? 'prev' : 'next' };
   if (e.key === 'Backspace' && e.repeat) {
     // Held down: once it has repeated for ~half a second, back to the circles.
@@ -1566,9 +1739,9 @@ function esc(s) {
 let flashTimer;
 function flashStatus(text) {
   el.status.textContent = text;
-  document.body.classList.add('flash');
+  if (!activities.size) el.activity.textContent = text;
   clearTimeout(flashTimer);
-  flashTimer = setTimeout(() => document.body.classList.remove('flash'), 1400);
+  flashTimer = setTimeout(renderActivity, 2500);
 }
 
 let toastTimer;
@@ -1585,7 +1758,7 @@ function toast(msg) {
 
 const STR = {
   go: 'Go', send: 'Send', back: '‹ Back', more: 'More ›', thinking: 'thinking', fromMemory: 'from memory',
-  ready: 'ready', asTyped: 'as typed',
+  asTyped: 'as typed',
   typeHint: 'Type — arrows pick a circle, Enter opens it, ⌥Enter new line, Esc closes',
   guest: 'guest', whoTitle: 'Is it still you?',
   whoMsg: 'This session looks different from how you usually use AI UI.',
@@ -1594,9 +1767,23 @@ const STR = {
   aboutYou: 'About you', aboutYouEmpty: 'Nothing learned yet. It builds up as you use the app.',
   tooLong: 'This took too long — try again, or ask differently.',
   fixing: 'this screen got stuck — fixing…', fixed: 'fixed', couldNotFix: 'Could not fix this screen:', stillWorking: 'still working', updated: 'updated', updating: 'updating…',
+  improvedLive: 'improved — reloaded live, state kept', scenesTitle: 'Scenes — usage and self-improvement',
+  settingsTitle: 'Settings', setPause: 'Pause all background work', setPrefetch: 'Prepare screens while the pointer heads to a circle',
+  setRefine: 'Refresh live circles with real data', setMenus: 'AI context menus', setQa: 'Test every scene (layout, interactions, accessibility)',
+  setDod: 'Definition of Done + tests for every scene', setQuick: 'Interim screen after', setQaMin: 'Repair scenes scoring below',
+  setBudget: 'Libraries + cache budget', setProvider: 'AI provider…', setRetro: 'Run a retrospective now', setLibrarian: 'Review the utility library',
+  setClearCache: 'Clear memory cache', setClearAvoid: 'Clear avoid record',
   library: 'Utility library', libraryMsg: 'Code the AI wrote once and reuses across screens. Reviewed now and then.',
   libraryEmpty: 'Empty so far: screens publish reusable code here as the AI builds them.',
-  fullscreen: 'Full screen', system: 'System', jsLibs: 'JS libraries',
+  fullscreen: 'Full screen', find: 'Find', system: 'Settings & System', appName: 'AI UI',
+  ready: 'ready', paused: 'paused', pause: 'Pause background work', resume: 'Resume background work',
+  circlesWord: 'circles', cacheWord: 'cache', hintsWord: 'hints',
+  actOpening: 'opening', actAsking: 'asking', actRepairing: 'repairing the screen', actThinking: 'thinking',
+  actQuick: 'quick preview', actMore: 'loading more circles', actSuggest: 'suggestions for', actPrefetch: 'preparing',
+  actRefine: 'refreshing live data', actTests: 'writing the Definition of Done and its tests', actMenus: 'preparing context menus',
+  actTranslate: 'translating the interface', actLearn: 'learning about you', actLibs: 'loading JS libraries',
+  actLab: 'testing every interaction (phone, other theme)', actRunDoD: 'running the Definition of Done tests',
+  actReview: 'checking layout, readability, accessibility', jsLibs: 'JS libraries',
 };
 for (const c of ROOT.circles) { STR['root.' + c.id] = c.label; STR['root.' + c.id + '.hint'] = c.hint; }
 
@@ -1733,6 +1920,7 @@ function predictTarget(now) {
 let prefetching = null; // circle id in flight
 
 function prefetchCircle(id) {
+  if (paused || !settings.prefetch) return;
   const s = current.screen;
   if (s.local || typing() || busy || prefetching === id) return;
   const c = (s.circles || []).find((x) => x.id === id && !x.removed);
@@ -1775,6 +1963,7 @@ function openPrefetched(c, evt) {
 // previews, sharper labels). Changed circles update where they are, with a short glow.
 
 function maybeRefine(s) {
+  if (paused || !settings.refine) return;
   if (!s.live || s.refined || s.local) return;
   s.refined = true;
   call('refine', { path: [...stack.map((e) => e.label), current.label].filter(Boolean), screen: summary(s), language: LANG })
@@ -1955,19 +2144,52 @@ const fmtBytes = (n) => { n = Number(n) || 0; return n >= 1e9 ? (n / 1e9).toFixe
 async function showSystem() {
   let d;
   try { d = await call('system'); } catch (e) { return toast(e.message); }
+  try { d.scenes = (await callRaw('usage', { op: 'list' })).scenes; } catch {}
   const row = (k, v) => `<tr><th>${esc(k)}</th><td>${v}</td></tr>`;
   const list = (a) => (a && a.length) ? '<ul>' + a.map((x) => `<li>${esc(x)}</li>`).join('') + '</ul>' : '<span class="m">—</span>';
   const sec = (title, rows) => `<section><h2>${esc(title)}</h2><table>${rows.join('')}</table></section>`;
   const a = d.app || {}, ai = d.ai || {}, st = d.storage || {}, c = d.cache || {}, l = d.libraries || {}, u = d.utilities || {},
     p = d.profile || {}, av = d.avoid || {};
+  const cfg = settings, budgetGB = (d.storage && d.storage.sharedBudget) ? (d.storage.sharedBudget / 1e9).toFixed(1) : '';
+  const tog = (k, label) => `<label class="opt"><input type="checkbox" data-k="${k}" ${cfg[k] ? 'checked' : ''}> ${esc(label)}</label>`;
+  const num = (k, label, min, max, unit) => `<label class="opt">${esc(label)} <input type="number" data-k="${k}" min="${min}" max="${max}" value="${esc(cfg[k])}"> ${esc(unit)}</label>`;
+  const settingsHtml = `<section class="settings"><h2>${esc(t('settingsTitle'))}</h2>
+    <div class="opts">
+      <label class="opt"><input type="checkbox" data-a="pause" ${paused ? 'checked' : ''}> ${esc(t('setPause'))}</label>
+      ${tog('prefetch', t('setPrefetch'))}${tog('refine', t('setRefine'))}${tog('menus', t('setMenus'))}
+      ${tog('qa', t('setQa'))}${tog('dod', t('setDod'))}
+      ${num('quickAfter', t('setQuick'), 1, 60, 's')}${num('qaMin', t('setQaMin'), 0, 100, '/ 100')}
+      <label class="opt">${esc(t('setBudget'))} <input type="number" data-a="budget" min="0.5" max="100" step="0.5" value="${budgetGB}"> GB</label>
+    </div>
+    <div class="btns">
+      <button data-a="zoom" data-arg="-1">−</button><button data-a="zoom" data-arg="0">100%</button><button data-a="zoom" data-arg="1">+</button>
+      <button data-a="provider">${esc(t('setProvider'))}</button><button data-a="retro">${esc(t('setRetro'))}</button>
+      <button data-a="librarian">${esc(t('setLibrarian'))}</button><button data-a="clearCache">${esc(t('setClearCache'))}</button>
+      <button data-a="clearAvoid">${esc(t('setClearAvoid'))}</button>
+    </div>
+    <script>
+      for (const i of document.querySelectorAll('[data-k]')) i.addEventListener('change', () => aiui.setting(i.dataset.k, i.type === 'checkbox' ? i.checked : Number(i.value)));
+      for (const i of document.querySelectorAll('input[data-a]')) i.addEventListener('change', () => aiui.action(i.dataset.a, i.type === 'checkbox' ? i.checked : Number(i.value)));
+      for (const b of document.querySelectorAll('button[data-a]')) b.addEventListener('click', () => aiui.action(b.dataset.a, b.dataset.arg));
+    <\/script></section>`;
   const html = `<style>
+    .settings .opts{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:6px 18px;margin-bottom:10px}
+    .opt{display:flex;align-items:center;gap:8px;min-height:32px}
+    .opt input[type=number]{width:64px;padding:4px 6px;border-radius:6px;border:1px solid var(--line);background:var(--chip);color:var(--fg)}
+    .btns{display:flex;flex-wrap:wrap;gap:8px}
+    .scenes{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px}
+    .scene{display:flex;flex-direction:column;gap:3px;font-size:12px}
+    .scene img,.noshot{width:100%;aspect-ratio:16/10;object-fit:cover;object-position:top;border-radius:8px;border:1px solid var(--line);background:var(--surface)}
+    .scene span{color:var(--muted)}
+    .btns button{min-height:32px;padding:4px 12px;border-radius:16px;border:1px solid var(--line);background:var(--chip);color:var(--fg);cursor:pointer}
+    .btns button:hover{border-color:var(--accent);color:var(--accent)}
     body{font:13px/1.5 -apple-system,system-ui,sans-serif}
     section{margin:0 0 18px;padding:14px 18px;border-radius:14px;background:var(--surface)}
     h2{margin:0 0 8px;font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
     table{border-collapse:collapse;width:100%} th{text-align:left;font-weight:500;color:var(--muted);width:34%;padding:3px 10px 3px 0;vertical-align:top}
     td{padding:3px 0;word-break:break-word} ul{margin:0;padding-left:18px} .m{color:var(--faint)}
     .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:0 18px}
-  </style><div class="grid">
+  </style>${settingsHtml}<div class="grid">
   ${sec('App', [row('Version', esc(`${a.version || '—'} (${a.build || '—'})`)), row('Bundle', esc(a.bundle || 'web')),
     row('Platform', esc(a.platform || navigator.userAgent)), row('Language', esc(a.language || LANG)),
     row('Prompt generation', esc(a.generation || '—'))])}
@@ -1989,6 +2211,21 @@ async function showSystem() {
         (q.scores.security != null ? ` · security ${q.scores.security}` : '')) + list(q.issues) +
         (q.corners && q.corners.length ? '<ul>' + q.corners.map((c) => `<li>${c.ok ? '✓' : '✗'} ${esc(c.case)} — ${esc(c.note)}</li>`).join('') + '</ul>' : '')))]
     : [row('Scene', '<span class="m">no AI scene yet</span>')])}
+  ${lastQuality && lastQuality.dod && lastQuality.dod.length ? sec('Definition of Done (last scene)', lastQuality.dod.map((d) =>
+    row((d.ok === true ? '✓ ' : d.ok === false ? '✗ ' : '· ') + d.text, esc(d.notes.join('; ') || (d.ok ? 'met' : d.ok === false ? 'not met' : 'untested'))))) : ''}
+  ${lastQuality && lastQuality.tests ? sec('DoD tests', lastQuality.tests.map((x) => row((x.ok ? '✓ ' : '✗ ') + x.name, esc(x.note)))) : ''}
+  ${(() => { const sc = (d.scenes || []); if (!sc.length) return ''; return `<section><h2>${esc(t('scenesTitle'))}</h2><div class="scenes">` +
+    sc.map((x) => `<div class="scene">${x.shot ? `<img alt="${esc(x.title)}" src="${x.shot}">` : '<div class="noshot"></div>'}
+      <b>${esc(x.title || '—')}</b><span>${esc(`opened ${x.opens}× · ${x.minutes} min · ${x.interactions} actions · improved ${x.improves}×`)}</span>
+      <span>${esc(x.nextImprove ? 'next improvement ' + new Date(x.nextImprove).toLocaleString() : '')}</span></div>`).join('') + '</div></section>'; })()}
+  ${(() => { const h = d.hints || {}; return sec('Retrospective', [row('Journal', esc(`${h.journal ?? 0} incidents (${h.sinceRetro ?? 0} since the last retrospective)`)),
+    row('Last retrospective', esc(h.lastRetro || 'not yet') + (h.summary ? '<br>' + esc(h.summary) : '')),
+    row('Hints for future screens', list((h.hints || []).map((x) => `${x.text} — ${x.scope}, ×${x.evidence}`))),
+    row('Recent incidents', list((h.recent || []).map((x) => `${x.kind} · ${x.scene}: ${x.detail}`)))]); })()}
+  ${sec('Context menus', [row('Generation (median)', esc(median(ctxTiming.gen) != null ? fmtSecs(median(ctxTiming.gen) / 1000) : '—')),
+    row('First use after a scene appears (median)', esc(median(ctxTiming.use) != null ? fmtSecs(median(ctxTiming.use) / 1000) : '—')),
+    row('Strategy', esc(median(ctxTiming.gen) != null && median(ctxTiming.use) != null && median(ctxTiming.gen) >= median(ctxTiming.use)
+      ? 'generate as soon as a scene renders' : 'generate when the scene is idle'))])}
   </div><script>aiui.ready()<\/script>`;
   push({ kind: 'html', local: 'system', title: t('system'), back: true, html }, t('system'));
 }
@@ -2003,6 +2240,337 @@ async function showJSLibraries() {
     circles: inst.sort((a, b) => (b.uses || 0) - (a.uses || 0)).map((x) => ({
       id: 'js:' + x.id, icon: '📦', label: x.id, hint: x.description, value: x.uses || undefined, jslib: x.id })),
   }, t('jsLibs'));
+}
+
+// ---------------------------------------------------------------- context menus
+// Right-click (long press on touch) on any object: a menu of actions for its class, generated by
+// the AI in the background for every class on the scene — and the AI decides per class whether a
+// menu is useful at all. Timing medians (generation time vs. how soon menus get used) decide
+// whether generation starts at once or when the scene is idle.
+
+const ctxTiming = (() => { try { return JSON.parse(localStorage.getItem('aiui.ctxTiming')) || { gen: [], use: [] }; } catch { return { gen: [], use: [] }; } })();
+const median = (a) => { if (!a.length) return null; const b = [...a].sort((x, y) => x - y); return b[Math.floor(b.length / 2)]; };
+function noteTiming(kind, ms) {
+  ctxTiming[kind] = [...(ctxTiming[kind] || []), Math.round(ms)].slice(-30);
+  try { localStorage.setItem('aiui.ctxTiming', JSON.stringify(ctxTiming)); } catch {}
+}
+
+function scheduleMenus(s, classes) {
+  if (paused || !settings.menus) return;
+  if (s.menus || s.menusPending) return;
+  // Start at once when menus tend to be wanted sooner than they take to make; else when idle.
+  const g = median(ctxTiming.gen), u = median(ctxTiming.use);
+  const delay = g != null && u != null && g >= u ? 0 : 1500;
+  s.menusPending = true;
+  setTimeout(() => generateMenus(s, classes), delay);
+}
+
+async function generateMenus(s, classes) {
+  if (s.menus) return s.menus;
+  if (s.menusPromise) return s.menusPromise;
+  const t0 = performance.now();
+  s.menusPromise = call('menus', {
+    screen: summary(s), classes: [...new Set(classes)], path: [...stack.map((e) => e.label), current.label].filter(Boolean), language: LANG,
+  }).then((r) => {
+    noteTiming('gen', performance.now() - t0);
+    s.menus = {};
+    for (const c of r.classes || []) s.menus[c.class] = { enabled: !!c.enabled, actions: (c.actions || []).slice(0, 6) };
+    if (ctxOpen && ctxOpen.screen === s) renderContext();
+    return s.menus;
+  }).catch(() => { s.menusPromise = null; s.menusPending = false; return null; });
+  return s.menusPromise;
+}
+
+let ctxOpen = null; // { screen, cls, object, x, y }
+function openContext(cls, object, x, y) {
+  const s = current.screen;
+  if (s.local || busy) return;
+  if (s.shownAt && !s.ctxUsed) { s.ctxUsed = true; noteTiming('use', Date.now() - s.shownAt); }
+  ctxOpen = { screen: s, cls, object, x, y };
+  if (!s.menus || !s.menus[cls]) generateMenus(s, [cls, ...(s.quality && s.quality.screen && s.quality.screen.classes || [])]);
+  renderContext();
+}
+
+function renderContext() {
+  if (!ctxOpen) return;
+  const { screen: s, cls, x, y } = ctxOpen;
+  const m = s.menus && s.menus[cls];
+  if (m && !m.enabled) return closeContext(); // the AI decided: no menu for this class here
+  el.ctx.innerHTML = '';
+  if (!m) {
+    el.ctx.innerHTML = `<div class="ctx-wait">…</div>`;
+  } else {
+    for (const a of m.actions) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.innerHTML = `<span class="ctx-icon">${esc(a.icon || '•')}</span>${esc(a.label)}`;
+      b.addEventListener('click', (e) => { e.stopPropagation(); runContextAction(a); });
+      el.ctx.appendChild(b);
+    }
+  }
+  el.ctx.hidden = false;
+  const w = el.ctx.offsetWidth, h = el.ctx.offsetHeight;
+  el.ctx.style.left = Math.max(8, Math.min(x, innerWidth - w - 8)) + 'px';
+  el.ctx.style.top = Math.max(8, Math.min(y, innerHeight - h - 8)) + 'px';
+}
+
+function closeContext() { ctxOpen = null; el.ctx.hidden = true; }
+
+async function runContextAction(a) {
+  const { cls, object } = ctxOpen || {};
+  closeContext();
+  const text = object.href || object.text || object.label || '';
+  try {
+    if (a.kind === 'copy') { await aiui.sys({ op: 'clipboard', text: object.text || object.href || object.label || '' }); return flashStatus('⧉'); }
+    if (a.kind === 'open' && (object.href || object.src)) return aiui.sys({ op: 'open', target: object.href || object.src });
+    if (a.kind === 'select' && object.circle) {
+      const c = (current.screen.circles || []).find((x) => x.id === object.circle);
+      const n = [...el.circles.children].find((x) => x.dataset.id === object.circle);
+      if (c && n) return toggleSelect(c, n);
+    }
+    if (a.kind === 'share' && navigator.share) return navigator.share({ text });
+  } catch {}
+  ask({ event: 'context', action: { id: a.id, label: a.label, prompt: a.prompt || a.label }, class: cls, object }, { label: a.label });
+}
+
+// Circles screens: right-click / long press on a circle or on empty space.
+document.addEventListener('contextmenu', (e) => {
+  if (e.target.closest('#ctx')) return;
+  const node = e.target.closest('.circle');
+  e.preventDefault();
+  if (current.screen.kind !== 'circles') return;
+  const c = node && (current.screen.circles || []).find((x) => x.id === node.dataset.id);
+  openContext(node ? 'circle' : 'empty-space', c ? { circle: c.id, label: c.label, text: c.label + (c.hint ? ' — ' + c.hint : '') } : {}, e.clientX, e.clientY);
+});
+let ctxHold = 0;
+document.addEventListener('touchstart', (e) => {
+  const node = e.target.closest && e.target.closest('.circle');
+  if (!node || current.screen.kind !== 'circles') return;
+  const p = e.touches[0];
+  ctxHold = setTimeout(() => {
+    const c = (current.screen.circles || []).find((x) => x.id === node.dataset.id);
+    suppressTap = true;
+    openContext('circle', c ? { circle: c.id, label: c.label, text: c.label } : {}, p.clientX, p.clientY);
+  }, 550);
+}, { passive: true });
+for (const ev of ['touchend', 'touchmove', 'touchcancel']) document.addEventListener(ev, () => clearTimeout(ctxHold), { passive: true });
+let suppressTap = false;
+document.addEventListener('click', (e) => { if (suppressTap) { suppressTap = false; e.stopPropagation(); e.preventDefault(); } }, true);
+document.addEventListener('pointerdown', (e) => { if (ctxOpen && !e.target.closest('#ctx')) closeContext(); }, true);
+
+// ---------------------------------------------------------------- journal (for retrospectives)
+// What went wrong goes to the journal; the retrospective turns it into hints for future screens.
+function journal(kind, s, detail) {
+  call('journal', { kind, scene: (s && (s.title || s.kind)) || '', detail: String(detail || '').slice(0, 400) }).catch(() => {});
+}
+
+// ---------------------------------------------------------------- browser hotkeys
+// ⌘F find, ⌘= ⌘- ⌘0 zoom, ⌘R reload scene (⌘⇧R the app), ⌘[ ⌘] back/forward, ⌘P print,
+// Home/End first/last page. On the Mac the menu sends these; elsewhere the keys do.
+
+let forwardStack = [];
+let zoomLevel = Number(localStorage.getItem('aiui.zoom')) || 1;
+function applyZoom() { document.body.style.zoom = zoomLevel === 1 ? '' : String(zoomLevel); layoutPages(true); }
+function zoom(dir) {
+  const steps = [0.67, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2];
+  const i = steps.indexOf(steps.reduce((a, b) => Math.abs(b - zoomLevel) < Math.abs(a - zoomLevel) ? b : a));
+  zoomLevel = dir === 0 ? 1 : steps[Math.max(0, Math.min(steps.length - 1, i + dir))];
+  try { localStorage.setItem('aiui.zoom', String(zoomLevel)); } catch {}
+  applyZoom();
+  flashStatus(Math.round(zoomLevel * 100) + '%');
+}
+function reloadScene() {
+  const s = current.screen;
+  for (const k of ['reviewed', 'ready', 'labbed', 'testsRequested', 'health', 'failures', 'quality']) delete s[k];
+  render();
+}
+function forward() {
+  if (!forwardStack.length) return;
+  stack.push(current);
+  current = forwardStack.pop();
+  stopWriting(true);
+  render();
+}
+function find() {
+  const s = current.screen;
+  if (s.kind === 'html') {
+    const q = prompt(t('find'));
+    if (!q) return;
+    const f = el.view.querySelector('iframe');
+    if (f) f.contentWindow.postMessage({ aiuiFind: q }, '*');
+  } else startWriting(el.write.value || '');
+}
+function printScene() {
+  const f = el.view.querySelector('iframe');
+  if (current.screen.kind === 'html' && f) f.contentWindow.postMessage({ aiuiPrint: true }, '*');
+  else window.print();
+}
+if (zoomLevel !== 1) applyZoom();
+
+// ---------------------------------------------------------------- status bar
+// Left: ⏸/▶ pauses all background work, ⚙ opens Settings. Right: what exactly is happening —
+// every activity titles itself; when all is done, a summary of the current state.
+
+const activities = new Map(); // id → { title, detail, at }
+let lastDone = null;          // { title, ms }
+function activityStart(id, title) { activities.set(id, { title, at: performance.now() }); renderActivity(); }
+function activityDetail(id, detail) { const a = activities.get(id); if (a) { a.detail = detail; renderActivity(); } }
+function activityEnd(id) {
+  const a = activities.get(id);
+  if (!a) return;
+  activities.delete(id);
+  lastDone = { title: a.title, ms: performance.now() - a.at };
+  renderActivity();
+}
+let snapshot = null;
+async function refreshSnapshot() {
+  try {
+    const d = await callRaw('system');
+    snapshot = { cache: d.cache && d.cache.entries, libs: d.libraries && d.libraries.installed, catalog: d.libraries && d.libraries.catalog,
+      hints: d.hints && d.hints.hints ? d.hints.hints.length : 0 };
+    renderActivity();
+  } catch {}
+}
+function renderActivity() {
+  const list = [...activities.values()];
+  el.activity.classList.toggle('busy', list.length > 0);
+  if (list.length) {
+    const first = list[list.length - 1];
+    el.activity.textContent = first.title + (first.detail && first.detail !== first.title ? ' — ' + first.detail : '') +
+      (list.length > 1 ? `  (+${list.length - 1})` : '');
+    el.activity.title = list.map((a) => a.title).join('\n');
+    return;
+  }
+  // Done: summarise the current state.
+  const s = current.screen;
+  const parts = [paused ? t('paused') : t('ready')];
+  parts.push(s.kind === 'circles' ? `${(s.circles || []).filter((c) => !c.removed).length} ${t('circlesWord')}` : (s.title || s.kind));
+  if (lastDone) parts.push(`${lastDone.title} · ${fmtSecs(lastDone.ms / 1000)}`);
+  if (snapshot) parts.push(`${t('cacheWord')} ${snapshot.cache ?? 0} · JS ${snapshot.libs ?? 0}/${snapshot.catalog ?? 0} · ${t('hintsWord')} ${snapshot.hints}`);
+  el.activity.textContent = parts.join(' · ');
+  el.activity.title = '';
+}
+setInterval(() => { if (!activities.size) refreshSnapshot(); }, 60000);
+
+// Pause: background work stops here and in the native app; the current screen keeps working.
+let paused = localStorage.getItem('aiui.paused') === '1';
+function setPaused(on) {
+  paused = on;
+  try { localStorage.setItem('aiui.paused', on ? '1' : '0'); } catch {}
+  document.body.classList.toggle('paused', on);
+  el.pauseBtn.textContent = on ? '▶' : '⏸';
+  el.pauseBtn.title = on ? t('resume') : t('pause');
+  callRaw('window', { op: 'pause', on }).catch(() => {});
+  renderActivity();
+}
+el.pauseBtn.addEventListener('click', (e) => { e.stopPropagation(); setPaused(!paused); });
+el.settingsBtn.addEventListener('click', (e) => { e.stopPropagation(); showSystem(); });
+for (const b of [el.pauseBtn, el.settingsBtn]) b.addEventListener('pointerdown', (e) => e.stopPropagation());
+
+// Settings (Settings & System scene): stored here; some also native.
+const SETTINGS_DEFAULT = { prefetch: true, refine: true, menus: true, qa: true, dod: true, quickAfter: 6, qaMin: 70 };
+let settings = (() => { try { return { ...SETTINGS_DEFAULT, ...JSON.parse(localStorage.getItem('aiui.settings')) }; } catch { return { ...SETTINGS_DEFAULT }; } })();
+function applySettings() {
+  QUICK_AFTER_MS = Math.max(1, Number(settings.quickAfter) || 6) * 1000;
+  QA_MIN = Math.max(0, Math.min(100, Number(settings.qaMin) || 70));
+}
+function setSetting(k, v) {
+  settings[k] = v;
+  try { localStorage.setItem('aiui.settings', JSON.stringify(settings)); } catch {}
+  applySettings();
+if (paused) setTimeout(() => setPaused(true), 0);
+setTimeout(refreshSnapshot, 1500);
+  flashStatus(`${k}: ${v}`);
+}
+async function settingsAction(name, arg) {
+  const acts = {
+    retro: () => call('hints', { op: 'retro' }), librarian: () => call('utilities', { op: 'review' }),
+    clearCache: () => call('cache', { op: 'clear' }), clearAvoid: () => call('avoid', { op: 'clear' }),
+    provider: () => showSetup(), zoom: () => zoom(Number(arg) || 0), budget: () => callRaw('window', { op: 'budget', gb: Number(arg) }),
+    pause: () => setPaused(!!arg),
+  };
+  if (acts[name]) { await acts[name](); flashStatus('✓ ' + name); }
+}
+applySettings();
+
+// The address (path of screens): in the Mac title bar, clickable; aiui.goTo(level) jumps there.
+function updateAddress() {
+  const items = [t('appName'), ...stack.slice(1).map((e) => e.label), stack.length ? current.label : null].filter(Boolean);
+  callRaw('window', { op: 'address', items }).then((r) => {
+    document.documentElement.classList.toggle('native-address', !!(r && r.native));
+  }).catch(() => {});
+}
+function goTo(level) {
+  if (busy) cancel();
+  if (level <= 0) return home();
+  while (stack.length > level) { forwardStack.push(current); current = stack.pop(); }
+  stopWriting(true);
+  render();
+}
+
+// ---------------------------------------------------------------- scene state, usage, live reload
+// Scenes keep their state with aiui.state (per scene). The app records how each scene is used and
+// takes a live screenshot; the native side improves scenes and shared components in the
+// background on a doubling schedule, and an improved version reloads live with the state kept.
+
+function stateKey() { return 'aiui.state.' + (current.key || (current.screen && current.screen.title) || 'scene'); }
+function sceneState() { try { return JSON.parse(localStorage.getItem(stateKey())); } catch { return null; } }
+function saveSceneState(obj) {
+  try {
+    const json = JSON.stringify(obj);
+    if (json.length < 200000) localStorage.setItem(stateKey(), json);
+  } catch {}
+}
+
+const usageAcc = new Map(); // entry → { since, interactions }
+function usageNote(entry, r) {
+  if (!entry || !entry.key || entry.screen.local) return;
+  call('usage', { key: entry.key, title: entry.screen.title || entry.label || '', ...r }).catch(() => {});
+}
+function usageOpened(entry) {
+  if (!entry || !entry.key || entry.screen.kind !== 'html' || entry.screen.local) return;
+  usageAcc.set(entry, { since: Date.now() });
+  usageNote(entry, { opened: true });
+  // A live screenshot once the scene has settled.
+  setTimeout(() => {
+    if (current !== entry) return;
+    const f = el.view.querySelector('iframe');
+    if (f) f.contentWindow.postMessage({ aiuiShotRequest: true, local: 'aiui://app/vendor/html2canvas/html2canvas.min.js' }, '*');
+  }, 4000);
+}
+function usageLeft(entry) {
+  const a = usageAcc.get(entry);
+  if (!a) return;
+  usageAcc.delete(entry);
+  usageNote(entry, { dwellMs: Date.now() - a.since });
+}
+let lastEntry = null;
+function trackUsage() {
+  if (lastEntry && lastEntry !== current) usageLeft(lastEntry);
+  if (current !== lastEntry) usageOpened(current);
+  lastEntry = current;
+}
+
+// QA findings go to the shared components the scene uses (for their quality increments).
+function componentFeedback(s, r) {
+  if (!s.uses || !s.uses.length || !r || !(r.issues || []).length) return;
+  call('utilities', { op: 'feedback', ids: s.uses, findings: r.issues.slice(0, 8), scores: r.scores || {} }).catch(() => {});
+}
+
+// Improved versions arrive from the background: reload live, keeping the scene's state.
+async function onImproved(e) {
+  const entries = [current, ...stack].filter((x) => x.key === e.key);
+  if (!entries.length) return;
+  try {
+    const { screen } = await callRaw('usage', { op: 'outcome', key: e.key });
+    if (!screen) return;
+    for (const entry of entries) entry.screen = normalize(screen);
+    if (entries.includes(current) && !typing()) { render(); flashStatus('✨ ' + t('improvedLive')); }
+  } catch {}
+}
+function onComponentImproved(e) {
+  const s = current.screen;
+  if (s.kind === 'html' && (s.uses || []).some((u) => u === e.id)) { reloadScene(); flashStatus('🧩 ' + e.name + ' — ' + (e.changes || t('improvedLive'))); }
 }
 
 render();

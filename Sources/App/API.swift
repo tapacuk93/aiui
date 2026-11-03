@@ -9,6 +9,10 @@ final class API: NSObject {
     static var evalJS: (String) -> Void = { _ in }
     /// Puts the app window in or out of full screen (Mac); nil where the app is always full screen.
     static var setFullScreen: ((Bool) -> Void)?
+    /// Shows the address (path of screens) in the host's title bar, where there is one (Mac).
+    static var setAddress: (([String]) -> Void)?
+    /// Background work paused by the user (status bar ⏸ / Settings).
+    static var paused = false
     /// The web UI folder (for web/libraries.json); set by the host.
     static var webRoot: URL?
     let cache: Cache
@@ -16,6 +20,8 @@ final class API: NSObject {
     let profile: Profile
     let avoid: Avoid
     let libraries: Libraries
+    let hints: Hints
+    let usage: Usage
     /// The AI behind screens (persistent session) and the stateless background pager.
     /// nil until a CLI is detected or an API key is given.
     private(set) var claude: AIEngine?
@@ -30,6 +36,15 @@ final class API: NSObject {
     private(set) var librarian: AIEngine?
     /// Fast interim screens when the full answer takes long.
     private(set) var quick: AIEngine?
+    /// Scene-specific tests, and context menus per object class (background).
+    private(set) var tester: AIEngine?
+    private(set) var menus: AIEngine?
+    private(set) var retro: AIEngine?
+    private(set) var improver: AIEngine?
+    private(set) var componentImprover: AIEngine?
+    private var improvingComponent: String?
+    private var improving: String?
+    private var retroRunning = false
     private var reviewing = false
     /// The user's system language (BCP 47), sent with every event.
     let language = Locale.preferredLanguages.first ?? "en"
@@ -60,6 +75,10 @@ final class API: NSObject {
         utilities = Utilities(dir: support.appendingPathComponent("utilities", isDirectory: true))
         profile = Profile(dir: support.appendingPathComponent("profile", isDirectory: true))
         avoid = Avoid(dir: support.appendingPathComponent("avoid", isDirectory: true))
+        hints = Hints(dir: support.appendingPathComponent("hints", isDirectory: true))
+        usage = Usage(dir: support.appendingPathComponent("usage", isDirectory: true),
+                      shots: FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+                        .appendingPathComponent("aiui/shots", isDirectory: true))
         // Installed JS libraries stay on this device (re-downloadable), outside iCloud.
         let local = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("aiui/vendor", isDirectory: true)
@@ -121,6 +140,11 @@ final class API: NSObject {
         #endif
         if let a = q as? APIEngine { a.effort = "low" }
         quick = q
+        tester = make(false, systemPrompt + Prompts.tester, Prompts.testsSchema)
+        menus = make(false, systemPrompt + Prompts.menus, Prompts.menusSchema)
+        retro = make(false, systemPrompt + Prompts.retro, Prompts.retroSchema)
+        improver = make(false, systemPrompt + Prompts.improver, Prompts.screenSchema)
+        componentImprover = make(false, systemPrompt + Prompts.componentImprover, Prompts.componentSchema)
         engineID = id
         UserDefaults.standard.set(id, forKey: "engine")
         return true
@@ -141,10 +165,84 @@ final class API: NSObject {
         return out
     }
 
+    /// Background self-improvement of the scene most due (exponential schedule by usage).
+    func improveIfDue() {
+        guard let improver, improving == nil, let scene = usage.due(), let current = cache.raw(scene.key),
+              (current["kind"] as? String) == "html" else { return }
+        improving = scene.key
+        Self.activity("improve", "improving «\(scene.title)» in the background")
+        var input: [String: Any] = [
+            "scene": current,
+            "usage": ["opens": scene.opens, "minutes": Int(scene.dwellMs / 60000), "interactions": scene.interactions,
+                      "improvements so far": scene.improves],
+            "findings": scene.findings,
+            "hints": hints.relevant([scene.title], kind: "html"),
+            "profile": profile.overview(limit: 12),
+            "language": language,
+        ]
+        let shot = usage.shot(scene.key)
+        if FileManager.default.fileExists(atPath: shot.path) { input["screenshot"] = shot.path }
+        let data = (try? JSONSerialization.data(withJSONObject: input, options: [.prettyPrinted, .sortedKeys])) ?? Data()
+        var prompt = "Improve this scene the user keeps using:\n```json\n\(String(decoding: data, as: UTF8.self))\n```"
+        if input["screenshot"] != nil { prompt += "\nLook at the live screenshot at \(shot.path) (what the user saw)." }
+        if let api = improver as? APIEngine, let img = try? Data(contentsOf: shot) { api.attachImage(img) }
+        improver.next(prompt: prompt, progress: { _ in }, done: { [weak self] r in
+            guard let self else { return }
+            let key = scene.key
+            self.improving = nil
+            Self.activity("improve", nil)
+            if case .success(var improved) = r, (improved["kind"] as? String) == "html", improved["html"] != nil {
+                self.utilities.publish(from: improved)
+                improved["publish"] = nil
+                self.cache.replace(key, with: improved)
+                self.usage.improved(key)
+                Self.emit(["type": "improved", "key": key, "title": scene.title])
+            } else {
+                self.usage.deferImprove(key)
+            }
+        })
+    }
+
+    /// Background quality increment of the shared component most due (one at a time).
+    func improveComponentIfDue() {
+        guard let componentImprover, improvingComponent == nil, let m = utilities.dueForImprovement() else { return }
+        improvingComponent = m.id
+        Self.activity("component", "improving component \(m.path.joined(separator: "/"))/\(m.name) v\(m.version)")
+        let data = (try? JSONSerialization.data(withJSONObject: utilities.moduleInput(m), options: [.prettyPrinted, .sortedKeys])) ?? Data()
+        componentImprover.next(prompt: "Improve this shared component:\n```json\n\(String(decoding: data, as: UTF8.self))\n```",
+                               progress: { _ in }, done: { [weak self] r in
+            guard let self else { return }
+            self.improvingComponent = nil
+            Self.activity("component", nil)
+            if case .success(let result) = r {
+                self.utilities.applyImprovement(m.id, result)
+                Self.emit(["type": "componentImproved", "id": m.id, "name": m.name, "changes": result["changes"] ?? ""])
+            } else {
+                self.utilities.applyImprovement(m.id, nil)   // reschedule
+            }
+        })
+    }
+
+    /// The retrospective: what went wrong → hints for future screens.
+    func retrospectIfDue(force: Bool = false) {
+        guard let retro, !retroRunning, force || hints.retroDue else { return }
+        retroRunning = true
+        Self.activity("retro", "retrospective: learning from what went wrong")
+        let data = (try? JSONSerialization.data(withJSONObject: hints.retroInput(), options: [.prettyPrinted, .sortedKeys])) ?? Data()
+        retro.next(prompt: "Retrospective on what went wrong:\n```json\n\(String(decoding: data, as: UTF8.self))\n```",
+                   progress: { _ in }, done: { [weak self] r in
+            guard let self else { return }
+            self.retroRunning = false
+            Self.activity("retro", nil)
+            if case .success(let result) = r { self.hints.applyRetro(result) }
+        })
+    }
+
     /// The librarian reviews the utility library after several publishes, or daily.
     func reviewLibraryIfDue(force: Bool = false) {
         guard let librarian, !reviewing, force || utilities.needsReview else { return }
         reviewing = true
+        Self.activity("librarian", "reviewing the utility library")
         let data = (try? JSONSerialization.data(withJSONObject: ["modules": utilities.reviewInput(),
                                                                    "categories": utilities.categories],
                                                 options: [.prettyPrinted, .sortedKeys])) ?? Data()
@@ -152,13 +250,23 @@ final class API: NSObject {
                        progress: { _ in }, done: { [weak self] r in
             guard let self else { return }
             self.reviewing = false
+            Self.activity("librarian", nil)
             if case .success(let result) = r { self.utilities.applyReview(result) }
         })
     }
 
+    /// Native background activity, titled, for the status bar.
+    static func activity(_ id: String, _ title: String?) {
+        emit(["type": "activity", "id": id, "title": title ?? NSNull(), "done": title == nil])
+    }
+
     /// Pulls in what other devices wrote (called when the app becomes active, and every minute).
     func syncNow() {
-        cache.reload(); utilities.reload(); profile.reload(); avoid.reload()
+        cache.reload(); utilities.reload(); profile.reload(); avoid.reload(); hints.reload(); usage.reload()
+        if !Self.paused { retrospectIfDue() }
+        guard !Self.paused else { return }   // background work waits while paused
+        improveIfDue()
+        improveComponentIfDue()
         avoid.recheckDue()
         libraries.maintain()      // keeps installing while there is room (no-op while busy)
         AICoin.shared.refreshBalance()
@@ -166,7 +274,7 @@ final class API: NSObject {
 
     func resetSession() { pager?.cancel(); suggester?.cancel(); scout?.cancel(); refiner?.cancel(); claude?.reset() }
     func shutdown() {
-        for e in [pager, suggester, scout, refiner, translator, profiler, librarian, quick, claude] { e?.cancel() }
+        for e in [pager, suggester, scout, refiner, translator, profiler, librarian, quick, tester, menus, retro, improver, componentImprover, claude] { e?.cancel() }
     }
 
     /// Runs a stateless side engine on `input` (plus flow index context) and replies with its JSON.
@@ -185,6 +293,8 @@ final class API: NSObject {
         let bad = avoid.overview(limit: 20)
         if !bad.isEmpty { input["avoid"] = bad }
         input["libraries"] = libraries.overview()
+        let h = hints.relevant(words, limit: 8)
+        if !h.isEmpty { input["hints"] = h }
         let data = (try? JSONSerialization.data(withJSONObject: input, options: [.prettyPrinted, .sortedKeys])) ?? Data()
         engine.next(prompt: intro + "\n```json\n" + String(decoding: data, as: UTF8.self) + "\n```", progress: { _ in }, done: { r in
             switch r {
@@ -260,6 +370,12 @@ final class API: NSObject {
                 }
             })
 
+        case "tests":
+            side(tester, "What should be tested for this scene? Write its tests:", input, send: send, fail: fail)
+
+        case "menus":
+            side(menus, "Design the context menus for the classes of objects on this scene:", input, send: send, fail: fail)
+
         case "quick":
             side(quick, "The full answer to this event is taking long. Give a quick interim screen now:", input, send: send, fail: fail)
 
@@ -309,7 +425,7 @@ final class API: NSObject {
             if (input["fresh"] as? Bool) != true, let screen = cache.lookup(key) {
                 replayed.append(action)
                 if replayed.count > 20 { replayed.removeFirst(replayed.count - 20) }
-                send(["screen": screen, "cached": true])
+                send(["screen": screen, "cached": true, "key": key])
                 return
             }
             var event = input
@@ -328,6 +444,8 @@ final class API: NSObject {
             let bad = avoid.overview()
             if !bad.isEmpty { event["avoid"] = bad }
             event["libraries"] = libraries.overview(words)
+            let h = hints.relevant(words)
+            if !h.isEmpty { event["hints"] = h }
             let lib = utilities.overview(words)
             if !lib.isEmpty {
                 event["library"] = lib
@@ -384,6 +502,7 @@ final class API: NSObject {
                         clean["uses"] = Array(Set(((clean["uses"] as? [String]) ?? []) + published))
                     }
                     reply["screen"] = clean
+                    reply["key"] = key
                     send(reply)
                     self.reviewLibraryIfDue()
                 case .failure(let e): fail(e.localizedDescription)
@@ -453,7 +572,29 @@ final class API: NSObject {
                 "utilities": utilities.tree(at: []),
                 "profile": ["traits": profile.overview(limit: 300).count, "top": profile.overview(limit: 6)],
                 "avoid": ["active": avoid.overview(), "all": avoid.list().count],
+                "hints": hints.status(),
             ])
+
+        case "usage":
+            switch input["op"] as? String ?? "record" {
+            case "list": send(["scenes": usage.list()])
+            case "improve":                       // now, for the scene given (Settings)
+                if let k = input["key"] as? String, var u = usage.scene(k) { u.usedSinceImprove = max(1, u.usedSinceImprove); _ = u }
+                improveIfDue(); send(["ok": true])
+            case "outcome":
+                send(["screen": cache.raw(input["key"] as? String ?? "") ?? NSNull()])
+            default:
+                usage.record(input); send(["ok": true])
+            }
+
+        case "journal":
+            hints.add(kind: input["kind"] as? String ?? "issue", scene: input["scene"] as? String ?? "", detail: input["detail"] as? String ?? "")
+            if hints.retroDue { retrospectIfDue() }
+            send(["ok": true])
+
+        case "hints":
+            if (input["op"] as? String) == "retro" { retrospectIfDue(force: true) }
+            send(hints.status())
 
         case "libraries":
             switch input["op"] as? String ?? "list" {
@@ -478,13 +619,30 @@ final class API: NSObject {
             }
 
         case "window":
-            DispatchQueue.main.async { Self.setFullScreen?((input["on"] as? Bool) ?? true) }
-            send(["ok": true])
+            switch input["op"] as? String ?? "fullscreen" {
+            case "address":
+                let items = input["items"] as? [String] ?? []
+                DispatchQueue.main.async { Self.setAddress?(items) }
+                send(["ok": true, "native": Self.setAddress != nil])
+            case "pause":
+                Self.paused = (input["on"] as? Bool) ?? !Self.paused
+                send(["paused": Self.paused])
+            case "budget":
+                if let gb = input["gb"] as? Double { UserDefaults.standard.set(gb, forKey: "budgetGB") }
+                send(["budgetGB": UserDefaults.standard.double(forKey: "budgetGB")])
+            default:
+                DispatchQueue.main.async { Self.setFullScreen?((input["on"] as? Bool) ?? true) }
+                send(["ok": true])
+            }
 
         case "utilities":
             switch input["op"] as? String ?? "tree" {
             case "bundle":
                 send(utilities.bundle(input["ids"] as? [String] ?? []))
+            case "feedback":
+                let scores = (input["scores"] as? [String: Any] ?? [:]).compactMapValues { ($0 as? NSNumber)?.doubleValue }
+                utilities.feedback(input["ids"] as? [String] ?? [], findings: input["findings"] as? [String] ?? [], scores: scores)
+                send(["ok": true])
             case "review":
                 reviewLibraryIfDue(force: true)
                 send(["ok": true])

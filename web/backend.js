@@ -309,6 +309,40 @@ const WebBackend = (() => {
   }
   setInterval(avoidRecheck, 60000);
 
+  // ------------------------------------------------------------- journal + hints (retrospectives)
+
+  const HINTS = 'aiui.hints';
+  const loadHints = () => { try { return JSON.parse(localStorage.getItem(HINTS)) || { journal: [], hints: {}, lastRetro: 0, summary: '' }; } catch { return { journal: [], hints: {}, lastRetro: 0, summary: '' }; } };
+  const saveHints = (h) => { try { localStorage.setItem(HINTS, JSON.stringify(h)); } catch {} };
+  function hintsRelevant(limit = 12) {
+    return Object.values(loadHints().hints).sort((a, b) => b.confidence * (b.evidence + 1) - a.confidence * (a.evidence + 1))
+      .slice(0, limit).map((h) => `${h.text} (${h.scope}, ×${h.evidence})`);
+  }
+  let retroRunning = false;
+  async function retrospect(force) {
+    const h = loadHints(), since = h.journal.filter((j) => j.at > h.lastRetro);
+    if (retroRunning || (!force && !(since.length >= 15 || (since.length >= 3 && Date.now() - h.lastRetro > 6 * 3600000)))) return;
+    const k = getKey(); if (!k) return;
+    retroRunning = true;
+    try {
+      const p = await loadPrompts();
+      const input = { incidents: since.slice(-120), hints: Object.values(h.hints) };
+      const { screen: r } = await turn(k, instructions(p.system + p.retro), JSON.parse(p.retroSchema), [],
+        'Retrospective on what went wrong:\n' + json(input), null, 'retro', () => {});
+      const cur = loadHints();
+      for (const x of r.hints || []) {
+        if (!x.text) continue;
+        const id = (x.id && cur.hints[x.id]) ? x.id : 'h' + x.text.toLowerCase().replace(/\W+/g, '').slice(0, 24);
+        const prev = cur.hints[id];
+        cur.hints[id] = { id, text: x.text, scope: x.scope || 'all', why: x.why || '', confidence: Math.max(x.confidence || 0.6, prev ? prev.confidence : 0),
+          evidence: (prev ? prev.evidence : 0) + 1, updated: Date.now() };
+      }
+      for (const id of r.retire || []) delete cur.hints[id];
+      cur.lastRetro = Date.now(); cur.summary = r.summary || '';
+      saveHints(cur);
+    } catch {} finally { retroRunning = false; }
+  }
+
   // ------------------------------------------------------------- user profile
   // Characteristic tree (from the profiler AI) + behavioral baseline, in localStorage.
 
@@ -457,7 +491,7 @@ const WebBackend = (() => {
     if (hit && hit.cacheable && hit.gen === g) {
       touch(key);
       replayed = [...replayed, action].slice(-20);
-      return { screen: hit.outcome, cached: true };
+      return { screen: hit.outcome, cached: true, key };
     }
     const event = { ...input, language: input.language || navigator.language };
     if (replayed.length) event.replayed = replayed;
@@ -470,6 +504,8 @@ const WebBackend = (() => {
     if (ov.length) event.flows = ov;
     const av = avoidOverview();
     if (av.length) event.avoid = av;
+    const hs = hintsRelevant();
+    if (hs.length) event.hints = hs;
     if (!libCatalog) { try { libCatalog = (await (await fetch('libraries.json')).json()).libraries; } catch { libCatalog = []; } }
     const ws = words.join(' ').toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((w) => w.length > 2);
     const rel = libCatalog.map((e) => [e, ws.reduce((n, w) => n + ((e.id + ' ' + e.description).toLowerCase().includes(w) ? 100 : 0), 0) + e.priority])
@@ -505,7 +541,7 @@ const WebBackend = (() => {
     if (published.length) kept.uses = [...new Set([...(kept.uses || []), ...published])];
     const shown = store(key, action, steps, kept);
     reviewLibrary(false);
-    return { screen: shown, ...(published.length ? { published: published.length } : {}) };
+    return { screen: shown, key, ...(published.length ? { published: published.length } : {}) };
   }
 
   async function side(channel, systemExtra, schemaName, input, intro) {
@@ -560,6 +596,38 @@ const WebBackend = (() => {
       case 'ai': return ai(body, progress);
       case 'more': return side('pager', 'pager', 'pageSchema', body, 'The user scrolled past the end of this screen. Continue its circles:');
       case 'suggest': return side('suggest', 'suggest', 'suggestSchema', body, 'The user is typing on this screen. Suggest circles for their input:');
+      case 'tests': return side('tester', 'tester', 'testsSchema', body, 'What should be tested for this scene? Write its tests:');
+      case 'menus': return side('menus', 'menus', 'menusSchema', body, 'Design the context menus for the classes of objects on this scene:');
+      case 'usage': {
+        // The web version records usage (no background self-improvement or screenshots kept).
+        const U = 'aiui.usage';
+        let u = {}; try { u = JSON.parse(localStorage.getItem(U)) || {}; } catch {}
+        if (body.op === 'outcome') { const e = loadCache()[body.key]; return { screen: e ? e.outcome : null }; }
+        if (body.op === 'list') return { scenes: Object.values(u).sort((a, b) => b.lastUsed - a.lastUsed).slice(0, 40) };
+        if (body.key) {
+          const x = u[body.key] || { key: body.key, title: '', opens: 0, minutes: 0, interactions: 0, improves: 0, lastUsed: 0 };
+          if (body.title) x.title = body.title;
+          if (body.opened) x.opens++;
+          if (body.dwellMs) x.minutes += Math.round(body.dwellMs / 60000);
+          if (body.interactions) x.interactions += body.interactions;
+          x.lastUsed = Date.now(); u[body.key] = x;
+          try { localStorage.setItem(U, JSON.stringify(u)); } catch {}
+        }
+        return { ok: true };
+      }
+      case 'journal': {
+        const h = loadHints();
+        h.journal = [...h.journal, { at: Date.now(), kind: body.kind, scene: body.scene, detail: body.detail }].slice(-300);
+        saveHints(h); retrospect(false);
+        return { ok: true };
+      }
+      case 'hints': {
+        if (body.op === 'retro') retrospect(true);
+        const h = loadHints();
+        return { journal: h.journal.length, sinceRetro: h.journal.filter((j) => j.at > h.lastRetro).length,
+          lastRetro: h.lastRetro ? new Date(h.lastRetro).toISOString() : '', summary: h.summary,
+          hints: Object.values(h.hints), recent: h.journal.slice(-10).reverse() };
+      }
       case 'quick': return side('quick', 'quick', 'screenSchema', body, 'The full answer to this event is taking long. Give a quick interim screen now:');
       case 'prefetch': return side('scout', 'scout', 'screenSchema', body, 'The cursor is heading for this circle. Prepare the screen opening it would show:');
       case 'refine': return side('refine', 'refine', 'patchSchema', body, 'Refine the circles of this screen with real data:');
@@ -640,6 +708,7 @@ const WebBackend = (() => {
           utilities: libTree([]),
           profile: { traits: profileOverview(300).length, top: profileOverview(6) },
           avoid: { active: avoidOverview(), all: Object.keys(loadAvoid()).length },
+          hints: await call('hints', {}),
           key: k ? k.name : null,
         };
       }

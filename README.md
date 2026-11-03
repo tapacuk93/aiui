@@ -40,7 +40,25 @@ A native macOS app whose whole UI is one Blink webview (CEF), driven by the `cla
   is then shown, and problems are repaired by the AI in place. Views also report errors and failed or slow
   resources, and must call `aiui.ready()`; stuck or failing views are repaired automatically. Failing
   hosts go to an avoid record that is rechecked with exponential backoff.
-- **System scene** (⇧⌘D): AI, storage, cache, libraries, utilities, profile, avoid record.
+- **Scene QA** (`web/qa.js`): every AI scene is measured in two screen modes: the real size and
+  theme, and a phone in the other theme. It gets 0–100 scores for UX, readability, accessibility
+  (WCAG contrast, names, labels, touch targets) and security. A hidden lab clone with `aiui` mocked exercises
+  every control and a corner-case suite: double clicks, keyboard only, empty, long and special input
+  including HTML injection, offline, 320 px, 200% text, Back/More twice. The AI also writes each scene's
+  **Definition of Done** and tests for it, which run in the lab. Anything under 70 or unmet goes back
+  to the AI with the findings.
+- **Context menus**: right-click (long press on touch) on any object. In the background the AI
+  generates actions for every class of object on the scene, and decides per class whether a menu
+  makes sense. Generation starts at once or when idle, depending on the median generation time
+  against the median time until menus get used.
+- **Scene listeners**: scenes handle Back/More (`aiui.onBack/onMore`) and find (`aiui.onFind`). A
+  long press on Back returns to the circles.
+- **Browser hotkeys**: ⌘F, ⌘= ⌘- ⌘0, ⌘R (⌘⇧R the app), ⌘[ ⌘], ⌘P, Home/End.
+- **Retrospectives**: a journal of what went wrong (repairs, failed QA or DoD, timeouts, errors,
+  quick exits, cancels). A periodic retrospective AI pass turns it into hints with evidence and
+  confidence, which go to every generation.
+- **System scene** (⇧⌘D): AI, storage, cache, libraries, utilities, profile, avoid record, the last
+  scene's scores, corner cases and DoD, context-menu timing, and the retrospective with its hints.
 - The app gives the AI full system access: `claude` runs with `--permission-mode bypassPermissions`, and
   `aiui.sys` exposes shell, JXA/AppleScript (every Cocoa API), open, file read/write, clipboard and notifications.
 

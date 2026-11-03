@@ -20,6 +20,14 @@ final class Utilities {
         var created: Date
         var updated: Date
         var lastUsed: Date
+        // Incremental quality: findings from the scenes that use it, and its improvement schedule
+        // (first right after first use, then each time the time since first use has doubled).
+        var findings: [String]?
+        var scores: [String: Double]?
+        var usedSinceImprove: Int?
+        var improves: Int?
+        var firstUsed: Date?
+        var nextImprove: Date?
     }
 
     private struct Stored: Codable {
@@ -90,7 +98,10 @@ final class Utilities {
         for ref in refs {
             guard let id = resolve(ref), !seen.contains(id), var m = modules[id] else { missing.append(ref); continue }
             seen.insert(id)
-            m.uses += 1; m.lastUsed = Date(); modules[id] = m
+            m.uses += 1; m.lastUsed = Date()
+            m.usedSinceImprove = (m.usedSinceImprove ?? 0) + 1
+            if m.firstUsed == nil { m.firstUsed = Date(); m.nextImprove = Date() }
+            modules[id] = m
             let header = "/* \((m.path + [m.name]).joined(separator: "/")) v\(m.version) */\n"
             if m.kind == "css" { css.append(header + m.code) } else { js.append(header + m.code) }
             found.append(id)
@@ -131,6 +142,56 @@ final class Utilities {
 
     var categories: [String] {
         Set(modules.values.flatMap { m in (1...max(1, m.path.count)).map { m.path.prefix($0).joined(separator: " › ") } }).sorted()
+    }
+
+    // MARK: - Incremental quality, one component at a time
+
+    /// Findings and scores from a scene that uses these modules.
+    func feedback(_ refs: [String], findings: [String], scores: [String: Double]) {
+        for ref in refs {
+            guard let id = resolve(ref), var m = modules[id] else { continue }
+            m.findings = Array(((m.findings ?? []) + findings).suffix(20))
+            var sc = m.scores ?? [:]
+            for (k, v) in scores { sc[k] = sc[k].map { ($0 * 2 + v) / 3 } ?? v }   // a running average
+            m.scores = sc
+            modules[id] = m
+        }
+        persist()
+    }
+
+    /// The module most due for its next improvement (used since its last one).
+    func dueForImprovement() -> Module? {
+        let now = Date()
+        return modules.values.filter { ($0.usedSinceImprove ?? 0) > 0 && ($0.nextImprove ?? .distantFuture) <= now }
+            .max { a, b in
+                let wa = Double(a.uses) + Double(a.findings?.count ?? 0) * 5, wb = Double(b.uses) + Double(b.findings?.count ?? 0) * 5
+                return wa < wb
+            }
+    }
+
+    func moduleInput(_ m: Module) -> [String: Any] {
+        ["id": m.id, "path": m.path, "name": m.name, "kind": m.kind, "description": m.description, "usage": m.usage,
+         "version": m.version, "uses": m.uses, "findings": m.findings ?? [], "scores": m.scores ?? [:], "code": m.code]
+    }
+
+    /// Applies an improved version (same id, version+1) and schedules the next improvement.
+    func applyImprovement(_ id: String, _ r: [String: Any]?) {
+        guard var m = modules[id] else { return }
+        let now = Date()
+        if let r, let code = r["code"] as? String, code.count > 20 {
+            m.code = code
+            if let d = r["description"] as? String, !d.isEmpty { m.description = d }
+            if let u = r["usage"] as? String, !u.isEmpty { m.usage = u }
+            m.version += 1
+            m.findings = []
+            m.updated = now
+        }
+        m.improves = (m.improves ?? 0) + 1
+        m.usedSinceImprove = 0
+        let elapsed = now.timeIntervalSince(m.firstUsed ?? now)
+        m.nextImprove = now.addingTimeInterval(min(max(elapsed, 300), 7 * 86_400))
+        modules[id] = m
+        persist()
     }
 
     // MARK: - Review (librarian)
@@ -208,7 +269,8 @@ final class Utilities {
                 .map { ["name": $0.key, "count": $0.value.count] as [String: Any] },
             "utilities": here.sorted { $0.uses != $1.uses ? $0.uses > $1.uses : $0.name < $1.name }
                 .map { ["id": $0.id, "name": $0.name, "icon": $0.kind == "css" ? "🎨" : "🧩",
-                        "description": $0.description, "uses": $0.uses, "version": $0.version] as [String: Any] },
+                        "description": "v\($0.version) · " + $0.description, "uses": $0.uses, "version": $0.version,
+                        "improves": $0.improves ?? 0, "findings": $0.findings?.count ?? 0] as [String: Any] },
             "total": modules.count,
             "lastReview": lastReview.map { ISO8601DateFormatter().string(from: $0) } ?? "",
         ]
