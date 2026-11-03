@@ -1,0 +1,65 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- AI UI app icon. A screen of the app in one glance: one large circle (the choice the AI
+       offers) with its two ears, − (remove/reduce) on the left and + (select/add) on the right;
+       a sparkle inside for the AI that writes the next screen; and the bottom row Back · Go · More.
+       macOS grid: 824px rounded square centred on the 1024 canvas, soft shadow.
+       Rendered to PNGs and AppIcon.icns by make_icon.sh. -->
+  <defs>
+    <linearGradient id="tile" x1="0" y1="100" x2="0" y2="924" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#5a7bff"/>
+      <stop offset="0.55" stop-color="#4263eb"/>
+      <stop offset="1" stop-color="#2f45c4"/>
+    </linearGradient>
+    <linearGradient id="face" x1="0" y1="240" x2="0" y2="700" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#e9edff"/>
+    </linearGradient>
+    <linearGradient id="spark" x1="0" y1="350" x2="0" y2="590" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#5a7bff"/>
+      <stop offset="1" stop-color="#3550d8"/>
+    </linearGradient>
+    <linearGradient id="gloss" x1="0" y1="100" x2="0" y2="520" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.18"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Soft shadow under the tile (stacked translucent layers: renders the same everywhere). -->
+  <g fill="#0b0b30">
+    <rect x="96" y="112" width="832" height="832" rx="190" opacity="0.05"/>
+    <rect x="98" y="110" width="828" height="828" rx="188" opacity="0.07"/>
+    <rect x="100" y="108" width="824" height="824" rx="186" opacity="0.10"/>
+  </g>
+
+  <!-- Tile. -->
+  <rect x="100" y="100" width="824" height="824" rx="186" fill="url(#tile)"/>
+  <rect x="100" y="100" width="824" height="824" rx="186" fill="url(#gloss)"/>
+  <rect x="101.5" y="101.5" width="821" height="821" rx="184.5" fill="none" stroke="#ffffff" stroke-opacity="0.18" stroke-width="3"/>
+
+  <!-- The circle: shadow, face. -->
+  <circle cx="512" cy="482" r="232" fill="#13206e" opacity="0.28" transform="translate(0 14)"/>
+  <circle cx="512" cy="482" r="232" fill="url(#face)"/>
+
+  <!-- The AI: a four-point sparkle, with a small companion. -->
+  <path fill="url(#spark)" d="M512 362 C524 440 552 468 630 482 C552 496 524 524 512 602 C500 524 472 496 394 482 C472 468 500 440 512 362 Z"/>
+  <path fill="#4263eb" opacity="0.55" d="M596 382 C599 400 606 407 624 410 C606 413 599 420 596 438 C593 420 586 413 568 410 C586 407 593 400 596 382 Z"/>
+
+  <!-- Ears at the upper left (−) and upper right (+): white chips cut out of the circle by a tile-blue gap. -->
+  <g>
+    <circle cx="334" cy="304" r="76" fill="url(#tile)"/><circle cx="334" cy="304" r="76" fill="url(#gloss)"/>
+    <circle cx="334" cy="304" r="60" fill="#ffffff"/>
+    <path d="M306 304 H362" stroke="#4263eb" stroke-width="17" stroke-linecap="round"/>
+
+    <circle cx="690" cy="304" r="76" fill="url(#tile)"/><circle cx="690" cy="304" r="76" fill="url(#gloss)"/>
+    <circle cx="690" cy="304" r="60" fill="#ffffff"/>
+    <path d="M662 304 H718 M690 276 V332" stroke="#4263eb" stroke-width="17" stroke-linecap="round"/>
+  </g>
+
+  <!-- Bottom row: Back · Go · More. -->
+  <g fill="#ffffff">
+    <circle cx="384" cy="808" r="34" opacity="0.38"/>
+    <circle cx="512" cy="808" r="44"/>
+    <circle cx="640" cy="808" r="34" opacity="0.38"/>
+  </g>
+  <path d="M500 788 L526 808 L500 828 Z" fill="#4263eb" stroke="#4263eb" stroke-width="8" stroke-linejoin="round"/>
+</svg>
