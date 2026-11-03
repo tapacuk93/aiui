@@ -10,6 +10,7 @@ const el = {
   activity: $('#activity'), procs: $('#procs'), pauseBtn: $('#pauseBtn'), settingsBtn: $('#settingsBtn'),
   console: $('#console'), consoleLog: $('#consoleLog'), consoleForm: $('#consoleForm'), consoleInput: $('#consoleInput'),
   consoleBtn: $('#consoleBtn'), sceneBar: $('#sceneBar'),
+  infoBtn: $('#infoBtn'), actscreen: $('#actscreen'), actTitle: $('#actTitle'), actBody: $('#actBody'), actClose: $('#actClose'),
 };
 
 // Human capabilities, each backed by technical ones.
@@ -157,6 +158,8 @@ window.aiui = {
   },
   next: (data) => ask({ event: 'html', data }, { label: data && data.label }),
   // A scene's own activity in the app's list, with quick actions: [{ icon, label, run }].
+  network: () => showNetwork(),
+  activityScreen: () => toggleActivityScreen(),
   activity: (id, title, actions) => sceneActivity(id, title, (actions || []).map((a) => ({ icon: a.icon, label: a.label, run: a.run }))),
   back: () => back(),
   home: () => home(),
@@ -311,10 +314,12 @@ async function ask(evt, { label, replace = false, circle = null, retried = false
     if (!cached) learnSoon();
     const next = normalize(screen);
     if (interim) {
-      // Replace the interim screen wherever it is now: on screen, or back in the history.
-      interim.screen = next;
+      // Replace the interim screen wherever it is now: on screen (an applet's scratch version
+      // seamlessly, when the user is idle), or back in the history.
       interim.key = sceneKey;
       document.body.classList.remove('updating');
+      if (current === interim && next.kind === 'html' && interim.screen.kind === 'html') { seamlessUpdate(interim, next, t('updated')); return; }
+      interim.screen = next;
       if (current === interim && !typing()) { render(); flashStatus(t('updated')); }
       return;
     }
@@ -465,6 +470,7 @@ async function showLibrary(path = []) {
 async function localOpen(c) {
   const kind = current.screen.local;
   if (kind === 'who') return whoOpen(c);
+  if (kind === 'network') return networkOpen(c);
   if (kind === 'profile') {
     if (c.branch) return showProfile([...current.screen.profPath, c.label]);
     return; // a trait: nothing to open (× forgets it)
@@ -580,7 +586,8 @@ function render() {
 
   if (s.kind !== 'circles') el.circles.innerHTML = '';
   continueSceneAudio();
-  el.view.innerHTML = '';
+  // A seamless update keeps the outgoing version on top until the new one is ready.
+  for (const n of [...el.view.children]) if (!n.classList.contains('outgoing') || s.kind !== 'html') n.remove();
   dropStale();
 
   if (s.kind === 'circles') renderCircles(s);
@@ -1143,6 +1150,10 @@ const SCENE_SHIM = `<script>(() => {
     metaDown = 0;
   });
   realAdd.call(window, 'mousedown', () => { metaDown = 0; }, true);
+  // The app updates a scene only while the user is idle: it is told about input here.
+  let inputAt = 0;
+  const input = () => { const n = Date.now(); if (n - inputAt > 400) { inputAt = n; parent.postMessage({ aiuiInput: 1 }, '*'); } };
+  realAdd.call(window, 'pointerdown', input, true); realAdd.call(window, 'keydown', input, true); realAdd.call(window, 'wheel', input, { capture: true, passive: true });
   realAdd.call(window, 'blur', () => { metaDown = 0; });
   // What plays here (so the app keeps playing it when this scene is left).
   function reportPlaying() {
@@ -1343,6 +1354,7 @@ function viewReady() {
   const s = current.screen;
   if (s.kind !== 'html') return;
   s.ready = true;
+  finishSeamless();
   const f = el.view.querySelector('iframe');
   try { f && f.contentWindow.postMessage({ aiuiReadySignal: true }, '*'); } catch {}
   // A global icon opened this applet: run its action now that the scene is up.
@@ -1478,7 +1490,7 @@ const FRAME_SHIM = `<script>(() => {
   addEventListener('keydown', (e) => {
     const t = e.target; if (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName)) return;
     if (e.key === 'Backspace' || e.key === 'Escape' || e.key === '\`') { e.preventDefault(); parent.postMessage({ aiuiKey: e.key }, '*'); }
-    if ((e.metaKey || e.ctrlKey) && /^[fp=\\-0\\[\\]rt]$/i.test(e.key)) { e.preventDefault(); parent.postMessage({ aiuiKey: e.key, meta: true, shift: e.shiftKey }, '*'); }
+    if ((e.metaKey || e.ctrlKey) && /^[fp=\\-0\\[\\]rtni]$/i.test(e.key)) { e.preventDefault(); parent.postMessage({ aiuiKey: e.key, meta: true, shift: e.shiftKey }, '*'); }
   });
   addEventListener('click', (e) => {
     const a = e.target.closest && e.target.closest('a[href]'); if (!a) return;
@@ -1505,6 +1517,7 @@ window.addEventListener('message', async (e) => {
   if ('aiuiType' in d) { typeFromScene(d.aiuiType); return; }
   if ('aiuiPlaying' in d) { scenePlaying = d.aiuiPlaying ? { ...d.aiuiPlaying, at: Date.now() } : null; return; }
   if ('aiuiHandoffReply' in d) { const r = handoffWait; handoffWait = null; if (r) r(d.aiuiHandoffReply); return; }
+  if (d.aiuiInput) { lastInputAt = Date.now(); return; }
   if (d.aiuiUsage) { usageNote(current, { interactions: d.aiuiUsage }); return; }
   if ('aiuiShot' in d) { if (d.aiuiShot) usageNote(current, { screenshot: d.aiuiShot }); return; }
   if (d.aiuiContext) {
@@ -1565,7 +1578,7 @@ function renderHTML(s) {
   // A version already checked before (this session or an earlier one) shows at once; the check
   // still runs on it in the background.
   if (!s.local && !s.reviewed) {
-    if (!checkedBefore(s)) {
+    if (!checkedBefore(s) && !el.view.querySelector('.outgoing')) {
       frame.classList.add('testing');
       el.view.classList.add('checking');
       setTimeout(() => { if (current.screen === s) revealView(); }, 2500); // never hidden for long
@@ -1584,7 +1597,7 @@ function renderHTML(s) {
   const real = HEALTH_SHIM + (s.local ? '' : qaShim('review')) +
     (NATIVE ? '<script>window.aiui = Object.create(parent.aiui);<\/script>' : FRAME_SHIM) +
     `<script>window.__appPlaying = ${JSON.stringify(nowPlaying && !player.paused ? nowPlaying.url : null).replace(/</g, '\\u003c')};<\/script>` + SCENE_SHIM;
-  el.view.appendChild(frame);
+  el.view.prepend(frame); // before an outgoing version (which stays on top until this one is ready)
   const screen = s;
   Promise.all([jsLibsFor(s), libraryFor(s)]).then(([libs, lib]) => {
     if (current.screen !== screen) return;
@@ -1793,6 +1806,7 @@ function submitText(node) {
   if (!text) return;
   rememberTyped(text);
   if (current.screen.local === 'key') return connectKey(text);
+  if (current.screen.local === 'wifipass') return joinNetwork(current.screen.ssid, text);
   const circle = node || [...el.circles.children].find((n) => n.dataset.id === '__typed' && !n.hidden) || null;
   // Straight into the screen that does it, as understood.
   const u = live.understood && live.q === text ? live.understood.label : null;
@@ -2017,7 +2031,8 @@ function onKey(e) {
   if (mod && !e.altKey) {
     const k = e.key.toLowerCase();
     const acts = { f: find, '=': () => zoom(1), '+': () => zoom(1), '-': () => zoom(-1), '0': () => zoom(0), p: printScene,
-      ']': forward, r: () => (e.shiftKey ? location.reload() : reloadScene()), t: () => typeFromScene('') };
+      ']': forward, r: () => (e.shiftKey ? location.reload() : reloadScene()), t: () => typeFromScene(''),
+      n: () => showNetwork(), i: () => toggleActivityScreen() };
     if (acts[k]) { e.preventDefault(); return acts[k](); }
   }
   if (!isEditable(e.target) && current.screen.kind === 'circles' && (e.key === 'Home' || e.key === 'End')) {
@@ -2140,6 +2155,15 @@ const STR = {
   qaPauseImprove: 'Pause improvements', qaResumeImprove: 'Resume improvements', qaImproveNow: 'Improve now',
   scheduled: 'Scheduled', nextImprove: 'next improvement', improvesPaused: 'improvements paused', dueNow: 'due now',
   nothingRunning: 'Nothing running', versionWord: 'version',
+  network: 'Network', netScan: 'Looking for networks…', netHidden: 'macOS shows network names only with Location access: allow AI UI in System Settings › Privacy & Security › Location Services.',
+  netPassword: 'Password for', netConnected: 'connected', netJoining: 'joining', netOn: 'Turn Wi-Fi on', netOff: 'Turn Wi-Fi off',
+  netRescan: 'Scan again', netKnown: 'saved', netSecured: 'secured', netOpen: 'open', netNone: 'No networks found',
+  actScreen: 'Activity', actGlobal: 'Everywhere', actHere: 'This scene', actRunning: 'Running', actNumbers: 'Numbers',
+  actMemory: 'memory', actLoad: 'load', actDisk: 'free disk', actUptime: 'running for', actApplets: 'applets',
+  actImproves: 'improvements', actNext: 'next improvement', actIntegration: 'integration', actRemaining: 'left',
+  actModules: 'shared modules', actCache: 'memory cache', actLibsInstalled: 'JS libraries', actHints: 'hints', actJournal: 'incidents',
+  actEngine: 'AI', actNet: 'network', actPaused: 'background work paused', actOpens: 'opens', actMinutes: 'minutes',
+  actInteractions: 'interactions', actFindings: 'findings', actScores: 'scores', actSceneNone: 'Not an applet: nothing scene-specific yet.',
 };
 for (const c of ROOT.circles) { STR['root.' + c.id] = c.label; STR['root.' + c.id + '.hint'] = c.hint; }
 
@@ -2586,6 +2610,49 @@ async function showSystem() {
   push({ kind: 'html', local: 'system', title: t('system'), back: true, html }, t('system'));
 }
 
+// ---------------------------------------------------------------- network (⌘N)
+async function showNetwork(refresh = false) {
+  flashStatus(t('netScan'));
+  let r;
+  try { r = await call('network', { op: 'scan' }); } catch (e) { return toast(e.message); }
+  const bars = (rssi) => rssi >= -55 ? '▂▄▆█' : rssi >= -67 ? '▂▄▆' : rssi >= -78 ? '▂▄' : '▂';
+  const circles = (r.networks || []).map((n) => ({
+    id: 'net:' + n.ssid, ssid: n.ssid, secure: n.secure, known: n.known,
+    icon: n.current ? '📶' : n.secure ? '🔒' : '📡', label: n.ssid, selected: !!n.current,
+    hint: [bars(n.rssi), n.band, n.current ? t('netConnected') : n.known ? t('netKnown') : n.secure ? t('netSecured') : t('netOpen')].filter(Boolean).join(' · '),
+  }));
+  circles.push({ id: 'net:rescan', icon: '🔄', label: t('netRescan'), size: 0.8 });
+  circles.push({ id: 'net:power', icon: '⏻', label: r.power === false ? t('netOn') : t('netOff'), size: 0.8 });
+  const screen = { kind: 'circles', local: 'network', more: false, back: true, title: t('network'),
+    message: r.error ? r.error : (r.hidden || r.locationAllowed === false) && !(r.networks || []).length ? t('netHidden') : !(r.networks || []).length ? t('netNone') : '',
+    circles };
+  if (refresh && current.screen.local === 'network') { current.screen = screen; render(); } else push(screen, t('network'));
+}
+async function networkOpen(c) {
+  if (c.selected && c.ssid) { flashStatus(`📶 ${c.ssid} · ${t('netConnected')}`); return; }
+  if (c.id === 'net:rescan') return showNetwork(true);
+  if (c.id === 'net:power') {
+    try { await call('network', { op: 'power', on: c.label === t('netOn') }); } catch (e) { return toast(e.message); }
+    return showNetwork(true);
+  }
+  if (c.secure && !c.known) {
+    return push({ kind: 'text', local: 'wifipass', ssid: c.ssid, go: 'OK', title: `${t('netPassword')} «${c.ssid}»`, message: '', text: '' }, c.ssid);
+  }
+  return joinNetwork(c.ssid, '');
+}
+async function joinNetwork(ssid, password) {
+  flashStatus(`${t('netJoining')} «${ssid}»…`);
+  let r;
+  try { r = await call('network', { op: 'connect', ssid, password }); } catch (e) { return toast(e.message); }
+  if (!r.ok && r.needsPassword && !password) {
+    return push({ kind: 'text', local: 'wifipass', ssid, go: 'OK', title: `${t('netPassword')} «${ssid}»`, message: '', text: '' }, ssid);
+  }
+  if (!r.ok) return toast(String(r.error || 'failed').split('\n')[0]);
+  if (current.screen.local === 'wifipass') { stopWriting(true); current = stack.pop(); }
+  flashStatus(`📶 ${ssid} · ${t('netConnected')}`);
+  return showNetwork(true);
+}
+
 async function showJSLibraries() {
   let r;
   try { r = await call('libraries', { op: 'list' }); } catch (e) { return toast(e.message); }
@@ -2935,6 +3002,103 @@ function renderProcs() {
   }
   for (const n of [...el.procs.children]) if (!keep.has(n) && n !== head) n.remove();
 }
+// ---------------------------------------------------------------- activity screen (⌘I, ⓘ)
+// Full screen, live: everything running and the app's numbers (everywhere), and what concerns
+// the scene on display (its activities, improvement schedule, usage, quality).
+let actLive = null, actTimer = 0;
+function toggleActivityScreen(on = el.actscreen.hidden) {
+  el.actscreen.hidden = !on;
+  clearInterval(actTimer);
+  if (!on) { el.infoBtn.focus(); return; }
+  el.procs.hidden = true;
+  el.actTitle.textContent = t('actScreen');
+  renderActivityScreen();
+  loadLive();
+  let n = 0;
+  actTimer = setInterval(() => { renderActivityScreen(); if (++n % 3 === 0) loadLive(); }, 1000);
+  el.actClose.focus();
+}
+async function loadLive() {
+  try {
+    const [live, sys] = await Promise.all([callRaw('live', { key: current.screen.kind === 'html' ? current.key || '' : '' }), snapshotFull()]);
+    actLive = { ...live, sys, at: Date.now() };
+  } catch {}
+  renderActivityScreen();
+}
+let sysCache = null, sysAt = 0;
+async function snapshotFull() {
+  if (sysCache && Date.now() - sysAt < 15000) return sysCache;
+  try { sysCache = await callRaw('system'); sysAt = Date.now(); } catch {}
+  return sysCache;
+}
+function actRows(list) {
+  return list.map(([label, value]) => `<div class="a-num"><span class="a-label">${esc(label)}</span><span class="a-value">${esc(value)}</span></div>`).join('');
+}
+function renderActivityScreen() {
+  if (el.actscreen.hidden) return;
+  const L = actLive || {}, P = L.process || {}, U = L.usage || {}, S = L.sys || {}, N = L.network || {};
+  const all = [...activities.entries()].map(([id, a]) => ({ id, ...a, rank: actRank(id) })).sort((a, b) => b.rank - a.rank || b.at - a.at);
+  // This scene: work bound to it (its AI requests, checks, menus, its own activities, its
+  // improvement); everything else (translation, media, libraries, other applets) is global.
+  const SCENE_KINDS = new Set(['ai', 'fix', 'quick', 'more', 'suggest', 'prefetch', 'refine', 'revise', 'review', 'lab', 'tests', 'menus', 'scene']);
+  const kindOf = (id) => String(id).split(/[:\-]/)[0];
+  const here = all.filter((a) => (SCENE_KINDS.has(kindOf(a.id)) && a.entry === current) || (a.key && current.key && a.key === current.key));
+  const elsewhere = all.filter((a) => !here.includes(a));
+  const procList = (list) => list.length ? list.map((a) => `<div class="a-proc" data-id="${esc(a.id)}"><span class="a-ptitle">${esc(a.title)}${a.detail && a.detail !== a.title ? ' — ' + esc(a.detail) : ''}</span>` +
+    `<span class="a-ptime">${fmtSecs((performance.now() - a.at) / 1000)}</span><span class="a-pacts">${activityActions(a.id, a).map((x, i) => `<button type="button" class="p-act" data-n="${i}" title="${esc(x.label)}" aria-label="${esc(x.label)}">${esc(x.icon)}</button>`).join('')}</span></div>`).join('')
+    : `<div class="a-empty">${esc(t('nothingRunning'))}</div>`;
+  const mb = (b) => b == null ? '—' : fmtBytes(b);
+  const next = U.next ? `«${U.next.title}» · ${Math.max(0, Math.round((U.next.at - Date.now()) / 1000)) ? fmtSecs(Math.max(0, Math.round((U.next.at - Date.now()) / 1000))) : t('dueNow')}` : '—';
+  const global = [
+    [t('actEngine'), (S.ai && S.ai.active && S.ai.active.label) || L.engine || '—'],
+    [t('actNet'), N.ssid ? `📶 ${N.ssid} · ${N.rssi} dBm` : (N.addresses || []).map((a) => a.ip).join(', ') || '—'],
+    [t('actMemory'), mb(P.memory)], [t('actLoad'), (P.load || []).map((x) => x.toFixed(2)).join(' · ') || '—'],
+    [t('actDisk'), mb(P.diskFree)], [t('actUptime'), P.uptime != null ? fmtSecs(P.uptime) : '—'],
+    [t('actApplets'), U.applets ?? '—'], [t('actImproves'), U.improvements ?? '—'], [t('actNext'), next],
+    [t('actIntegration'), L.integration != null ? Math.round(L.integration) + '%' : '—'],
+    [t('actModules'), L.modules ?? '—'],
+    [t('actCache'), S.cache ? `${S.cache.entries} · ${mb(S.cache.bytes)}` : '—'],
+    [t('actLibsInstalled'), S.libraries ? `${S.libraries.installed} / ${S.libraries.catalog} · ${mb(S.libraries.usedBytes)}` : '—'],
+    [t('actHints'), S.hints && S.hints.hints ? S.hints.hints.length : '—'], [t('actJournal'), S.hints ? S.hints.journal ?? '—' : '—'],
+  ];
+  const sc = L.scene, q = current.screen.quality || {};
+  const sched = sc && sc.schedule ? scheduleText(sc) : null;
+  const scores = q.screen && q.screen.scores ? Object.entries(q.screen.scores).map(([k, v]) => `${k} ${v}`).join(' · ') : '—';
+  const hereNums = sc ? [
+    [t('actNext'), sched ? `${sched.when || '—'} · ${sched.sub}` : '—'],
+    [t('actImproves'), sc.improves ?? 0], [t('actOpens'), sc.opens ?? '—'], [t('actMinutes'), sc.minutes != null ? sc.minutes.toFixed(1) : '—'],
+    [t('actInteractions'), sc.interactions ?? '—'], [t('actFindings'), sc.findings ?? '—'], [t('actScores'), scores],
+  ] : null;
+  const where = current.screen.title || current.label || '';
+  el.actBody.innerHTML =
+    `<section class="a-sec"><h3>${esc(t('actHere'))}${where ? ' · ' + esc(where) : ''}</h3>` +
+      `<h4>${esc(t('actRunning'))}</h4>${procList(here)}` +
+      (hereNums ? `<h4>${esc(t('actNumbers'))}</h4><div class="a-grid">${actRows(hereNums)}</div>` +
+        (sc ? `<div class="a-acts"><button type="button" class="a-btn" data-sched="now">↻ ${esc(t('qaImproveNow'))}</button>` +
+          `<button type="button" class="a-btn" data-sched="${sc.paused ? 'resume' : 'pause'}">${sc.paused ? '▶ ' + esc(t('qaResumeImprove')) : '⏸ ' + esc(t('qaPauseImprove'))}</button></div>` : '')
+        : `<div class="a-empty">${esc(t('actSceneNone'))}</div>`) +
+    `</section>` +
+    `<section class="a-sec"><h3>${esc(t('actGlobal'))}${L.paused || paused ? ' · ' + esc(t('actPaused')) : ''}</h3>` +
+      `<h4>${esc(t('actRunning'))}</h4>${procList(elsewhere)}` +
+      `<h4>${esc(t('actNumbers'))}</h4><div class="a-grid">${actRows(global)}</div>` +
+      (L.integrationRemaining ? `<p class="a-note">${esc(t('actIntegration'))} — ${esc(t('actRemaining'))}: ${esc(L.integrationRemaining)}</p>` : '') +
+    `</section>`;
+  for (const b of el.actBody.querySelectorAll('.a-proc .p-act')) {
+    const id = b.closest('.a-proc').dataset.id, a = activities.get(id);
+    b.onclick = async () => { const x = a && activityActions(id, a)[Number(b.dataset.n)]; if (x) { try { await x.run(); } catch {} } setTimeout(renderActivityScreen, 150); };
+  }
+  for (const b of el.actBody.querySelectorAll('[data-sched]')) {
+    b.onclick = async () => {
+      const key = sc.key, op = b.dataset.sched;
+      try { await callRaw('usage', op === 'now' ? { op: 'improve', key } : { op: 'pause', key, on: op === 'pause' }); } catch {}
+      loadLive();
+    };
+  }
+}
+el.infoBtn.addEventListener('click', (e) => { e.stopPropagation(); toggleActivityScreen(); });
+el.actClose.addEventListener('click', () => toggleActivityScreen(false));
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !el.actscreen.hidden) { e.preventDefault(); e.stopPropagation(); toggleActivityScreen(false); } }, true);
+
 function goToActivity(a) {
   // The entry it started from, wherever it is in the history now.
   if (a.entry && a.entry !== current) {
@@ -2997,20 +3161,21 @@ el.settingsBtn.addEventListener('click', (e) => { e.stopPropagation(); showSyste
 for (const b of [el.pauseBtn, el.settingsBtn]) b.addEventListener('pointerdown', (e) => e.stopPropagation());
 
 // Settings (Settings & System scene): stored here; some also native.
-const SETTINGS_DEFAULT = { prefetch: true, refine: true, menus: true, qa: true, dod: true, quickAfter: 6, qaMin: 70 };
+const SETTINGS_DEFAULT = { prefetch: true, refine: true, menus: true, qa: true, dod: true, quickAfter: 2, qaMin: 70 };
 let settings = (() => { try { return { ...SETTINGS_DEFAULT, ...JSON.parse(localStorage.getItem('aiui.settings')) }; } catch { return { ...SETTINGS_DEFAULT }; } })();
 function applySettings() {
-  QUICK_AFTER_MS = Math.max(1, Number(settings.quickAfter) || 6) * 1000;
+  QUICK_AFTER_MS = Math.max(1, Number(settings.quickAfter) || 2) * 1000;
   QA_MIN = Math.max(0, Math.min(100, Number(settings.qaMin) || 70));
 }
 function setSetting(k, v) {
   settings[k] = v;
   try { localStorage.setItem('aiui.settings', JSON.stringify(settings)); } catch {}
   applySettings();
-if (paused) setTimeout(() => setPaused(true), 0);
-setTimeout(refreshSnapshot, 1500);
   flashStatus(`${k}: ${v}`);
 }
+// At launch: the native side learns the pause the page remembers (background work must not run).
+if (paused) setTimeout(() => setPaused(true), 0);
+setTimeout(refreshSnapshot, 1500);
 async function settingsAction(name, arg) {
   const acts = {
     retro: () => call('hints', { op: 'retro' }), librarian: () => call('utilities', { op: 'review' }),
@@ -3086,6 +3251,36 @@ function componentFeedback(s, r) {
   call('utilities', { op: 'feedback', ids: s.uses, findings: r.issues.slice(0, 8), scores: r.scores || {} }).catch(() => {});
 }
 
+// Seamless updates: a new version of the scene on display replaces it when the user is idle
+// (2.5 s without input), loaded underneath while the old one stays visible and frozen on top;
+// the new one loads the saved state and, once it reports ready, the old one fades out.
+let lastInputAt = 0, seamlessQueue = null;
+document.addEventListener('pointerdown', () => { lastInputAt = Date.now(); }, true);
+document.addEventListener('keydown', () => { lastInputAt = Date.now(); }, true);
+function seamlessUpdate(entry, next, note) {
+  seamlessQueue = { entry, next, note };
+  trySeamless();
+}
+async function trySeamless() {
+  const q = seamlessQueue;
+  if (!q) return;
+  if (current !== q.entry) { q.entry.screen = q.next; seamlessQueue = null; return; } // not on display: next visit shows it
+  if (typing() || Date.now() - lastInputAt < 2500 || busy) return void setTimeout(trySeamless, 1000);
+  seamlessQueue = null;
+  await handoffMedia();
+  for (const f of el.view.querySelectorAll('iframe')) f.classList.add('outgoing');
+  q.entry.screen = q.next;
+  render();
+  if (q.note) flashStatus(q.note);
+  setTimeout(finishSeamless, 8000); // a version that never says ready still takes over
+}
+function finishSeamless() {
+  for (const f of el.view.querySelectorAll('iframe.outgoing')) {
+    f.classList.add('leaving');
+    setTimeout(() => f.remove(), 400);
+  }
+}
+
 // Improved versions arrive from the background: reload live, keeping the scene's state.
 async function onImproved(e) {
   const entries = [current, ...stack].filter((x) => x.key === e.key);
@@ -3093,14 +3288,17 @@ async function onImproved(e) {
   try {
     const { screen } = await callRaw('usage', { op: 'outcome', key: e.key });
     if (!screen) return;
-    if (entries.includes(current)) await handoffMedia();
-    for (const entry of entries) entry.screen = normalize(screen);
-    if (entries.includes(current) && !typing()) { render(); flashStatus('✨ ' + t('improvedLive')); }
+    for (const entry of entries) if (entry !== current) entry.screen = normalize(screen);
+    if (entries.includes(current)) seamlessUpdate(current, normalize(screen), '✨ ' + t('improvedLive'));
   } catch {}
 }
 function onComponentImproved(e) {
   const s = current.screen;
-  if (s.kind === 'html' && (s.uses || []).some((u) => u === e.id)) { reloadScene(); flashStatus('🧩 ' + e.name + ' — ' + (e.changes || t('improvedLive'))); }
+  if (s.kind === 'html' && (s.uses || []).some((u) => u === e.id)) {
+    const fresh = { ...s };
+    for (const k of ['reviewed', 'ready', 'labbed', 'testsRequested', 'health', 'failures', 'quality', 'barApplied']) delete fresh[k];
+    seamlessUpdate(current, fresh, '🧩 ' + e.name + ' — ' + (e.changes || t('improvedLive')));
+  }
 }
 
 // ---------------------------------------------------------------- console (`)

@@ -744,6 +744,39 @@ final class API: NSObject {
                 send(["ok": true])
             }
 
+        case "network":                           // ⌘N: status, scan, connect, Wi-Fi power
+            let net = NetworkControl.shared
+            DispatchQueue.global(qos: .userInitiated).async {
+                let r: [String: Any]
+                switch input["op"] as? String ?? "status" {
+                case "scan": r = net.scan()
+                case "connect": r = net.connect(input["ssid"] as? String ?? "", password: input["password"] as? String)
+                case "power": r = net.power((input["on"] as? Bool) ?? true)
+                case "location": net.askLocation(); r = ["ok": true]
+                default: r = net.status()
+                }
+                DispatchQueue.main.async { send(r) }
+            }
+
+        case "live":                              // ⌘I: live numbers (global and for one applet)
+            var r: [String: Any] = ["process": LiveStats.process(), "paused": Self.paused,
+                                    "integration": UserDefaults.standard.object(forKey: Self.integrationKey) ?? NSNull(),
+                                    "integrationRemaining": UserDefaults.standard.string(forKey: "integrationRemaining") ?? "",
+                                    "improving": improving ?? NSNull(), "improvingComponent": improvingComponent ?? NSNull(),
+                                    "usage": usage.summary(), "modules": utilities.count, "network": NetworkControl.shared.status(),
+                                    "engine": engineID ?? NSNull()]
+            if let k = input["key"] as? String, !k.isEmpty {
+                let key = usage.canonical(k)
+                if let raw = cache.raw(key) { usage.setSchedule(key, raw["improve"] as? [String: Any]) }
+                var scene = usage.scheduleInfo(key) ?? [:]
+                if let u = usage.scene(key) {
+                    scene["opens"] = u.opens; scene["minutes"] = u.dwellMs / 60000; scene["interactions"] = u.interactions
+                    scene["findings"] = u.findings.count
+                }
+                r["scene"] = scene
+            }
+            send(r)
+
         case "activity":                          // a quick action on a native activity
             let action = input["action"] as? String ?? ""
             switch (input["id"] as? String ?? "", action) {

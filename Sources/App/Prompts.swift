@@ -154,7 +154,7 @@ enum Prompts {
     one; right for most), `wait` (keep waiting; right when a partial answer would mislead, e.g. a \
     payment or a long computation), `cancel` (stop; right when a late answer is useless) — and \
     `label` says what is happening. The app shows the budget on the circle or Go button and counts \
-    down with your label. Without them: 6 seconds, then interim. Be realistic: a lookup across \
+    down with your label. Without them: 2 seconds, then interim (an applet's scratch version). Be realistic: a lookup across \
     mail or files takes 20–60 s, a plain menu a few seconds.
 
     HTML views must be robust. Call `aiui.ready()` as soon as the real content is visible; the \
@@ -187,7 +187,8 @@ enum Prompts {
     (progress, inputs, position, settings; plain JSON). The app reloads scenes live — improved \
     versions arrive in the background — and the state carries over, so keep keys stable.
     Applets grow: an HTML applet ships a simple, working first version fast, then keeps improving \
-    in the background, without limit. Every HTML scene declares how with `improve`: `every` — \
+    in the background, without limit and without a ceiling on ambition — over many versions a \
+    simple 2048 may become a rich, realistic 3D game — until the user pauses it. Every HTML scene declares how with `improve`: `every` — \
     seconds until its first improvement — and `curve`, how the gap grows with n, the improvements \
     so far: `constant` (every), `linear` (every·(1+factor·n)), `exponential` (every·factorⁿ), \
     `fibonacci` (every·Fib(n+1)), `log` (every·(1+factor·ln(1+n))) or `formula` (a JS expression \
@@ -231,6 +232,13 @@ enum Prompts {
     installed ones; declare what an html screen needs in `libs` (ids) and the app loads \
     them before your HTML (globals as listed, e.g. Chart, THREE, L, d3, marked, Tone). Never load \
     libraries yourself from other CDNs.
+    Don't write what is already written: before writing code, use what exists — the user's shared \
+    modules (`library`: components and utilities, via `uses`), an installed JS library, an \
+    installable one or any npm package (declared in `libs`), and native tools through the shell. \
+    Keep a balance: a library for real work (3D, charts, maps, audio, parsing, physics, editors, \
+    dates, markdown), small custom code for the glue, the layout and what is specific to this \
+    user; don't pull a large library for a few lines, and don't hand-write what a dependable \
+    library or shared module already does.
 
     Full screen: every game, video/media player, canvas, drawing or long reading view must set \
     `fullscreen: true`; the app then offers a full-screen button.
@@ -380,7 +388,10 @@ enum Prompts {
     replaces yours when it is ready. Do not perform any actions. Never return the screen the \
     user is on, or a near copy of it: if the event opens one specific thing (an app, a game, a \
     tool, an item), return a short screen about that thing — what it is and its first choices — \
-    never a list that offers the same thing again.
+    never a list that offers the same thing again. When it opens an applet (a game, a tool, an \
+    editor, a player), return a scratch version of it: a small, working HTML applet with the core \
+    interaction (`kind: html`), plain and fast — the full version replaces it seamlessly while the \
+    user is already using it, so save its state with simple `aiui.state` keys.
     """
 
     static let tester = """
@@ -427,9 +438,14 @@ enum Prompts {
     and improve existing modules rather than duplicating them — the goal is complete integration, \
     the scene built only from shared components and utilities. Keep its purpose, title and the state contract: \
     the same `aiui.state` keys must still load, so the user continues where they were. Keep \
-    `publish`/`uses`/`libs` consistent. There is no limit on improvements and the next one \
-    will come: each version makes one real step (a missing feature, polish, speed, depth) rather \
-    than rewriting everything. Return `improve` with the schedule from here on — keep it, or \
+    `publish`/`uses`/`libs` consistent. There is no limit on improvements and no ceiling: the next \
+    one will come, and the applet may grow far beyond its start (a simple 2048 into a realistic 3D \
+    game, with libraries from `libraries` such as three.js) while the user keeps it running. Each \
+    version makes one real step (a feature, depth, fidelity, polish, speed) rather than rewriting \
+    everything. Updates are seamless and state preserving: the new version replaces the old one \
+    live, so it must load the state the old one saved — keep `aiui.state` keys, add a \
+    `stateVersion` and migrate older shapes on load, never reset the user's progress, settings or \
+    content. Return `improve` with the schedule from here on — keep it, or \
     slow it down as the applet matures. Return the full screen. Do not perform any actions.
     """
 

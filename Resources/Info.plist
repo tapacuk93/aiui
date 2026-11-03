@@ -13,6 +13,8 @@
   <key>CFBundleShortVersionString</key><string>0.1.0</string>
   <key>CFBundleVersion</key><string>1</string>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
+  <key>NSLocationWhenInUseUsageDescription</key><string>AI UI shows the names of nearby Wi-Fi networks so you can connect to one (⌘N). macOS lists them only with Location access.</string>
+  <key>NSLocationUsageDescription</key><string>AI UI shows the names of nearby Wi-Fi networks so you can connect to one (⌘N). macOS lists them only with Location access.</string>
   <key>NSPrincipalClass</key><string>AIUIApplication</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>NSSupportsAutomaticGraphicsSwitching</key><true/>

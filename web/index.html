@@ -44,9 +44,14 @@
     <button id="pauseBtn" type="button" title="Pause background work">⏸</button>
     <button id="settingsBtn" type="button" title="Settings (⇧⌘D)">⚙</button>
     <button id="consoleBtn" type="button" title="Console (`)">›_</button>
+    <button id="infoBtn" type="button" title="Activity (⌘I)" aria-label="Activity">ⓘ</button>
     <span id="sceneBar"></span>
     <div id="activity" aria-live="polite" role="button" tabindex="0"></div>
     <div id="procs" hidden role="menu"></div>
+  </div>
+  <div id="actscreen" hidden role="dialog" aria-modal="true" aria-labelledby="actTitle">
+    <header><h2 id="actTitle"></h2><button id="actClose" type="button" aria-label="Close">✕</button></header>
+    <div id="actBody"></div>
   </div>
 
   <a id="webnote" href="https://github.com/tapacuk93/aiui" target="_blank" rel="noopener">AI UI · web version · Mac app ↗</a>

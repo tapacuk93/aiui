@@ -104,6 +104,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTo
     @objc func printScene(_ sender: Any?) { js("print()") }
 
     @objc func showSystem(_ sender: Any?) { AIUICef.evalJS("window.aiui && aiui.system()") }
+    @objc func showNetwork(_ sender: Any?) { AIUICef.evalJS("window.aiui && aiui.network()") }
+    @objc func showActivity(_ sender: Any?) { AIUICef.evalJS("window.aiui && aiui.activityScreen()") }
     @objc func showJSLibraries(_ sender: Any?) { AIUICef.evalJS("window.aiui && aiui.jsLibraries()") }
 
     @objc func showLibrary(_ sender: Any?) {
@@ -156,7 +158,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTo
 
         let viewItem = NSMenuItem()
         let view = NSMenu(title: "View")
-        view.addItem(withTitle: "New Session", action: #selector(newSession(_:)), keyEquivalent: "n").target = self
+        view.addItem(withTitle: "Connect to Network…", action: #selector(showNetwork(_:)), keyEquivalent: "n").target = self
+        view.addItem(withTitle: "Activity", action: #selector(showActivity(_:)), keyEquivalent: "i").target = self
+        let newSession = view.addItem(withTitle: "New Session", action: #selector(newSession(_:)), keyEquivalent: "n")
+        newSession.keyEquivalentModifierMask = [.command, .shift]
+        newSession.target = self
         view.addItem(withTitle: "AI Provider…", action: #selector(chooseAI(_:)), keyEquivalent: "").target = self
         view.addItem(withTitle: "What AI UI Knows About You…", action: #selector(showProfile(_:)), keyEquivalent: "").target = self
         view.addItem(withTitle: "Utility Library…", action: #selector(showLibrary(_:)), keyEquivalent: "").target = self

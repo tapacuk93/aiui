@@ -161,6 +161,18 @@ final class Usage {
         persist()
     }
 
+    /// Totals for the activity screen: applets, improvements so far, the next one due.
+    func summary() -> [String: Any] {
+        let live = scenes.values.filter { $0.mergedInto == nil }
+        var r: [String: Any] = ["applets": live.count, "improvements": live.reduce(0) { $0 + $1.improves },
+                                "paused": live.filter { $0.paused == true }.count,
+                                "declared": live.filter { $0.schedule != nil }.count]
+        if let next = live.filter({ $0.paused != true }).compactMap({ s in s.nextImprove.map { (s, $0) } }).min(by: { $0.1 < $1.1 }) {
+            r["next"] = ["key": next.0.key, "title": next.0.title, "at": next.1.timeIntervalSince1970 * 1000]
+        }
+        return r
+    }
+
     func scheduleInfo(_ key: String) -> [String: Any]? {
         guard let s = scenes[key] else { return nil }
         let sch = s.schedule ?? .fallback
