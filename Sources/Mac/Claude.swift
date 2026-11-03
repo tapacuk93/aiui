@@ -100,6 +100,7 @@ final class Claude {
                             lock.lock(); screen = input; lock.unlock()
                             onMain { progress("composing screen") }
                         } else {
+                            if let cmd = input["command"] as? String { Shell.noteMedia(in: cmd) }
                             let detail = Self.describe(tool: name, input: input)
                             onMain { progress(detail) }
                         }
@@ -172,6 +173,7 @@ final class Claude {
             return
         }
         process = p
+        Shell.adopt(p)
         // Watchdog: a call that runs past its deadline is ended (the page has its own limits too).
         let deadline = persistent ? 180.0 : 100.0
         DispatchQueue.main.asyncAfter(deadline: .now() + deadline) { [weak self, weak p] in

@@ -12,6 +12,7 @@ final class Utilities {
         var path: [String]
         var name: String
         var kind: String          // "js" | "css"
+        var role: String?         // "util" (helper functions) | "component" (reusable UI for scenes)
         var description: String
         var usage: String
         var code: String
@@ -75,6 +76,7 @@ final class Utilities {
             let prev = modules[id]
             modules[id] = Module(id: id, path: path.isEmpty ? ["misc"] : path, name: name,
                                  kind: (m["kind"] as? String) == "css" ? "css" : "js",
+                                 role: (m["role"] as? String) == "component" ? "component" : (m["role"] as? String) == "util" ? "util" : prev?.role,
                                  description: m["description"] as? String ?? prev?.description ?? "",
                                  usage: m["usage"] as? String ?? prev?.usage ?? "",
                                  code: code, version: (prev?.version ?? 0) + 1, uses: prev?.uses ?? 0,
@@ -136,7 +138,8 @@ final class Utilities {
             let m = pair.0
             let name: String = (m.path + [m.name]).joined(separator: " › ")
             let usage: String = m.usage.isEmpty ? "" : " · usage: \(m.usage)"
-            return "\(name) (\(m.kind)) — \(m.description)\(usage) [\(m.id)]"
+            let role: String = m.role ?? (m.kind == "css" ? "component" : "util")
+            return "\(name) (\(role), \(m.kind), v\(m.version)) — \(m.description)\(usage) [\(m.id)]"
         }
     }
 
@@ -238,6 +241,7 @@ final class Utilities {
             let olds = from.compactMap { modules[$0] }
             modules[nid] = Module(id: nid, path: path.isEmpty ? ["misc"] : path, name: name,
                                   kind: (into["kind"] as? String) == "css" ? "css" : "js",
+                                  role: olds.compactMap(\.role).first,
                                   description: into["description"] as? String ?? "", usage: into["usage"] as? String ?? "",
                                   code: code, version: (olds.map(\.version).max() ?? 0) + 1,
                                   uses: olds.reduce(0) { $0 + $1.uses }, created: olds.map(\.created).min() ?? now,
@@ -268,7 +272,7 @@ final class Utilities {
             "categories": cats.sorted { $0.value.uses != $1.value.uses ? $0.value.uses > $1.value.uses : $0.key < $1.key }
                 .map { ["name": $0.key, "count": $0.value.count] as [String: Any] },
             "utilities": here.sorted { $0.uses != $1.uses ? $0.uses > $1.uses : $0.name < $1.name }
-                .map { ["id": $0.id, "name": $0.name, "icon": $0.kind == "css" ? "🎨" : "🧩",
+                .map { ["id": $0.id, "name": $0.name, "icon": ($0.role ?? ($0.kind == "css" ? "component" : "util")) == "component" ? "🧩" : "🔧",
                         "description": "v\($0.version) · " + $0.description, "uses": $0.uses, "version": $0.version,
                         "improves": $0.improves ?? 0, "findings": $0.findings?.count ?? 0] as [String: Any] },
             "total": modules.count,

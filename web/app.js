@@ -8,6 +8,8 @@ const el = {
   status: $('#status'), go: $('#go'), toast: $('#toast'),
   prev: $('#prev'), more: $('#more'), stage: $('#stage'), close: $('#close'), top: $('#top'), who: $('#who'), full: $('#full'), ctx: $('#ctx'),
   activity: $('#activity'), pauseBtn: $('#pauseBtn'), settingsBtn: $('#settingsBtn'),
+  console: $('#console'), consoleLog: $('#consoleLog'), consoleForm: $('#consoleForm'), consoleInput: $('#consoleInput'),
+  consoleBtn: $('#consoleBtn'), sceneBar: $('#sceneBar'),
 };
 
 // Human capabilities, each backed by technical ones.
@@ -60,7 +62,25 @@ const DEADLINES = {
   translate: 90000, profile: 180000, utilities: 10000, engine: 60000, cache: 10000, sys: 60000,
   info: 10000, adopt: 10000, cancel: 10000, reset: 10000, window: 10000,
 };
-const CHANNEL = { more: 'pager', suggest: 'suggest', prefetch: 'scout', refine: 'refine', quick: 'quick' };
+const CHANNEL = { more: 'pager', suggest: 'suggest', prefetch: 'scout', refine: 'refine', quick: 'quick', tests: 'tester', menus: 'menus' };
+
+// AI requests still running, per channel, and what they are for. A request whose answer is no
+// longer needed (its screen was left, typing stopped, the full answer came) is cancelled at once.
+const running = {}; // channel -> { screen, seq }
+let runSeq = 0;
+function stale(ch, r) {
+  if (ch === 'suggest') return !typing() || r.screen !== current.screen;
+  if (ch === 'quick') return !busy;
+  return r.screen !== current.screen;
+}
+function dropStale() {
+  for (const [ch, r] of Object.entries(running)) {
+    if (!stale(ch, r)) continue;
+    delete running[ch];
+    log('ai', `✂️ cancelled ${ch}: no longer needed`);
+    rawCall('cancel', { [ch]: true }).catch(() => {});
+  }
+}
 
 // What each kind of call is, in words, for the status bar (trivial calls stay silent).
 function activityTitle(name, b = {}) {
@@ -95,6 +115,12 @@ function call(name, body) {
 }
 
 function callRaw(name, body) {
+  const ch = CHANNEL[name];
+  if (ch) { const id = ++runSeq; running[ch] = { screen: current.screen, seq: id };
+    return callTimed(name, body).finally(() => { if (running[ch] && running[ch].seq === id) delete running[ch]; }); }
+  return callTimed(name, body);
+}
+function callTimed(name, body) {
   const ms = DEADLINES[name] || 30000;
   let timer;
   const deadline = new Promise((_, reject) => {
@@ -136,17 +162,23 @@ window.aiui = {
   library: () => showLibrary([]),
   system: () => showSystem(),
   state: { load: async () => sceneState(), save: (obj) => saveSceneState(obj) },
+  app: { get: (k) => appGet(k), set: (k, v) => appSet(k, v), subscribe: (k, fn) => appSubscribe(k, fn) },
+  media: { play: (url, title) => mediaPlay(url, title), pause: () => mediaPause(), resume: () => mediaResume(),
+    stop: () => mediaStop(), state: () => mediaInfo() },
   goTo: (i) => goTo(i), setting: (k, v) => setSetting(k, v), action: (n, a) => settingsAction(n, a),
   settings: () => ({ ...settings, paused }),
   reloadScene: () => reloadScene(), find: () => find(), forward: () => forward(), zoom: (d) => zoom(d), print: () => printScene(),
   jsLibraries: () => showJSLibraries(),
   get screen() { return current.screen; },
   _event(e) {
-    if (e.type === 'improved') return onImproved(e);
+    if (e.type === 'consoleProgress') return log('ai', e.text);
+    if (e.type === 'appChanged') { log('activity', `app ↺ ${e.key}`); return appNotify(e.key, e.value); }
+    if (e.type === 'improved') { log('done', `✨ improved «${e.title}»`); return onImproved(e); }
     if (e.type === 'componentImproved') return onComponentImproved(e);
     if (e.type === 'activity') { if (e.done) activityEnd(e.id); else activityStart(e.id, e.title); return; }
     if (e.type !== 'progress') return;
     activityDetail('ai', e.text);
+    log('ai', e.text);
     el.status.textContent = e.text;
     // The circle being opened shows what is happening inside it.
     const hint = pendingCircle && pendingCircle.querySelector('.progress');
@@ -290,6 +322,8 @@ const HARD_LIMIT_MS = 150000;    // give up on the full answer
 
 function normalize(s) {
   s = s && typeof s === 'object' ? s : {};
+  // A screen's declared bottom-bar icons (kept apart from the live list a scene builds).
+  if (Array.isArray(s.bar)) { s.declaredBar = s.bar; delete s.bar; }
   if (!s.kind) s.kind = s.html ? 'html' : s.circles ? 'circles' : 'text';
   if (s.circles) {
     const ids = new Set();
@@ -313,6 +347,7 @@ async function cancel() {
 
 function setBusy(on, circle) {
   busy = on;
+  if (!on) setTimeout(dropStale);
   document.body.classList.toggle('busy', on);
   if (pendingCircle) {
     pendingCircle.classList.remove('pending');
@@ -476,7 +511,9 @@ function render() {
   document.body.classList.add('mode-' + s.kind);
 
   if (s.kind !== 'circles') el.circles.innerHTML = '';
+  continueSceneAudio();
   el.view.innerHTML = '';
+  dropStale();
 
   if (s.kind === 'circles') renderCircles(s);
   else if (s.kind === 'html') { renderHTML(s); watchView(s); }
@@ -484,10 +521,18 @@ function render() {
   updateGo();
   fitStage();
   layoutPages(typing());
+  if (!s.barApplied) {
+    s.barApplied = true;
+    for (const id of s.barRemove || []) barRemove(id);
+    for (const b of (s.declaredBar || [])) barAdd(b, false);
+  }
   if (s.kind === 'circles') { initFocus(s); maybeRefine(s); if (!s.local) scheduleMenus(s, ['circle', 'empty-space']); }
   updateAddress();
   renderActivity();
   trackUsage();
+  renderSceneBar();
+  saveNav();
+  setTimeout(tellSceneNowPlaying, 300);
   s.shownAt = s.shownAt || Date.now();
   el.full.hidden = !s.fullscreen;
   if (!s.fullscreen && document.body.classList.contains('immersive')) setImmersive(false);
@@ -941,9 +986,85 @@ const SCENE_SHIM = `<script>(() => {
   aiui.onBack = reg('back');
   aiui.onMore = reg('more');
   aiui.onFind = (fn) => { handlers.find = fn; };
+  // Reloads keep audio going: playing media is handed to the app player, and a reloaded scene
+  // doesn't start a second copy of what the app is already playing.
+  let appPlaying = window.__appPlaying || null;
+  const played = new Set(); // every media element this scene played, in the DOM or not (new Audio())
+  const realPlay = HTMLMediaElement.prototype.play;
+  HTMLMediaElement.prototype.play = function () {
+    if (!played.has(this)) {
+      played.add(this);
+      for (const ev of ['playing', 'pause', 'ended', 'seeked', 'ratechange', 'emptied']) this.addEventListener(ev, () => reportPlaying());
+    }
+    if (appPlaying && (this.currentSrc || this.src) === appPlaying) return Promise.resolve();
+    return realPlay.call(this);
+  };
+  // Sound playing now (video only when it isn't seen — leaving a visible video stops it).
+  const playingNow = () => [...played, ...document.querySelectorAll('audio,video')].find((x) => !x.paused && !x.ended && (x.currentSrc || x.src)
+    && (x.tagName !== 'VIDEO' || !x.isConnected || !x.offsetWidth));
+  addEventListener('message', (e) => {
+    const d = e.data || {};
+    if ('aiuiNowPlaying' in d) appPlaying = d.aiuiNowPlaying;
+    if (d.aiuiHandoff) {
+      window.__handedOff = true;
+      const m = playingNow();
+      parent.postMessage({ aiuiHandoffReply: m ? { url: m.currentSrc || m.src, time: m.currentTime, title: m.title || document.title || '' } : null }, '*');
+      if (m) m.pause();
+    }
+  });
+  // Typing on a scene: a scene that doesn't listen to keys gives every typed character to the
+  // app's text input; a scene that does keeps its keys, and a lone ⌘ press opens the input.
+  const realAdd = EventTarget.prototype.addEventListener;
+  let keyListeners = 0;
+  EventTarget.prototype.addEventListener = function (type, fn, opts) {
+    if (/^key(down|up|press)$/.test(type) && (this === window || this === document || this === document.documentElement || this === document.body)) keyListeners++;
+    return realAdd.call(this, type, fn, opts);
+  };
+  const listensToKeys = () => keyListeners > 0 || !!(window.onkeydown || window.onkeypress || document.onkeydown || document.onkeypress
+    || (document.body && (document.body.onkeydown || document.body.onkeypress)));
+  let metaDown = 0;
+  realAdd.call(window, 'keydown', (e) => {
+    if (e.key === 'Meta') { metaDown = performance.now(); return; }
+    metaDown = 0;
+    const t = e.target;
+    if (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName)) return;
+    if (e.key.length !== 1 || e.key === '\`' || e.metaKey || e.ctrlKey || e.altKey || e.defaultPrevented) return;
+    if (e.key === ' ' && t !== document.body && t !== document.documentElement) return;
+    if (listensToKeys()) return;
+    e.preventDefault();
+    parent.postMessage({ aiuiType: e.key }, '*');
+  });
+  realAdd.call(window, 'keyup', (e) => {
+    if (e.key === 'Meta' && metaDown && performance.now() - metaDown < 600) parent.postMessage({ aiuiType: '' }, '*');
+    metaDown = 0;
+  });
+  realAdd.call(window, 'mousedown', () => { metaDown = 0; }, true);
+  realAdd.call(window, 'blur', () => { metaDown = 0; });
+  // What plays here (so the app keeps playing it when this scene is left).
+  function reportPlaying() {
+    if (window.__handedOff) return;
+    const m = playingNow();
+    const url = m && (m.currentSrc || m.src);
+    parent.postMessage({ aiuiPlaying: url && !/^blob:/.test(url) ? { url, time: m.currentTime, rate: m.playbackRate || 1, title: m.title || document.title || '' } : null }, '*');
+  }
+  for (const ev of ['playing', 'pause', 'ended', 'seeked', 'ratechange', 'emptied']) document.addEventListener(ev, reportPlaying, true);
+  addEventListener('message', (e) => { const d = e.data || {}; if (d.aiuiAppChanged && window.__appSubs && window.__appSubs[d.key]) window.__appSubs[d.key](d.value); });
+  // Icons in the app's bottom bar (left), while this scene is on screen.
+  const barFns = {};
+  aiui.bar = {
+    // fn: runs in this scene; a string: a request to the AI. { global: true } keeps it across
+    // screens and launches (prompt only — the scene's own code can't run after it is left).
+    add(id, icon, title, fn, opts = {}) {
+      if (typeof fn === 'function') barFns[id] = fn;
+      parent.postMessage({ aiuiBar: { id: String(id), icon: String(icon).slice(0, 4), title: String(title || '').slice(0, 60),
+        prompt: typeof fn === 'string' ? fn.slice(0, 500) : undefined, global: !!opts.global && typeof fn === 'string' } }, '*');
+    },
+    remove(id) { delete barFns[id]; parent.postMessage({ aiuiBarRemove: String(id) }, '*'); },
+  };
+  addEventListener('message', (e) => { const d = e.data || {}; if (d.aiuiBarClick && barFns[d.aiuiBarClick]) barFns[d.aiuiBarClick](); });
   // Usage: interactions, reported every few seconds.
   let interactions = 0;
-  for (const ev of ['pointerdown', 'keydown']) addEventListener(ev, () => { interactions++; }, true);
+  for (const ev of ['pointerdown', 'keydown']) realAdd.call(window, ev, () => { interactions++; }, true);
   setInterval(() => { if (interactions) { parent.postMessage({ aiuiUsage: interactions }, '*'); interactions = 0; } }, 5000);
   // Live screenshot on request (html2canvas from the library store, else the CDN).
   addEventListener('message', async (e) => {
@@ -984,7 +1105,10 @@ const LAB_MOCK = `<script>(() => {
     sys: mc({ ok: true, code: 0, stdout: '', stderr: '', text: '' }), next: mc(null), back: mc(null), home: mc(null),
     memory: { search: mc([]), stats: mc({}) },
     onBack(fn) { window.__handlers.back = fn; }, onMore(fn) { window.__handlers.more = fn; },
-    state: { _s: null, async load() { return this._s; }, save(o) { this._s = JSON.parse(JSON.stringify(o)); window.__mockCalls++; } } };
+    state: { _s: null, async load() { return this._s; }, save(o) { this._s = JSON.parse(JSON.stringify(o)); window.__mockCalls++; } },
+    bar: { add(id, icon, title, fn) { (window.__handlers.bar = window.__handlers.bar || {})[id] = fn; }, remove() {} },
+    app: { _v: {}, async get(k) { return this._v[k] ?? null; }, set(k, v) { this._v[k] = v; window.__mockCalls++; }, subscribe() {} },
+    media: { play: mc(null), pause: mc(null), resume: mc(null), stop: mc(null), state: mc({}) } };
   const of = window.fetch.bind(window); window.fetch = (...a) => { window.__activity++; return of(...a); };
   for (const k of ['setTimeout', 'setInterval', 'requestAnimationFrame']) { const o = window[k].bind(window); window[k] = (...a) => { window.__activity++; return o(...a); }; }
   const op = HTMLMediaElement.prototype.play; HTMLMediaElement.prototype.play = function () { window.__activity++; return op.call(this).catch(() => {}); };
@@ -1019,6 +1143,7 @@ let labFor = null;
 
 function labResult(r) {
   activityEnd('lab');
+  if (r && r.scores) log('qa', `lab (phone, other theme) — UX ${r.scores.ux} · readability ${r.scores.readability} · accessibility ${r.scores.accessibility} · ${(r.corners || []).filter((c) => !c.ok).length} corner case(s) failing`);
   if (!labFor) return;
   const { frame, screen: s } = labFor;
   frame.remove(); labFor = null;
@@ -1136,6 +1261,7 @@ function qaReason(where, r) {
 
 function viewReview(r) {
   const s = current.screen;
+  if (r && r.scores) log('qa', `«${s.title}» on screen — UX ${r.scores.ux} · readability ${r.scores.readability} · accessibility ${r.scores.accessibility}${(r.issues || []).length ? ' · ' + r.issues.length + ' issue(s): ' + r.issues.slice(0, 3).join(' | ') : ''}`);
   if (s.kind !== 'html' || s.reviewed) return;
   s.reviewed = true;
   revealView();
@@ -1152,6 +1278,7 @@ let lastQuality = null;
 
 function revealView() {
   activityEnd('review');
+  el.view.classList.remove('checking');
   const f = el.view.querySelector('iframe');
   if (f) f.classList.remove('testing');
 }
@@ -1184,6 +1311,7 @@ async function selfFix(s, reason) {
     });
     const fixed = normalize(screen);
     fixed.fixed = true;
+    if (current === entry) await handoffMedia();
     entry.screen = fixed;
     if (current === entry && !typing()) { render(); flashStatus(t('fixed')); }
   } catch (e) {
@@ -1206,12 +1334,20 @@ const FRAME_SHIM = `<script>(() => {
   const rpc = (m, a) => new Promise((res, rej) => { const id = ++n; pend[id] = { res, rej }; parent.postMessage({ aiuiCall: id, m, a }, '*'); });
   window.aiui = {
     state: { load: () => rpc('state.load'), save: (o) => rpc('state.save', o) },
+    app: { get: (k) => rpc('app.get', k), set: (k, v) => rpc('app.set', [k, v]),
+      subscribe: (k, fn) => { (window.__appSubs = window.__appSubs || {})[k] = fn; rpc('app.subscribe', k); } },
+    media: { play: (u, t) => rpc('media.play', [u, t]), pause: () => rpc('media.pause'), resume: () => rpc('media.resume'),
+      stop: () => rpc('media.stop'), state: () => rpc('media.state') },
     ready: () => rpc('ready'), setting: (k, v) => rpc('setting', [k, v]), action: (n, a) => rpc('action', [n, a]),
     settings: () => rpc('settings'), sys: (o) => rpc('sys', o), next: (d) => rpc('next', d), back: () => rpc('back'), home: () => rpc('home'),
     memory: { search: (q) => rpc('memory.search', q), stats: () => rpc('memory.stats') } };
   addEventListener('keydown', (e) => {
+    if (e.key === '\`' && !e.metaKey && !e.ctrlKey && !e.altKey) { e.preventDefault(); e.stopImmediatePropagation(); parent.postMessage({ aiuiKey: '\`' }, '*'); return; }
+  }, true);
+  addEventListener('keydown', (e) => {
     const t = e.target; if (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName)) return;
-    if (e.key === 'Backspace' || e.key === 'Escape') { e.preventDefault(); parent.postMessage({ aiuiKey: e.key }, '*'); }
+    if (e.key === 'Backspace' || e.key === 'Escape' || e.key === '\`') { e.preventDefault(); parent.postMessage({ aiuiKey: e.key }, '*'); }
+    if ((e.metaKey || e.ctrlKey) && /^[fp=\\-0\\[\\]r]$/i.test(e.key)) { e.preventDefault(); parent.postMessage({ aiuiKey: e.key, meta: true, shift: e.shiftKey }, '*'); }
   });
   addEventListener('click', (e) => {
     const a = e.target.closest && e.target.closest('a[href]'); if (!a) return;
@@ -1233,6 +1369,11 @@ window.addEventListener('message', async (e) => {
     (s.listens || (s.listens = {}))[d.aiuiListen] = true;
     return updatePager();
   }
+  if (d.aiuiBar) return barAdd(d.aiuiBar, true);
+  if (d.aiuiBarRemove) return barRemove(d.aiuiBarRemove);
+  if ('aiuiType' in d) { typeFromScene(d.aiuiType); return; }
+  if ('aiuiPlaying' in d) { scenePlaying = d.aiuiPlaying ? { ...d.aiuiPlaying, at: Date.now() } : null; return; }
+  if ('aiuiHandoffReply' in d) { const r = handoffWait; handoffWait = null; if (r) r(d.aiuiHandoffReply); return; }
   if (d.aiuiUsage) { usageNote(current, { interactions: d.aiuiUsage }); return; }
   if ('aiuiShot' in d) { if (d.aiuiShot) usageNote(current, { screenshot: d.aiuiShot }); return; }
   if (d.aiuiContext) {
@@ -1243,12 +1384,15 @@ window.addEventListener('message', async (e) => {
   if (d.aiuiInvoked != null) { const r = sceneCalls[d.aiuiInvoked]; delete sceneCalls[d.aiuiInvoked]; if (r) r(!!d.handled); return; }
   if (d.aiuiHealth) return viewHealth(d.aiuiHealth);
   if (d.aiuiReview) return viewReview(d.aiuiReview);
-  if (d.aiuiKey) return onKey(new KeyboardEvent('keydown', { key: d.aiuiKey }));
+  if (d.aiuiKey) return onKey(new KeyboardEvent('keydown', { key: d.aiuiKey, metaKey: !!d.meta, shiftKey: !!d.shift }));
   if (d.aiuiCall == null) return;
   if (d.aiuiHealth) return viewHealth(d.aiuiHealth);
   if (d.aiuiReview) return viewReview(d.aiuiReview);
   const fns = { sys: (a) => aiui.sys(a), next: (a) => aiui.next(a), back: () => aiui.back(), home: () => aiui.home(),
     'state.load': () => sceneState(), 'state.save': (o) => saveSceneState(o),
+    'app.get': (k) => appGet(k), 'app.set': (a) => appSet(a[0], a[1]), 'app.subscribe': (k) => appSubscribeFrame(k, e.source),
+    'media.play': (a) => mediaPlay(a[0], a[1]), 'media.pause': () => mediaPause(), 'media.resume': () => mediaResume(),
+    'media.stop': () => mediaStop(), 'media.state': () => mediaInfo(),
     ready: () => viewReady(), setting: (a) => setSetting(a[0], a[1]), action: (a) => settingsAction(a[0], a[1]),
     settings: () => aiui.settings(),
     'memory.search': (q) => aiui.memory.search(q), 'memory.stats': () => aiui.memory.stats() };
@@ -1286,8 +1430,9 @@ function renderHTML(s) {
   // Rendered hidden first: the UI test runs on this very render, which is then revealed.
   if (!s.local && !s.reviewed) {
     frame.classList.add('testing');
+    el.view.classList.add('checking');
     activityStart('review', t('actReview'));
-    setTimeout(() => { if (current.screen === s) revealView(); }, 6000); // never hidden for long
+    setTimeout(() => { if (current.screen === s) revealView(); }, 2500); // never hidden for long
   }
   if (!NATIVE) frame.setAttribute('sandbox', 'allow-scripts allow-forms allow-popups allow-modals');
   frame.setAttribute('allow', 'clipboard-read; clipboard-write; autoplay; fullscreen; microphone; camera; geolocation');
@@ -1299,7 +1444,8 @@ function renderHTML(s) {
     ::-webkit-scrollbar{width:8px}::-webkit-scrollbar-thumb{background:var(--line);border-radius:4px}
   </style>`;
   const real = HEALTH_SHIM + (s.local ? '' : qaShim('review')) +
-    (NATIVE ? '<script>window.aiui = Object.create(parent.aiui);<\/script>' : FRAME_SHIM) + SCENE_SHIM;
+    (NATIVE ? '<script>window.aiui = Object.create(parent.aiui);<\/script>' : FRAME_SHIM) +
+    `<script>window.__appPlaying = ${JSON.stringify(nowPlaying && !player.paused ? nowPlaying.url : null).replace(/</g, '\\u003c')};<\/script>` + SCENE_SHIM;
   el.view.appendChild(frame);
   const screen = s;
   Promise.all([jsLibsFor(s), libraryFor(s)]).then(([libs, lib]) => {
@@ -1316,7 +1462,10 @@ function renderHTML(s) {
     if (!NATIVE) return; // sandboxed: the shim handles keys and links
     const doc = frame.contentDocument;
     if (!doc) return;
-    doc.addEventListener('keydown', onKey);
+    doc.addEventListener('keydown', (e) => {
+      if (e.key === '`' && !e.metaKey && !e.ctrlKey && !e.altKey) { e.preventDefault(); e.stopImmediatePropagation(); return toggleConsole(); }
+      onKey(e);
+    }, true);
     doc.addEventListener('click', (e) => {
       const a = e.target.closest && e.target.closest('a[href]');
       if (!a) return;
@@ -1438,7 +1587,7 @@ function edge(step) {
 // Circles live-update around the input: first the typed text itself (focused by default; Enter
 // sends it), then matching circles of this screen, then circles the AI suggests for the input.
 
-const live = { focus: '__typed', circles: [], q: '', timer: 0, token: 0 };
+const live = { focus: '__typed', circles: [], q: '', timer: 0, token: 0, understood: null };
 
 function typing() {
   return document.body.classList.contains('typing');
@@ -1449,7 +1598,7 @@ function startWriting(text) {
   document.body.classList.add('typing');
   document.body.classList.toggle('typing-text', s.kind === 'text');
   if (text != null) el.write.value = text;
-  el.write.placeholder = s.kind === 'text' ? '' : t('typeHint');
+  el.write.placeholder = s.kind === 'text' ? '' : s.kind === 'html' ? t('typeOnScene') : t('typeHint');
   el.write.focus();
   autosize();
   fitStage();
@@ -1457,13 +1606,31 @@ function startWriting(text) {
   updateGo();
 }
 
+// A character typed on a scene (or a lone ⌘: '') opens the input with it.
+function typeFromScene(ch) {
+  if (busy && !ch) return;
+  if (!typing()) startWriting(el.write.value + (ch || ''));
+  else if (ch) el.write.setRangeText(ch, el.write.selectionStart, el.write.selectionEnd, 'end');
+  el.write.focus();
+  if (ch) onInput();
+}
+// A lone ⌘ press opens the input on any screen.
+let metaDownAt = 0;
+document.addEventListener('keydown', (e) => { metaDownAt = e.key === 'Meta' ? performance.now() : 0; }, true);
+document.addEventListener('keyup', (e) => {
+  if (e.key === 'Meta' && metaDownAt && performance.now() - metaDownAt < 600 && !typing() && el.console.hidden) typeFromScene('');
+  metaDownAt = 0;
+}, true);
+document.addEventListener('mousedown', () => { metaDownAt = 0; }, true);
+window.addEventListener('blur', () => { metaDownAt = 0; });
+
 function stopWriting(clear) {
   const was = typing();
   document.body.classList.remove('typing', 'typing-text');
   if (clear) el.write.value = '';
   el.write.blur();
   clearTimeout(live.timer);
-  live.circles = []; live.q = ''; live.token++;
+  live.circles = []; live.q = ''; live.understood = null; live.token++;
   autosize();
   fitStage();
   if (was && current.screen.kind === 'circles') { renderCircles(current.screen); layoutPages(true); initFocus(current.screen); }
@@ -1486,9 +1653,13 @@ el.close.addEventListener('mousedown', (e) => { e.preventDefault(); e.stopPropag
 function submitText(node) {
   const text = el.write.value.trim();
   if (!text) return;
+  rememberTyped(text);
   if (current.screen.local === 'key') return connectKey(text);
   const circle = node || [...el.circles.children].find((n) => n.dataset.id === '__typed' && !n.hidden) || null;
-  ask({ event: 'text', text }, { label: text.length > 28 ? text.slice(0, 26) + '…' : text, circle });
+  // Straight into the screen that does it, as understood.
+  const u = live.understood && live.q === text ? live.understood.label : null;
+  const label = u || (text.length > 28 ? text.slice(0, 26) + '…' : text);
+  ask({ event: 'text', text, direct: true, ...(u ? { understood: u } : {}) }, { label, circle });
 }
 
 function matchScore(c, q) {
@@ -1502,11 +1673,14 @@ function matchScore(c, q) {
 
 // The circles shown for the current input.
 function visibleCircles(s) {
-  const q = el.write.value.trim();
+  const q = typedText().trim();
   if (!typing() || !q || s.kind !== 'circles') return s.circles || [];
   const ql = q.toLowerCase();
-  const typed = { id: '__typed', typed: true, icon: '✍️', label: q.length > 42 ? q.slice(0, 40) + '…' : q,
-    hint: t('asTyped'), size: 1.1 };
+  // The main circle: the raw text, until the AI says how it understood it.
+  const u = live.understood && live.q === q ? live.understood : null;
+  const typed = u
+    ? { id: '__typed', typed: true, understood: true, icon: u.icon || '💡', label: u.label, hint: u.hint || t('asUnderstood'), size: 1.15 }
+    : { id: '__typed', typed: true, icon: '✍️', label: q.length > 42 ? q.slice(0, 40) + '…' : q, hint: t('asTyped'), size: 1.1 };
   const matches = (s.circles || []).filter((c) => !c.removed)
     .map((c) => [c, matchScore(c, ql)]).filter(([, v]) => v > 0)
     .sort((a, b) => b[1] - a[1]).map(([c]) => c);
@@ -1524,13 +1698,38 @@ function rerenderLive() {
   updateGo();
 }
 
-function onInput() {
+// What the user actually typed: the text without an autocompleted (selected) tail.
+function typedText() {
+  const w = el.write;
+  return (w.selectionStart < w.value.length && w.selectionEnd === w.value.length ? w.value.slice(0, w.selectionStart) : w.value);
+}
+
+// Autocomplete to the most recent continuation: past texts that start with what is typed.
+function typedHistory() { try { return JSON.parse(localStorage.getItem('aiui.typed')) || []; } catch { return []; } }
+function rememberTyped(text) {
+  const h = [text, ...typedHistory().filter((x) => x !== text)].slice(0, 300);
+  try { localStorage.setItem('aiui.typed', JSON.stringify(h)); } catch {}
+}
+function autocomplete(ev) {
+  const w = el.write;
+  if (!ev || !/^insert/.test(ev.inputType || '') || w.selectionStart !== w.value.length) return;
+  const typed = w.value;
+  if (typed.trim().length < 2) return;
+  const match = typedHistory().find((x) => x.length > typed.length && x.toLowerCase().startsWith(typed.toLowerCase()));
+  if (!match) return;
+  w.value = typed + match.slice(typed.length);
+  w.setSelectionRange(typed.length, w.value.length);
+}
+
+function onInput(ev) {
+  autocomplete(ev);
   autosize();
   updateGo();
   const s = current.screen;
   if (s.kind !== 'circles') return;
-  const q = el.write.value.trim();
+  const q = typedText().trim();
   if (!q) { live.circles = []; live.focus = '__typed'; }
+  if (live.q !== q) live.understood = null; // the text changed: back to the raw text until re-understood
   if (!focusManual) live.focus = '__typed';
   focusManual = false;
   rerenderLive();
@@ -1553,6 +1752,7 @@ async function suggestFor(q) {
     });
     if (tok !== live.token || screen !== current.screen || !typing()) return;
     live.q = q;
+    live.understood = r.understood && r.understood.label ? r.understood : null;
     live.circles = (r.circles || []).filter((c) => c && c.label)
       .map((c, i) => ({ ...c, id: 's~' + (c.id || i), suggested: true }));
     rerenderLive();
@@ -1606,6 +1806,12 @@ el.write.addEventListener('keydown', (e) => {
     return submitText();
   }
   if (e.key === 'Escape') { e.preventDefault(); return escapeWriting(); }
+  const w = el.write;
+  if ((e.key === 'Tab' || e.key === 'End') && !e.shiftKey && w.selectionEnd === w.value.length && w.selectionStart < w.value.length) {
+    e.preventDefault();
+    w.setSelectionRange(w.value.length, w.value.length);
+    return onInput();
+  }
   if (kind === 'circles') {
     const empty = !el.write.value;
     // Plain arrows move between the circles; with ⌥/⌘/Shift they edit the text as usual.
@@ -1667,6 +1873,7 @@ function isEditable(t) {
 }
 
 function onKey(e) {
+  if (e.key === '`' && !e.metaKey && !e.ctrlKey && !e.altKey) { e.preventDefault(); e.stopPropagation(); return toggleConsole(); }
   if (e.metaKey && e.shiftKey && (e.key === 'd' || e.key === 'D')) { e.preventDefault(); return showSystem(); }
   const mod = e.metaKey || e.ctrlKey;
   if (mod && !e.altKey) {
@@ -1725,6 +1932,10 @@ function onKey(e) {
   }
 }
 document.addEventListener('keydown', onKey);
+// ` toggles the console from anywhere — before any input or scene handler sees it.
+window.addEventListener('keydown', (e) => {
+  if (e.key === '`' && !e.metaKey && !e.ctrlKey && !e.altKey && e.target !== el.consoleInput) { e.preventDefault(); e.stopImmediatePropagation(); toggleConsole(); }
+}, true);
 let backspaceHeldAt = 0, backspaceDone = false;
 document.addEventListener('keyup', (e) => { if (e.key === 'Backspace') { backspaceHeldAt = 0; backspaceDone = false; } });
 
@@ -1746,6 +1957,7 @@ function flashStatus(text) {
 
 let toastTimer;
 function toast(msg) {
+  log('error', msg);
   el.toast.textContent = msg;
   el.toast.classList.add('on');
   clearTimeout(toastTimer);
@@ -1758,7 +1970,7 @@ function toast(msg) {
 
 const STR = {
   go: 'Go', send: 'Send', back: '‹ Back', more: 'More ›', thinking: 'thinking', fromMemory: 'from memory',
-  asTyped: 'as typed',
+  asTyped: 'as typed', asUnderstood: 'as understood', typeOnScene: 'Type about this scene — Enter sends, Esc closes',
   typeHint: 'Type — arrows pick a circle, Enter opens it, ⌥Enter new line, Esc closes',
   guest: 'guest', whoTitle: 'Is it still you?',
   whoMsg: 'This session looks different from how you usually use AI UI.',
@@ -1767,7 +1979,7 @@ const STR = {
   aboutYou: 'About you', aboutYouEmpty: 'Nothing learned yet. It builds up as you use the app.',
   tooLong: 'This took too long — try again, or ask differently.',
   fixing: 'this screen got stuck — fixing…', fixed: 'fixed', couldNotFix: 'Could not fix this screen:', stillWorking: 'still working', updated: 'updated', updating: 'updating…',
-  improvedLive: 'improved — reloaded live, state kept', scenesTitle: 'Scenes — usage and self-improvement',
+  improvedLive: 'improved — reloaded live, state kept', mediaFailed: 'could not play', checking: 'checking the scene…', scenesTitle: 'Scenes — usage and self-improvement',
   settingsTitle: 'Settings', setPause: 'Pause all background work', setPrefetch: 'Prepare screens while the pointer heads to a circle',
   setRefine: 'Refresh live circles with real data', setMenus: 'AI context menus', setQa: 'Test every scene (layout, interactions, accessibility)',
   setDod: 'Definition of Done + tests for every scene', setQuick: 'Interim screen after', setQaMin: 'Repair scenes scoring below',
@@ -2262,7 +2474,7 @@ function scheduleMenus(s, classes) {
   const g = median(ctxTiming.gen), u = median(ctxTiming.use);
   const delay = g != null && u != null && g >= u ? 0 : 1500;
   s.menusPending = true;
-  setTimeout(() => generateMenus(s, classes), delay);
+  setTimeout(() => { if (current.screen === s) generateMenus(s, classes); }, delay);
 }
 
 async function generateMenus(s, classes) {
@@ -2361,6 +2573,7 @@ document.addEventListener('pointerdown', (e) => { if (ctxOpen && !e.target.close
 // ---------------------------------------------------------------- journal (for retrospectives)
 // What went wrong goes to the journal; the retrospective turns it into hints for future screens.
 function journal(kind, s, detail) {
+  log('journal', `${kind} · ${(s && s.title) || ''}: ${String(detail || '').slice(0, 300)}`);
   call('journal', { kind, scene: (s && (s.title || s.kind)) || '', detail: String(detail || '').slice(0, 400) }).catch(() => {});
 }
 
@@ -2379,7 +2592,8 @@ function zoom(dir) {
   applyZoom();
   flashStatus(Math.round(zoomLevel * 100) + '%');
 }
-function reloadScene() {
+async function reloadScene() {
+  await handoffMedia();
   const s = current.screen;
   for (const k of ['reviewed', 'ready', 'labbed', 'testsRequested', 'health', 'failures', 'quality']) delete s[k];
   render();
@@ -2413,13 +2627,14 @@ if (zoomLevel !== 1) applyZoom();
 
 const activities = new Map(); // id → { title, detail, at }
 let lastDone = null;          // { title, ms }
-function activityStart(id, title) { activities.set(id, { title, at: performance.now() }); renderActivity(); }
+function activityStart(id, title) { activities.set(id, { title, at: performance.now() }); renderActivity(); log('activity', '▶ ' + title); }
 function activityDetail(id, detail) { const a = activities.get(id); if (a) { a.detail = detail; renderActivity(); } }
 function activityEnd(id) {
   const a = activities.get(id);
   if (!a) return;
   activities.delete(id);
   lastDone = { title: a.title, ms: performance.now() - a.at };
+  log('done', `✓ ${a.title} · ${fmtSecs(lastDone.ms / 1000)}`);
   renderActivity();
 }
 let snapshot = null;
@@ -2431,11 +2646,21 @@ async function refreshSnapshot() {
     renderActivity();
   } catch {}
 }
+// When several things happen at once, the bar shows the one that matters most to the user:
+// what they wait for first (the screen they asked for), then what shapes the screen on display,
+// then background work; the newest wins a tie. The rest are counted and listed in the tooltip.
+const ACT_RANK = { ai: 100, fix: 95, quick: 90, more: 85, suggest: 80, review: 70, lab: 65, tests: 60, refine: 55, translate: 50,
+  menus: 40, prefetch: 35, media: 30, improve: 20, component: 18, librarian: 15, retro: 12, lib: 10, discover: 5 };
+function actRank(id) {
+  const k = String(id).split(/[:\-]/)[0];
+  return ACT_RANK[k] ?? 25;
+}
 function renderActivity() {
-  const list = [...activities.values()];
+  const list = [...activities.entries()].map(([id, a]) => ({ ...a, rank: actRank(id) }))
+    .sort((a, b) => b.rank - a.rank || b.at - a.at);
   el.activity.classList.toggle('busy', list.length > 0);
   if (list.length) {
-    const first = list[list.length - 1];
+    const first = list[0];
     el.activity.textContent = first.title + (first.detail && first.detail !== first.title ? ' — ' + first.detail : '') +
       (list.length > 1 ? `  (+${list.length - 1})` : '');
     el.activity.title = list.map((a) => a.title).join('\n');
@@ -2564,6 +2789,7 @@ async function onImproved(e) {
   try {
     const { screen } = await callRaw('usage', { op: 'outcome', key: e.key });
     if (!screen) return;
+    if (entries.includes(current)) await handoffMedia();
     for (const entry of entries) entry.screen = normalize(screen);
     if (entries.includes(current) && !typing()) { render(); flashStatus('✨ ' + t('improvedLive')); }
   } catch {}
@@ -2573,6 +2799,234 @@ function onComponentImproved(e) {
   if (s.kind === 'html' && (s.uses || []).some((u) => u === e.id)) { reloadScene(); flashStatus('🧩 ' + e.name + ' — ' + (e.changes || t('improvedLive'))); }
 }
 
+// ---------------------------------------------------------------- console (`)
+// A terminal-like console: every log line (activities, AI progress, QA, repairs, journal,
+// errors) and a command line to a console AI with its own conversation, aware of the current
+// context (screen, path, scene state, recent log). It can change the current scene live.
+
+const logLines = [];
+function log(kind, text) {
+  const line = { at: new Date(), kind, text: String(text) };
+  logLines.push(line);
+  if (logLines.length > 500) logLines.shift();
+  if (!el.console.hidden) appendLog(line);
+}
+function appendLog(line) {
+  const atBottom = el.consoleLog.scrollTop + el.consoleLog.clientHeight >= el.consoleLog.scrollHeight - 30;
+  const div = document.createElement('span');
+  div.className = 'l k-' + line.kind;
+  div.innerHTML = `<span class="ts">${line.at.toTimeString().slice(0, 8)}</span> ${esc(line.text)}`;
+  el.consoleLog.appendChild(div);
+  while (el.consoleLog.childElementCount > 500) el.consoleLog.firstChild.remove();
+  if (atBottom) el.consoleLog.scrollTop = el.consoleLog.scrollHeight;
+}
+function toggleConsole(on = el.console.hidden) {
+  el.console.hidden = !on;
+  if (on) {
+    el.consoleLog.innerHTML = '';
+    logLines.forEach(appendLog);
+    el.consoleLog.scrollTop = el.consoleLog.scrollHeight;
+    el.consoleInput.focus();
+  } else el.consoleInput.blur();
+}
+el.consoleBtn.addEventListener('click', (e) => { e.stopPropagation(); toggleConsole(); });
+el.consoleBtn.addEventListener('pointerdown', (e) => e.stopPropagation());
+el.console.addEventListener('pointerdown', (e) => e.stopPropagation());
+el.consoleInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' || e.key === '`') { e.preventDefault(); toggleConsole(false); }
+  else if (e.key === 'ArrowUp') { e.preventDefault(); el.consoleInput.value = cmdHistory[--cmdPos] ?? el.consoleInput.value; }
+  else if (e.key === 'ArrowDown') { e.preventDefault(); el.consoleInput.value = cmdHistory[++cmdPos] ?? ''; }
+  e.stopPropagation();
+});
+const cmdHistory = []; let cmdPos = 0;
+el.consoleForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const cmd = el.consoleInput.value.trim();
+  if (!cmd) return;
+  el.consoleInput.value = '';
+  cmdHistory.push(cmd); cmdPos = cmdHistory.length;
+  log('cmd', '› ' + cmd);
+  const builtin = {
+    '/help': () => log('reply', 'Commands: /help /clear /state /pause /resume /reload /retro /system — anything else goes to the AI with the current context.'),
+    '/clear': () => { logLines.length = 0; el.consoleLog.innerHTML = ''; },
+    '/state': () => log('reply', JSON.stringify(sceneState(), null, 2) || 'no state'),
+    '/pause': () => { setPaused(true); log('reply', 'background work paused'); },
+    '/resume': () => { setPaused(false); log('reply', 'background work resumed'); },
+    '/reload': () => { reloadScene(); log('reply', 'scene reloaded (state kept)'); },
+    '/retro': async () => { await call('hints', { op: 'retro' }); log('reply', 'retrospective started'); },
+    '/system': () => { toggleConsole(false); showSystem(); },
+  };
+  if (builtin[cmd]) return builtin[cmd]();
+  const s = current.screen;
+  try {
+    const r = await call('console', {
+      command: cmd,
+      screen: { ...summary(s), ...(s.kind === 'html' ? { html: String(s.html || '').slice(0, 16000), uses: s.uses, libs: s.libs } : {}) },
+      path: [...stack.map((x) => x.label), current.label].filter(Boolean),
+      state: sceneState(),
+      quality: lastQuality && lastQuality.title === s.title ? { screen: lastQuality.screen && lastQuality.screen.scores, issues: (s.health || []).slice(-10) } : undefined,
+      log: logLines.slice(-40).map((l) => `${l.kind}: ${l.text}`),
+    });
+    log('reply', r.reply || '(no reply)');
+    if (r.screen && r.screen.kind) {
+      const entry = current;
+      const { note, cacheable, reuse, publish, ...next } = r.screen;
+      if (current === entry) await handoffMedia();
+      entry.screen = normalize(next);
+      if (current === entry) { render(); log('done', 'scene changed live (state kept)'); }
+    }
+  } catch (err) { log('error', err.message); }
+});
+
+// Icons in the bottom bar (left). Any scene or screen adds and removes them: AI views with
+// aiui.bar.add/remove, circle screens with `bar` / `barRemove`. An icon runs the scene's own
+// function, or sends its prompt to the AI; global ones stay across screens and launches.
+let globalBar = (() => { try { return JSON.parse(localStorage.getItem('aiui.bar')) || []; } catch { return []; } })();
+function saveGlobalBar() { try { localStorage.setItem('aiui.bar', JSON.stringify(globalBar.filter((b) => !b.media))); } catch {} }
+function barAdd(item, fromScene) {
+  const it = { id: String(item.id), icon: String(item.icon || '•').slice(0, 4), title: String(item.title || ''), prompt: item.prompt, scene: fromScene && !item.prompt };
+  if (item.global && it.prompt) { globalBar = [...globalBar.filter((b) => b.id !== it.id), it]; saveGlobalBar(); }
+  else { const s = current.screen; s.bar = [...(s.bar || []).filter((b) => b.id !== it.id), it]; }
+  renderSceneBar();
+}
+function barRemove(id) {
+  const s = current.screen;
+  s.bar = (s.bar || []).filter((b) => b.id !== id);
+  const before = globalBar.length;
+  globalBar = globalBar.filter((b) => b.id !== id);
+  if (globalBar.length !== before) saveGlobalBar();
+  renderSceneBar();
+}
+function renderSceneBar() {
+  el.sceneBar.innerHTML = '';
+  const s = current.screen;
+  const items = [...globalBar, ...(s.bar || []).filter((b) => !globalBar.some((g) => g.id === b.id))].slice(0, 12);
+  for (const b of items) {
+    const btn = document.createElement('button');
+    btn.type = 'button'; btn.textContent = b.icon; btn.title = b.title + ' (right-click to remove)'; btn.setAttribute('aria-label', b.title || b.id);
+    btn.addEventListener('pointerdown', (e) => e.stopPropagation());
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      log('activity', `${b.icon} ${b.title || b.id}`);
+      if (b.media) return player.paused ? mediaResume() : mediaPause();
+      if (b.prompt) return ask({ event: 'bar', action: { id: b.id, title: b.title, prompt: b.prompt } }, { label: b.title || b.icon });
+      const f = el.view.querySelector('iframe');
+      if (f) f.contentWindow.postMessage({ aiuiBarClick: b.id }, '*');
+    });
+    btn.addEventListener('contextmenu', (e) => { e.preventDefault(); e.stopPropagation(); if (b.media) return mediaStop(); barRemove(b.id); flashStatus(`${b.icon} ✕`); });
+    el.sceneBar.appendChild(btn);
+  }
+}
+
+// ---------------------------------------------------------------- app level (synced) + background player
+// State that belongs to the whole app (not one scene) lives in aiui.app — shared by every scene,
+// synced across devices; scenes subscribe to keys. The background player is an app-level service
+// built on it: it outlives scenes, shows ⏯ in the bottom bar and stops with the app.
+
+const appSubs = new Map();     // key → Set of callbacks (this page)
+const appFrameSubs = new Map(); // key → Set of frame windows
+async function appGet(k) { try { return (await callRaw('app', { op: 'get', key: k })).value; } catch { return null; } }
+async function appSet(k, v) { await callRaw('app', { op: 'set', key: k, value: v }).catch(() => {}); appNotify(k, v); }
+function appSubscribe(k, fn) { (appSubs.get(k) || appSubs.set(k, new Set()).get(k)).add(fn); }
+function appSubscribeFrame(k, win) { (appFrameSubs.get(k) || appFrameSubs.set(k, new Set()).get(k)).add(win); }
+function appNotify(k, v) {
+  for (const fn of appSubs.get(k) || []) { try { fn(v); } catch {} }
+  for (const w of appFrameSubs.get(k) || []) { try { w.postMessage({ aiuiAppChanged: true, key: k, value: v }, '*'); } catch { appFrameSubs.get(k).delete(w); } }
+}
+
+const player = new Audio();
+player.preload = 'none';
+let nowPlaying = null; // { url, title }
+function mediaInfo() { return nowPlaying ? { ...nowPlaying, playing: !player.paused, position: player.currentTime } : null; }
+function mediaSync() {
+  const info = mediaInfo();
+  appSet('media', info ? { url: info.url, title: info.title, playing: info.playing } : null);
+  const bar = globalBar.filter((b) => b.id !== '__media');
+  if (nowPlaying) bar.unshift({ id: '__media', icon: player.paused ? '▶' : '⏸', title: (player.paused ? '' : '♫ ') + nowPlaying.title, media: true });
+  globalBar = bar;
+  renderSceneBar();
+  if (nowPlaying && !player.paused) activityStart('media', '♫ ' + nowPlaying.title); else activityEnd('media');
+}
+async function mediaPlay(url, title) {
+  if (!/^https?:|^aiui:|^blob:|^data:/.test(String(url))) throw new Error('media: a URL is required');
+  nowPlaying = { url: String(url), title: String(title || 'Audio') };
+  player.src = nowPlaying.url;
+  try { await player.play(); } catch (e) { toast('♫ ' + e.message); }
+  mediaSync();
+  return mediaInfo();
+}
+function mediaPause() { player.pause(); mediaSync(); return mediaInfo(); }
+async function mediaResume() { if (nowPlaying) { try { await player.play(); } catch {} } mediaSync(); return mediaInfo(); }
+function mediaStop() { player.pause(); player.removeAttribute('src'); player.load(); nowPlaying = null; try { localStorage.removeItem('aiui.media'); } catch {} mediaSync(); return null; }
+player.addEventListener('ended', () => { mediaSync(); });
+player.addEventListener('error', () => { if (nowPlaying) { toast('♫ ' + t('mediaFailed') + ' ' + nowPlaying.title); mediaStop(); } });
+
+// ---------------------------------------------------------------- reloads preserve everything
+// Before a scene reloads, its playing audio moves to the app player (same position). The whole
+// app's place (history of screens) and the player survive page reloads and relaunches.
+
+let handoffWait = null;
+// A scene left while it plays: the app player continues the same audio from the same moment.
+let scenePlaying = null;
+function continueSceneAudio() {
+  const m = scenePlaying; scenePlaying = null;
+  if (!m || !el.view.querySelector('iframe')) return;
+  const time = m.time + (Date.now() - m.at) / 1000 * (m.rate || 1);
+  log('media', `🎵 continues in the app player: ${m.title || m.url}`);
+  mediaPlay(m.url, m.title || 'Audio').then(() => { try { if (time > 0) player.currentTime = time; } catch {} });
+}
+function handoffMedia() {
+  scenePlaying = null;
+  const f = el.view.querySelector('iframe');
+  if (!f || current.screen.kind !== 'html') return Promise.resolve();
+  return new Promise((resolve) => {
+    handoffWait = async (m) => {
+      if (m && m.url) {
+        await mediaPlay(m.url, m.title || current.screen.title || 'Audio');
+        try { if (isFinite(m.time) && m.time > 0 && isFinite(player.duration)) player.currentTime = m.time; } catch {}
+      }
+      resolve();
+    };
+    f.contentWindow.postMessage({ aiuiHandoff: true }, '*');
+    setTimeout(() => { if (handoffWait) { handoffWait = null; resolve(); } }, 400);
+  });
+}
+function tellSceneNowPlaying() {
+  const f = el.view.querySelector('iframe');
+  if (f) f.contentWindow.postMessage({ aiuiNowPlaying: nowPlaying && !player.paused ? nowPlaying.url : null }, '*');
+}
+
+// Where the user is (screens, keys) — saved on every render, restored at start.
+function saveNav() {
+  try {
+    const pack = (e) => ({ screen: e.screen, label: e.label, key: e.key, evt: e.evt });
+    const strip = (sc) => { const { quality, health, menus, menusPromise, prefetch, attention, labHead, ...rest } = sc || {}; return rest; };
+    const nav = { stack: stack.map((e) => ({ ...pack(e), screen: strip(e.screen) })), current: { ...pack(current), screen: strip(current.screen) } };
+    let json = JSON.stringify(nav);
+    if (json.length > 3_000_000) { nav.stack = nav.stack.slice(-3); json = JSON.stringify(nav); }
+    localStorage.setItem('aiui.nav', json);
+  } catch {}
+}
+function restoreNav() {
+  try {
+    const nav = JSON.parse(localStorage.getItem('aiui.nav'));
+    if (!nav || !nav.current || !nav.current.screen) return false;
+    for (const e of [...nav.stack, nav.current]) for (const k of ['reviewed', 'ready', 'labbed', 'testsRequested', 'fixing', 'barApplied']) delete e.screen[k];
+    stack = nav.stack; current = nav.current;
+    return true;
+  } catch { return false; }
+}
+// The player resumes where it was (position saved while playing).
+setInterval(() => { if (nowPlaying && !player.paused) { try { localStorage.setItem('aiui.media', JSON.stringify({ ...nowPlaying, time: player.currentTime })); } catch {} } }, 2000);
+async function restoreMedia() {
+  let m = null; try { m = JSON.parse(localStorage.getItem('aiui.media')); } catch {}
+  if (!m || !m.url) return;
+  await mediaPlay(m.url, m.title);
+  try { if (m.time > 0 && isFinite(player.duration)) player.currentTime = m.time; } catch {}
+}
+
+restoreNav();
 render();
+restoreMedia();
 // No AI available yet: ask for one.
 call('engine', { op: 'status' }).then((st) => { if (!st.active) showSetup(); else initLanguage(); }).catch(() => {});

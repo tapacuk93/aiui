@@ -11,18 +11,17 @@ final class AddressBar: NSView {
         wantsLayer = true
         layer?.cornerRadius = 7
         stack.orientation = .horizontal
-        stack.spacing = 4
+        stack.spacing = 5
         stack.alignment = .centerY
         stack.translatesAutoresizingMaskIntoConstraints = false
         addSubview(stack)
+        // A path, left-aligned (like Finder/Xcode): starts right after the window buttons.
         NSLayoutConstraint.activate([
-            stack.centerXAnchor.constraint(equalTo: centerXAnchor),
+            stack.leadingAnchor.constraint(equalTo: leadingAnchor),
             stack.centerYAnchor.constraint(equalTo: centerYAnchor),
-            stack.leadingAnchor.constraint(greaterThanOrEqualTo: leadingAnchor, constant: 10),
-            stack.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -10),
-            heightAnchor.constraint(equalToConstant: 24),
-            widthAnchor.constraint(greaterThanOrEqualToConstant: 320),
-            widthAnchor.constraint(lessThanOrEqualToConstant: 620),
+            stack.trailingAnchor.constraint(equalTo: trailingAnchor),
+            heightAnchor.constraint(equalToConstant: 22),
+            widthAnchor.constraint(lessThanOrEqualToConstant: 720),
         ])
         set(["AI UI"])
     }
@@ -30,7 +29,7 @@ final class AddressBar: NSView {
     required init?(coder: NSCoder) { fatalError() }
 
     override func updateLayer() {
-        layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(0.06).cgColor
+        layer?.backgroundColor = NSColor.clear.cgColor   // a plain path, no field
     }
 
     func set(_ items: [String]) {
@@ -38,22 +37,31 @@ final class AddressBar: NSView {
         for (i, title) in items.enumerated() {
             if i > 0 {
                 let sep = NSTextField(labelWithString: "›")
-                sep.font = .systemFont(ofSize: 12)
+                sep.font = NSFont.titleBarFont(ofSize: 13)
                 sep.textColor = .tertiaryLabelColor
                 stack.addArrangedSubview(sep)
             }
-            let b = NSButton(title: title, target: self, action: #selector(clicked(_:)))
-            b.tag = i
-            b.isBordered = false
-            b.font = .systemFont(ofSize: 12, weight: i == items.count - 1 ? .semibold : .regular)
-            b.contentTintColor = i == items.count - 1 ? .labelColor : .secondaryLabelColor
-            b.lineBreakMode = .byTruncatingTail
-            b.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-            b.toolTip = title
-            stack.addArrangedSubview(b)
+            // Plain labels (no button bezel/padding), all in the system title-bar font: the current place
+            // like a window title, the levels above it quieter. Each is clickable.
+            let last = i == items.count - 1
+            let label = ClickLabel(labelWithString: title)
+            label.tag = i
+            label.font = NSFont.titleBarFont(ofSize: 13)
+            label.textColor = last ? .labelColor : .secondaryLabelColor
+            label.lineBreakMode = .byTruncatingTail
+            label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+            label.toolTip = title
+            label.onClick = { [weak self] in self?.onSelect?(i) }
+            stack.addArrangedSubview(label)
         }
-        needsDisplay = true
     }
 
     @objc private func clicked(_ sender: NSButton) { onSelect?(sender.tag) }
+}
+
+/// A label that reports clicks (and shows the pointing hand).
+final class ClickLabel: NSTextField {
+    var onClick: (() -> Void)?
+    override func mouseDown(with event: NSEvent) { onClick?() }
+    override func resetCursorRects() { addCursorRect(bounds, cursor: .pointingHand) }
 }

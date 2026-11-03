@@ -4,6 +4,7 @@
 #   AIUI_DEBUG_PORT=9333 "build/AI UI.app/Contents/MacOS/aiui" &  then  tools/smoke/run.sh
 set -eu
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
+node "$ROOT/tools/smoke/check-shims.mjs" || exit 1
 rm -rf "$ROOT/build/webdist" && cp -R "$ROOT/web" "$ROOT/build/webdist"
 (cd "$ROOT/build/webdist" && exec python3 -m http.server 8765 >/dev/null 2>&1) & SERVER=$!
 trap 'kill $SERVER 2>/dev/null' EXIT

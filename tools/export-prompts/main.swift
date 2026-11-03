@@ -11,6 +11,8 @@ let out: [String: Any] = [
     "translate": Prompts.translate,
     "profiler": Prompts.profiler,
     "librarian": Prompts.librarian,
+    "console": Prompts.console,
+    "consoleSchema": Prompts.consoleSchema,
     "quick": Prompts.quick,
     "tester": Prompts.tester,
     "retro": Prompts.retro,

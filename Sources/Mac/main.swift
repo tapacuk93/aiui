@@ -42,4 +42,5 @@ guard AIUICef.start(
 
 AIUICef.runMessageLoop()
 delegate.api.shutdown()
+Shell.stopEverything()   // nothing the AI started outlives the app (players, background processes)
 AIUICef.shutdown()

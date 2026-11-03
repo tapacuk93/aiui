@@ -36,9 +36,15 @@
   <button id="who" type="button" hidden title="Is it still you?">👤?</button>
   <button id="full" type="button" hidden title="Full screen">⤢</button>
   <div id="ctx" hidden role="menu"></div>
+  <div id="console" hidden>
+    <div id="consoleLog" role="log" aria-live="polite"></div>
+    <form id="consoleForm" autocomplete="off"><span>›</span><input id="consoleInput" spellcheck="false" aria-label="Console command"></form>
+  </div>
   <div id="statusbar">
     <button id="pauseBtn" type="button" title="Pause background work">⏸</button>
     <button id="settingsBtn" type="button" title="Settings (⇧⌘D)">⚙</button>
+    <button id="consoleBtn" type="button" title="Console (`)">›_</button>
+    <span id="sceneBar"></span>
     <div id="activity" aria-live="polite"></div>
   </div>
 

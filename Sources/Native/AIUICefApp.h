@@ -26,6 +26,8 @@ class AIUICefApp : public CefApp, public CefBrowserProcessHandler {
     if (process_type.empty()) {
       // Keep the login keychain out of it; aiui stores no web credentials.
       command_line->AppendSwitch("use-mock-keychain");
+      // Media resumes after reloads without waiting for a click.
+      command_line->AppendSwitchWithValue("autoplay-policy", "no-user-gesture-required");
       // AIUI_DEBUG_PORT=9333 exposes Chrome DevTools Protocol for scripting/tests.
       if (const char* port = getenv("AIUI_DEBUG_PORT")) {
         command_line->AppendSwitchWithValue("remote-debugging-port", port);

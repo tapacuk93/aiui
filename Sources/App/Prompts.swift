@@ -35,7 +35,11 @@ enum Prompts {
     look things up, open apps, create files, play music, read mail. Gather real data before showing it — \
     never invent files, messages, or results. Read-only work needs no confirmation. Before anything \
     destructive or outward-facing (deleting, sending, posting, buying), show a confirmation screen \
-    whose Go performs the action. Work fast: prefer one well-aimed command over many.
+    whose Go performs the action. Work fast: prefer one well-aimed command over many. Play audio \
+    and video inside the app (an HTML view with <audio>/<video> or Web Audio), so it stops with \
+    the app; use Music or another player only when the user asks for that app. Never start \
+    background players from the shell (ffplay, afplay, mpv, `&`, nohup) — they would outlive \
+    the app; stream inside an HTML view instead.
 
     """
 
@@ -133,8 +137,12 @@ enum Prompts {
     `lib.barChart(el, data)`; CSS modules are plain rules). When you write a helper or component \
     worth reusing elsewhere, `publish` it (path broad → specific, 1–3 levels, existing categories \
     first; a short name; kind; description; usage; self-contained code that only assigns \
-    `lib.<name>`), and use it in this same screen via `uses`. Keep screens thin: logic that is not \
-    specific to this screen belongs in the library. Rule for every `html` screen: anything generic \
+    `lib.<name>`), and use it in this same screen via `uses`. Mark each module's `role`: `util` \
+    (helper functions — formatting, fetching with fallbacks, storage, maths, input) or \
+    `component` (reusable UI for future scenes — a player, a list, a card, a control panel; it \
+    renders into an element you pass and takes options). Build new scenes from existing \
+    components first. Keep screens thin: logic that is not specific to this screen belongs in \
+    the library. Rule for every `html` screen: anything generic \
     you write — a game loop, keyboard/touch/swipe input, canvas or animation helpers, scoring and \
     high-score storage, formatters, chart drawing, a card or button style — goes to `publish` \
     (or comes from `uses` if the library has it); only the screen-specific part stays in `html`. \
@@ -170,10 +178,20 @@ enum Prompts {
     Back/More listeners too); text ≥ 12px and lines ≤ ~90 characters; WCAG contrast (4.5:1, \
     3:1 large); alt text, accessible names, labelled inputs; touch targets ≥ 44px on phones; \
     responsive layout that works from 360px wide.
+    App level: state that belongs to the whole app rather than one scene (now playing, timers, \
+    shared lists, preferences) lives in `aiui.app` — `await aiui.app.get(key)`, \
+    `aiui.app.set(key, value)`, `aiui.app.subscribe(key, fn)` (called on every change, from any \
+    scene or another device; synced through iCloud).
     State: HTML scenes keep their state with `aiui.state` — `await aiui.state.load()` at start \
     (null the first time) and `aiui.state.save(obj)` whenever something meaningful changes \
     (progress, inputs, position, settings; plain JSON). The app reloads scenes live — improved \
     versions arrive in the background — and the state carries over, so keep keys stable.
+    Bottom bar: any scene or screen can add and remove small actions in the app's bottom bar \
+    (left): HTML scenes with `aiui.bar.add(id, icon, title, fnOrPrompt, {global})` and \
+    `aiui.bar.remove(id)`; any screen with `bar: [{id, icon, title, prompt, global}]` and \
+    `barRemove: [ids]`. A function runs in the scene; a prompt comes back to you as event `bar`. \
+    `global: true` (prompt only) keeps the icon across screens and launches — for things the user \
+    will want everywhere (e.g. a player's ⏯, a timer). Icon: one emoji.
     Hints: events carry `hints` — lessons from this app's own retrospectives on what went wrong \
     before (text (scope, ×evidence)). Follow them.
     Keyboard: scenes implement the well-known browser keys where they apply — arrows, Space and \
@@ -181,6 +199,9 @@ enum Prompts {
     content, ⌘/Ctrl+Z undo in editors, ⌘/Ctrl+F through `aiui.onFind(fn)` when they have \
     searchable content. The app itself handles ⌘F, zoom (⌘= ⌘- ⌘0), ⌘R reload scene, ⌘[ / ⌘] \
     back/forward, ⌘P print.
+    Event `text` with `direct: true`: the user pressed Enter on what they typed — go straight into \
+    the screen that does it, as understood (`understood` is the label they saw), not a menu of \
+    options; ask only when it is genuinely ambiguous.
     Event `context`: the user chose a context-menu action — `action` (with your `prompt`), \
     `class` and `object` (its text, link or circle). Return the screen that does it.
     Event `fix`: a screen you made failed. `problem` lists what went wrong (errors, failed \
@@ -267,8 +288,9 @@ enum Prompts {
     circles inspired by the input: what they most likely mean or want to do with it on this screen — \
     completions, concrete targets, next actions — informed by their past flows. Be fast: answer from \
     what you know and the index; use a tool only when one quick lookup clearly matters. Do not perform \
-    any actions. Set `focus` to a circle id only when it is clearly better than sending the typed text \
-    as is; otherwise leave it unset.
+    any actions. Set `understood` to how you understand the input as a whole — a short label (in \
+    their language), an emoji icon and a hint; it replaces the raw typed text as the main circle. \
+    Set `focus` to a circle id only when it is clearly better than the understood one.
     """
 
     static let scout = """
@@ -367,7 +389,12 @@ enum Prompts {
     the app's tests found (scores, Definition of Done, failures), related hints and their profile, \
     and — when there is one — a live screenshot of it as they saw it (an image file to look at). \
     Return an improved version of the same scene: fix what was found, make what they use most \
-    better and faster to reach, keep what works. Keep its purpose, title and the state contract: \
+    better and faster to reach, keep what works. Side by side with improving, split the scene \
+    into described components: move each self-contained part (a player, a list, a card, a \
+    control panel, a chart) into a library module with a clear description and usage (`publish`, \
+    existing categories first; role `component` for reusable UI meant for future scenes, \
+    `util` for helper functions), and make the scene a thin composition of them (`uses`); reuse \
+    and improve existing modules rather than duplicating them. Keep its purpose, title and the state contract: \
     the same `aiui.state` keys must still load, so the user continues where they were. Keep \
     `publish`/`uses`/`libs` consistent. Return the full screen. Do not perform any actions.
     """
@@ -449,6 +476,25 @@ enum Prompts {
         "required": ["classes"],
     ])
 
+    static let console = """
+
+    ## Console mode
+    You are now the console: a terminal-like command line inside the app, with its own \
+    conversation. Each command comes with the current context — the screen (and its HTML for a \
+    scene), the path, the scene's saved state, and recent log lines. Answer briefly in `reply` \
+    (plain text, terminal style; explain what the logs show when asked). When the command asks to \
+    change the current scene, also return the changed scene in `screen` (full screen JSON, same \
+    purpose and `aiui.state` keys); the app swaps it in live. You may use your tools to look \
+    things up or act when the command asks for it.
+    """
+
+    static let consoleSchema: String = json([
+        "type": "object",
+        "properties": ["reply": ["type": "string"],
+                       "screen": ["type": "object", "description": "a changed version of the current screen, when the command asks for one"]] as [String: Any],
+        "required": ["reply"],
+    ])
+
     static let librarian = """
 
     ## Librarian mode
@@ -507,8 +553,13 @@ enum Prompts {
 
     static let suggestSchema: String = json([
         "type": "object",
-        "properties": ["circles": ["type": "array", "items": circleSchema], "focus": ["type": "string"]],
-        "required": ["circles"],
+        "properties": [
+            "understood": ["type": "object", "description": "how the input is understood, shown as the main circle",
+                           "properties": ["label": ["type": "string"], "icon": ["type": "string"], "hint": ["type": "string"]] as [String: Any],
+                           "required": ["label"]] as [String: Any],
+            "circles": ["type": "array", "items": circleSchema], "focus": ["type": "string"],
+        ] as [String: Any],
+        "required": ["understood", "circles"],
     ])
 
     static let pageSchema: String = json([
@@ -570,6 +621,7 @@ enum Prompts {
                         "path": ["type": "array", "items": ["type": "string"], "description": "category path, broad to specific, 1-3 levels; reuse existing categories"],
                         "name": ["type": "string", "description": "identifier, e.g. barChart"],
                         "kind": ["type": "string", "enum": ["js", "css"]],
+                        "role": ["type": "string", "enum": ["util", "component"], "description": "util: helper functions; component: reusable UI for future scenes"],
                         "description": ["type": "string"],
                         "usage": ["type": "string", "description": "how to call it, e.g. lib.barChart(el, data)"],
                         "code": ["type": "string", "description": "js: assigns to lib.<name> (lib is global); css: plain rules with a distinctive class prefix"],
@@ -585,6 +637,13 @@ enum Prompts {
                                "more": timeoutSchema, "render": timeoutSchema, "default": timeoutSchema] as [String: Any],
             ] as [String: Any],
             "libs": ["type": "array", "items": ["type": "string"], "description": "JS library ids (from `libraries`) this html screen needs; the app loads them before its html"],
+            "bar": ["type": "array", "description": "bottom-bar icons this screen adds", "items": [
+                "type": "object",
+                "properties": ["id": ["type": "string"], "icon": ["type": "string"], "title": ["type": "string"],
+                               "prompt": ["type": "string"], "global": ["type": "boolean"]] as [String: Any],
+                "required": ["id", "icon", "title", "prompt"],
+            ] as [String: Any]],
+            "barRemove": ["type": "array", "items": ["type": "string"]],
             "fullscreen": ["type": "boolean", "description": "this screen is best experienced full screen (games, media, reading, canvases); the app offers a full-screen button"],
             "live": ["type": "boolean", "description": "circles would gain from a background pass filling real data (counts, previews, statuses)"],
             "note": ["type": "string", "description": "one-line index description of this action and its outcome, for the memory index"],

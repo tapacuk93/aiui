@@ -6,6 +6,7 @@
 const WebBackend = (() => {
   const KEY = 'aiui.key', CACHE = 'aiui.cache', LIMIT = 3 * 1024 * 1024; // cache size limit (bytes)
   let prompts = null;
+  const consoleConvo = []; let consoleOpen = null;
   let libCatalog = null;
   const aborts = {};      // channel -> AbortController
   let convo = [];         // main conversation (append-only), provider wire format
@@ -158,6 +159,7 @@ const WebBackend = (() => {
       const path = (m.path || []).filter(Boolean).slice(0, 3);
       const id = await modId(path, m.name), prev = l.modules[id];
       l.modules[id] = { id, path: path.length ? path : ['misc'], name: m.name, kind: m.kind === 'css' ? 'css' : 'js',
+        role: m.role === 'component' || m.role === 'util' ? m.role : (prev && prev.role),
         description: m.description || (prev && prev.description) || '', usage: m.usage || (prev && prev.usage) || '',
         code: m.code, version: (prev ? prev.version : 0) + 1, uses: prev ? prev.uses : 0, lastUsed: Date.now() };
       ids.push(id);
@@ -193,7 +195,7 @@ const WebBackend = (() => {
       const hay = (m.path.join(' ') + ' ' + m.name + ' ' + m.description).toLowerCase();
       return [m, ws.reduce((n, w) => n + (hay.includes(w) ? 1 : 0), 0)];
     }).sort((a, b) => b[1] - a[1] || b[0].uses - a[0].uses).slice(0, limit)
-      .map(([m]) => `${[...m.path, m.name].join(' › ')} (${m.kind}) — ${m.description}${m.usage ? ' · usage: ' + m.usage : ''} [${m.id}]`);
+      .map(([m]) => `${[...m.path, m.name].join(' › ')} (${m.role || (m.kind === 'css' ? 'component' : 'util')}, ${m.kind}, v${m.version}) — ${m.description}${m.usage ? ' · usage: ' + m.usage : ''} [${m.id}]`);
   }
   const libCategories = () => [...new Set(Object.values(loadLib().modules)
     .flatMap((m) => m.path.map((_, n) => m.path.slice(0, n + 1).join(' › '))))].sort();
@@ -211,7 +213,7 @@ const WebBackend = (() => {
     return {
       categories: Object.values(cats).sort((a, b) => b.uses - a.uses || a.name.localeCompare(b.name)),
       utilities: here.sort((a, b) => b.uses - a.uses || a.name.localeCompare(b.name))
-        .map((m) => ({ id: m.id, name: m.name, icon: m.kind === 'css' ? '🎨' : '🧩', description: m.description, uses: m.uses })),
+        .map((m) => ({ id: m.id, name: m.name, icon: (m.role || (m.kind === 'css' ? 'component' : 'util')) === 'component' ? '🧩' : '🔧', description: m.description, uses: m.uses })),
       total: all.length,
     };
   }
@@ -596,6 +598,13 @@ const WebBackend = (() => {
       case 'ai': return ai(body, progress);
       case 'more': return side('pager', 'pager', 'pageSchema', body, 'The user scrolled past the end of this screen. Continue its circles:');
       case 'suggest': return side('suggest', 'suggest', 'suggestSchema', body, 'The user is typing on this screen. Suggest circles for their input:');
+      case 'console': {
+        const k = getKey(); if (!k) throw err('no-ai');
+        const p = await loadPrompts();
+        const { screen } = await turn(k, instructions(p.system + p.console), JSON.parse(p.consoleSchema), consoleConvo,
+          'Console command with the current context:\n' + json({ ...body, language: navigator.language }), consoleOpen, 'console', () => {});
+        return screen;
+      }
       case 'tests': return side('tester', 'tester', 'testsSchema', body, 'What should be tested for this scene? Write its tests:');
       case 'menus': return side('menus', 'menus', 'menusSchema', body, 'Design the context menus for the classes of objects on this scene:');
       case 'usage': {
@@ -614,6 +623,13 @@ const WebBackend = (() => {
           try { localStorage.setItem(U, JSON.stringify(u)); } catch {}
         }
         return { ok: true };
+      }
+      case 'app': {
+        const A = 'aiui.app';
+        let a = {}; try { a = JSON.parse(localStorage.getItem(A)) || {}; } catch {}
+        if (body.op === 'set') { a[body.key] = body.value; try { localStorage.setItem(A, JSON.stringify(a)); } catch {} return { ok: true }; }
+        if (body.op === 'all') return { values: a };
+        return { value: a[body.key] ?? null };
       }
       case 'journal': {
         const h = loadHints();
@@ -652,7 +668,7 @@ const WebBackend = (() => {
         return { ok: true };
       }
       case 'cancel': {
-        const ch = body.pager ? 'pager' : body.suggest ? 'suggest' : body.scout ? 'scout' : body.refine ? 'refine' : body.quick ? 'quick' : 'ai';
+        const ch = ['pager', 'suggest', 'scout', 'refine', 'quick', 'tester', 'menus'].find((c) => body[c]) || 'ai';
         if (aborts[ch]) aborts[ch].abort();
         return { ok: true };
       }

@@ -22,6 +22,7 @@ final class API: NSObject {
     let libraries: Libraries
     let hints: Hints
     let usage: Usage
+    let appStore: AppStore
     /// The AI behind screens (persistent session) and the stateless background pager.
     /// nil until a CLI is detected or an API key is given.
     private(set) var claude: AIEngine?
@@ -42,6 +43,8 @@ final class API: NSObject {
     private(set) var retro: AIEngine?
     private(set) var improver: AIEngine?
     private(set) var componentImprover: AIEngine?
+    /// The console's own conversation (` key).
+    private(set) var console: AIEngine?
     private var improvingComponent: String?
     private var improving: String?
     private var retroRunning = false
@@ -76,6 +79,7 @@ final class API: NSObject {
         profile = Profile(dir: support.appendingPathComponent("profile", isDirectory: true))
         avoid = Avoid(dir: support.appendingPathComponent("avoid", isDirectory: true))
         hints = Hints(dir: support.appendingPathComponent("hints", isDirectory: true))
+        appStore = AppStore(dir: support.appendingPathComponent("app", isDirectory: true))
         usage = Usage(dir: support.appendingPathComponent("usage", isDirectory: true),
                       shots: FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
                         .appendingPathComponent("aiui/shots", isDirectory: true))
@@ -97,6 +101,7 @@ final class API: NSObject {
         let clis = Provider.detectedCLIs()
         if let want = env ?? saved, use(want) { return }
         if let first = clis.first { _ = use(first) } else if !use("key") { _ = use("aicoin") }
+        appStore.onChange = { key, value in Self.emit(["type": "appChanged", "key": key, "value": value]) }
         // Background library maintenance: shortly after launch, then every 6 hours.
         DispatchQueue.main.asyncAfter(deadline: .now() + 20) { [weak self] in self?.libraries.maintain() }
         Timer.scheduledTimer(withTimeInterval: 6 * 3600, repeats: true) { [weak self] _ in self?.libraries.maintain() }
@@ -145,6 +150,7 @@ final class API: NSObject {
         retro = make(false, systemPrompt + Prompts.retro, Prompts.retroSchema)
         improver = make(false, systemPrompt + Prompts.improver, Prompts.screenSchema)
         componentImprover = make(false, systemPrompt + Prompts.componentImprover, Prompts.componentSchema)
+        console = make(true, systemPrompt + Prompts.console, Prompts.consoleSchema)
         engineID = id
         UserDefaults.standard.set(id, forKey: "engine")
         return true
@@ -262,7 +268,7 @@ final class API: NSObject {
 
     /// Pulls in what other devices wrote (called when the app becomes active, and every minute).
     func syncNow() {
-        cache.reload(); utilities.reload(); profile.reload(); avoid.reload(); hints.reload(); usage.reload()
+        cache.reload(); utilities.reload(); profile.reload(); avoid.reload(); hints.reload(); usage.reload(); appStore.reload()
         if !Self.paused { retrospectIfDue() }
         guard !Self.paused else { return }   // background work waits while paused
         improveIfDue()
@@ -274,7 +280,7 @@ final class API: NSObject {
 
     func resetSession() { pager?.cancel(); suggester?.cancel(); scout?.cancel(); refiner?.cancel(); claude?.reset() }
     func shutdown() {
-        for e in [pager, suggester, scout, refiner, translator, profiler, librarian, quick, tester, menus, retro, improver, componentImprover, claude] { e?.cancel() }
+        for e in [pager, suggester, scout, refiner, translator, profiler, librarian, quick, tester, menus, retro, improver, componentImprover, console, claude] { e?.cancel() }
     }
 
     /// Runs a stateless side engine on `input` (plus flow index context) and replies with its JSON.
@@ -575,6 +581,29 @@ final class API: NSObject {
                 "hints": hints.status(),
             ])
 
+        case "app":
+            switch input["op"] as? String ?? "get" {
+            case "set":
+                guard let key = input["key"] as? String else { return fail("key required") }
+                appStore.set(key, input["value"] ?? NSNull())
+                send(["ok": true])
+            case "all": send(["values": appStore.all()])
+            default: send(["value": appStore.get(input["key"] as? String ?? "") ?? NSNull()])
+            }
+
+        case "console":
+            guard let console else { return fail("no-ai") }
+            var input = input
+            input["language"] = language
+            let data = (try? JSONSerialization.data(withJSONObject: input, options: [.prettyPrinted, .sortedKeys])) ?? Data()
+            console.next(prompt: "Console command with the current context:\n```json\n\(String(decoding: data, as: UTF8.self))\n```",
+                         progress: { line in Self.emit(["type": "consoleProgress", "text": line]) }, done: { r in
+                switch r {
+                case .success(let obj): send(obj)
+                case .failure(let e): fail(e.localizedDescription)
+                }
+            })
+
         case "usage":
             switch input["op"] as? String ?? "record" {
             case "list": send(["scenes": usage.list()])
@@ -696,6 +725,8 @@ final class API: NSObject {
             else if (input["scout"] as? Bool) == true { scout?.cancel() }
             else if (input["refine"] as? Bool) == true { refiner?.cancel() }
             else if (input["quick"] as? Bool) == true { quick?.cancel() }
+            else if (input["tester"] as? Bool) == true { tester?.cancel() }
+            else if (input["menus"] as? Bool) == true { menus?.cancel() }
             else { claude?.cancel() }
             send(["ok": true])
 

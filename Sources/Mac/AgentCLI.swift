@@ -102,6 +102,7 @@ final class AgentCLI: AIEngine {
         }
         do { try p.run() } catch { pendingDone = nil; return done(.failure(error)) }
         process = p
+        Shell.adopt(p)
         let deadline = persistent ? 180.0 : 100.0
         DispatchQueue.main.asyncAfter(deadline: .now() + deadline) { [weak self, weak p] in
             guard let self, let p, p.isRunning, self.generation == gen else { return }

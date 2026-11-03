@@ -38,13 +38,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTo
                 : NSColor(red: 245 / 255, green: 245 / 255, blue: 248 / 255, alpha: 1)
         }
         w.minSize = NSSize(width: 520, height: 420)
-        // Address bar centred in the title bar (a unified compact toolbar keeps the window draggable).
-        let toolbar = NSToolbar(identifier: "aiui.toolbar")
-        toolbar.delegate = self
-        toolbar.displayMode = .iconOnly
-        toolbar.centeredItemIdentifiers = [Self.addressItem]
-        w.toolbar = toolbar
-        w.toolbarStyle = .unifiedCompact
         addressBar.onSelect = { i in AIUICef.evalJS("window.aiui && aiui.goTo(\(i))") }
         API.setAddress = { [weak self] items in self?.setAddress(items) }
         w.delegate = self
@@ -58,6 +51,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTo
         w.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         window = w
+        // The address: a plain path in the title bar, right after the window buttons (no toolbar,
+        // so no bezel); the rest of the title bar stays draggable.
+        if let zoom = w.standardWindowButton(.zoomButton), let titlebar = zoom.superview {
+            addressBar.translatesAutoresizingMaskIntoConstraints = false
+            titlebar.addSubview(addressBar)
+            NSLayoutConstraint.activate([
+                addressBar.leadingAnchor.constraint(equalTo: zoom.trailingAnchor, constant: 14),
+                addressBar.centerYAnchor.constraint(equalTo: zoom.centerYAnchor),
+                addressBar.trailingAnchor.constraint(lessThanOrEqualTo: titlebar.trailingAnchor, constant: -16),
+            ])
+        }
 
         AIUICef.createBrowser(in: content, url: "aiui://app/index.html")
     }
@@ -67,7 +71,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTo
     func setAddress(_ items: [String]) { addressBar.set(items) }
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { [Self.addressItem, .flexibleSpace] }
-    func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { [.flexibleSpace, Self.addressItem, .flexibleSpace] }
+    func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { [Self.addressItem, .flexibleSpace] }
     func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier id: NSToolbarItem.Identifier, willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
         guard id == Self.addressItem else { return nil }
         let item = NSToolbarItem(itemIdentifier: id)

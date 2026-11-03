@@ -58,6 +58,46 @@ const result = await ev(`(async () => {
     WebBackend.call = realCall;
     if (!pending) throw new Error('typed circle not pending');
   });
+  await step('typing: the understood circle replaces the typed one; Enter goes straight in', async () => {
+    const realCall = WebBackend.call;
+    let sent = null;
+    WebBackend.call = async (name, body) => {
+      if (name === 'suggest') return { understood: { label: 'Weather tomorrow', icon: '🌤' }, circles: [{ id: 'x', label: 'Rain radar' }] };
+      if (name === 'ai') { sent = body; return { screen: { kind: 'circles', title: 'Weather', circles: [] } }; }
+      return realCall(name, body);
+    };
+    home(); startWriting('weather tmrw'); onInput();
+    await suggestFor('weather tmrw');
+    const main = [...el.circles.children][0];
+    const label = main && main.querySelector('.label').textContent;
+    const hasSuggested = [...el.circles.children].some((n) => /Rain radar/.test(n.textContent));
+    await openCircle({ id: '__typed', typed: true }, main);
+    WebBackend.call = realCall;
+    if (label !== 'Weather tomorrow' || !hasSuggested || !sent || !sent.direct || sent.understood !== 'Weather tomorrow' || sent.text !== 'weather tmrw')
+      throw new Error(JSON.stringify({ label, hasSuggested, sent }));
+  });
+  await step('typing autocompletes to the most recent continuation; Tab accepts', async () => {
+    localStorage.setItem('aiui.typed', JSON.stringify(['play jazz in the background', 'play chess']));
+    home(); startWriting('');
+    const w = el.write;
+    for (const ch of 'play j') { w.setRangeText(ch, w.selectionStart, w.selectionEnd, 'end'); onInput({ inputType: 'insertText' }); }
+    const shown = w.value, typed = typedText();
+    w.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true }));
+    const accepted = w.value === 'play jazz in the background' && w.selectionStart === w.value.length;
+    stopWriting(true);
+    if (shown !== 'play jazz in the background' || typed !== 'play j' || !accepted) throw new Error(JSON.stringify({ shown, typed, accepted }));
+  });
+  await step('reload keeps the place: history and screen restored after a page reload', async () => {
+    home();
+    current = { screen: normalize({ kind: 'circles', title: 'Deep2', circles: [{ id: 'z', label: 'Z' }] }), label: 'Deep2', key: 'k-deep' };
+    stack = [{ screen: JSON.parse(JSON.stringify(ROOT)), label: null }];
+    render();
+    const saved = JSON.parse(localStorage.getItem('aiui.nav'));
+    stack = []; current = { screen: JSON.parse(JSON.stringify(ROOT)), label: null };
+    const ok = restoreNav();
+    if (!ok || current.label !== 'Deep2' || stack.length !== 1 || !saved) throw new Error(JSON.stringify({ ok, label: current.label, stack: stack.length }));
+    home();
+  });
   await step('library screen', () => showLibrary([]));
   await step('profile screen', () => showProfile([]));
   await step('setup screen', () => showSetup());
@@ -258,11 +298,117 @@ const result = await ev(`(async () => {
     };
     home();
     await ask({ event: 'open', target: { label: 'Clicker' } }, { label: 'Clicker' });
-    await new Promise(r => setTimeout(r, 1500));
+    for (let i = 0; i < 60 && !seen.includes('v1'); i++) await new Promise(r => setTimeout(r, 100));
+    await new Promise(r => setTimeout(r, 300));
     await onImproved({ key: 'k-live' });
-    await new Promise(r => setTimeout(r, 1500));
+    for (let i = 0; i < 60 && !seen.includes('v2:5'); i++) await new Promise(r => setTimeout(r, 100));
     WebBackend.call = realCall; removeEventListener('message', h);
     if (!seen.includes('v1') || !seen.includes('v2:5') || current.key !== 'k-live') throw new Error(JSON.stringify({ seen, key: current.key }));
+  });
+  await step('Back from a playing scene: the audio continues in the app player', async () => {
+    const realCall = WebBackend.call;
+    // 4 s of silence as a WAV data URL.
+    const n = 8000 * 4, buf = new Uint8Array(44 + n), dv = new DataView(buf.buffer);
+    const w = (o, str) => [...str].forEach((c, i) => buf[o + i] = c.charCodeAt(0));
+    w(0, 'RIFF'); dv.setUint32(4, 36 + n, true); w(8, 'WAVEfmt '); dv.setUint32(16, 16, true); dv.setUint16(20, 1, true); dv.setUint16(22, 1, true);
+    dv.setUint32(24, 8000, true); dv.setUint32(28, 8000, true); dv.setUint16(32, 1, true); dv.setUint16(34, 8, true); w(36, 'data'); dv.setUint32(40, n, true);
+    buf.fill(128, 44);
+    let bin = ''; for (const b of buf) bin += String.fromCharCode(b);
+    const url = 'data:audio/wav;base64,' + btoa(bin);
+    mediaStop();
+    WebBackend.call = async (name, body) => name === 'ai' ? { screen: { kind: 'html', title: 'Jazz', html: '<p>jazz</p><script>const a = new Audio(' + JSON.stringify(url) + '); a.loop = true; a.play(); aiui.ready();<\\/script>' } } : realCall(name, body);
+    home();
+    await ask({ event: 'open', target: { label: 'Jazz' } }, { label: 'Jazz' });
+    for (let i = 0; i < 60 && !scenePlaying; i++) await new Promise(r => setTimeout(r, 100));
+    const reported = !!scenePlaying;
+    back();
+    await new Promise(r => setTimeout(r, 500));
+    const ok = reported && nowPlaying && nowPlaying.url === url && !player.paused;
+    const info = { reported, now: nowPlaying && nowPlaying.title, paused: player.paused, kind: current.screen.kind };
+    mediaStop(); WebBackend.call = realCall;
+    if (!ok) throw new Error(JSON.stringify(info));
+  });
+  await step('requests no longer needed are cancelled early (screen left, typing stopped)', async () => {
+    const realCall = WebBackend.call;
+    const cancelled = [];
+    WebBackend.call = async (name, body) => {
+      if (name === 'cancel') { cancelled.push(Object.keys(body)[0]); return { ok: true }; }
+      if (name === 'refine' || name === 'more' || name === 'menus') return new Promise(() => {});
+      return realCall(name, body);
+    };
+    home();
+    call('refine', {}).catch(() => {}); call('menus', {}).catch(() => {});
+    const kept = Object.keys(running).sort().join();
+    stack.push(current); current = { screen: normalize({ kind: 'circles', title: 'Elsewhere', circles: [{ id: 'a', label: 'A' }] }), label: 'Elsewhere' }; render();
+    await new Promise(r => setTimeout(r, 100));
+    WebBackend.call = realCall;
+    if (!cancelled.includes('refine') || !cancelled.includes('menus') || running.refine || running.menus) throw new Error(JSON.stringify({ kept, cancelled, running: Object.keys(running) }));
+    home();
+  });
+  await step('the status bar shows the most important of several activities', async () => {
+    activityStart('discover', 'Discovering libraries');
+    activityStart('ai:999', 'Opening «Music»');
+    activityStart('menus:998', 'Context menus');
+    const txt = el.activity.textContent;
+    for (const id of ['discover', 'ai:999', 'menus:998']) activityEnd(id);
+    if (!txt.startsWith('Opening «Music»') || !txt.includes('(+')) throw new Error(txt);
+  });
+  await step('typing on a scene: keys it does not listen to open the input; a keyed scene needs a lone ⌘', async () => {
+    const realCall = WebBackend.call;
+    const frameKey = (key) => { const f = el.view.querySelector('iframe'); f.contentWindow.postMessage({ smokeKey: key }, '*'); };
+    const keyer = '<script>addEventListener("message", (e) => { const k = e.data && e.data.smokeKey; if (!k) return; const o = { key: k, bubbles: true, cancelable: true }; document.body.dispatchEvent(new KeyboardEvent("keydown", o)); if (k === "Meta") document.body.dispatchEvent(new KeyboardEvent("keyup", o)); });<\\/script>';
+    // 1. A plain scene: a typed letter opens the input with it, and the scene starts below it.
+    WebBackend.call = async (name, body) => name === 'ai' ? { screen: { kind: 'html', title: 'Plain', html: '<p>plain</p>' + keyer + '<script>aiui.ready()<\\/script>' } } : realCall(name, body);
+    home();
+    await ask({ event: 'open', target: { label: 'Plain' } }, { label: 'Plain' });
+    await new Promise(r => setTimeout(r, 400)); for (let i = 0; i < 60 && el.view.classList.contains('checking'); i++) await new Promise(r => setTimeout(r, 100)); await new Promise(r => setTimeout(r, 400));
+    frameKey('h');
+    await new Promise(r => setTimeout(r, 300));
+    const plain = { typing: typing(), value: el.write.value, below: el.view.getBoundingClientRect().top >= el.write.getBoundingClientRect().bottom };
+    stopWriting(true);
+    // 2. A scene with key handlers keeps letters; a lone ⌘ opens the input.
+    WebBackend.call = async (name, body) => name === 'ai' ? { screen: { kind: 'html', title: 'Game', html: '<p>game</p>' + keyer + '<script>document.addEventListener("keydown", () => {}); aiui.ready()<\\/script>' } } : realCall(name, body);
+    home();
+    await ask({ event: 'open', target: { label: 'Game' } }, { label: 'Game' });
+    await new Promise(r => setTimeout(r, 400)); for (let i = 0; i < 60 && el.view.classList.contains('checking'); i++) await new Promise(r => setTimeout(r, 100)); await new Promise(r => setTimeout(r, 400));
+    frameKey('h');
+    await new Promise(r => setTimeout(r, 300));
+    const keptKey = !typing();
+    frameKey('Meta');
+    await new Promise(r => setTimeout(r, 300));
+    const metaOpens = typing() && el.write.value === '';
+    stopWriting(true); WebBackend.call = realCall; home();
+    if (!plain.typing || plain.value !== 'h' || !plain.below || !keptKey || !metaOpens) throw new Error(JSON.stringify({ plain, keptKey, metaOpens }));
+  });
+  await step('scenes add icons to the bottom bar; clicking runs the scene', async () => {
+    const realCall = WebBackend.call;
+    let clicked = false; const h = (e) => { if (e.data && e.data.barHit) clicked = true; }; addEventListener('message', h);
+    WebBackend.call = async (name, body) => name === 'ai' ? { screen: { kind: 'html', title: 'BarScene', html: '<p>x</p><script>aiui.bar.add("shuffle", "🔀", "Shuffle", () => parent.postMessage({ barHit: 1 }, "*")); aiui.ready()<\\/script>' } } : realCall(name, body);
+    home();
+    await ask({ event: 'open', target: { label: 'BarScene' } }, { label: 'BarScene' });
+    await new Promise(r => setTimeout(r, 1200));
+    const btn = el.sceneBar.querySelector('button');
+    if (btn) btn.click();
+    await new Promise(r => setTimeout(r, 300));
+    home(); const cleared = !el.sceneBar.childElementCount;
+    // A screen declares a global icon (prompt): it stays across screens; right-click removes it.
+    let barEvent = null;
+    WebBackend.call = async (name, body) => {
+      if (name === 'ai' && body.event === 'bar') { barEvent = body; return { screen: { kind: 'circles', title: 'Timer', circles: [] } }; }
+      if (name === 'ai') return { screen: { kind: 'circles', title: 'WithBar', bar: [{ id: 'timer', icon: '⏱', title: 'Timer', prompt: 'show my timer', global: true }], circles: [{ id: 'q', label: 'Q' }] } };
+      return realCall(name, body);
+    };
+    await ask({ event: 'open', target: { label: 'WithBar' } }, { label: 'WithBar' });
+    home(); await new Promise(r => setTimeout(r, 100));
+    const g = el.sceneBar.querySelector('button');
+    const globalStays = g && g.textContent === '⏱';
+    if (g) g.click(); await new Promise(r => setTimeout(r, 200));
+    const g2 = el.sceneBar.querySelector('button');
+    if (g2) g2.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+    const removed = !el.sceneBar.childElementCount;
+    WebBackend.call = realCall; removeEventListener('message', h);
+    if (!btn || btn.textContent !== '🔀' || !clicked || !cleared || !globalStays || !barEvent || barEvent.action.prompt !== 'show my timer' || !removed)
+      throw new Error(JSON.stringify({ btn: btn && btn.textContent, clicked, cleared, globalStays, barEvent: !!barEvent, removed }));
   });
   const sceneRun = async (html) => {
     const realCall = WebBackend.call;

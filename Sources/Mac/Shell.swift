@@ -2,6 +2,69 @@ import Foundation
 
 /// Runs processes with the user's login-shell environment (GUI apps get a bare PATH).
 enum Shell {
+    // MARK: - Things the AI starts must not outlive the app
+
+    /// Process groups of everything the app launched (each launch gets its own group, so the
+    /// players and helpers it spawns in the background are in it too).
+    private static var groups = Set<pid_t>()
+    /// Playback the AI started in other apps (e.g. Music), stopped when the app quits.
+    private static var media = Set<String>()
+    private static let lock = NSLock()
+
+    static func adopt(_ p: Process) {
+        let pid = p.processIdentifier
+        guard pid > 0 else { return }
+        setpgid(pid, pid)
+        lock.lock(); groups.insert(pid); lock.unlock()
+    }
+
+    /// Notes playback a command starts (Music/Spotify via AppleScript, afplay, say, streams).
+    static func noteMedia(in command: String) {
+        let c = command.lowercased()
+        var found: [String] = []
+        if c.contains("\"music\"") && (c.contains("play") || c.contains("open location")) { found.append("Music") }
+        if c.contains("\"spotify\"") && c.contains("play") { found.append("Spotify") }
+        if c.contains("\"tv\"") && c.contains("play") { found.append("TV") }
+        if c.contains("quicktime player") && c.contains("play") { found.append("QuickTime Player") }
+        guard !found.isEmpty else { return }
+        lock.lock(); media.formUnion(found); lock.unlock()
+    }
+
+    static let launched = Date()
+
+    /// Media players started while the app ran (the AI's shell can detach them into their own
+    /// process group, so group cleanup alone misses them): stopped on quit.
+    private static func stopPlayersStartedSinceLaunch() {
+        let players: Set<String> = ["ffplay", "afplay", "mpv", "mpg123", "vlc", "cvlc", "say", "play", "mplayer", "ffmpeg"]
+        let r = runSync("/bin/ps", ["-axo", "pid=,etime=,comm="])
+        let uptime = Date().timeIntervalSince(launched)
+        for line in r.stdout.split(separator: "\n") {
+            let parts = line.split(separator: " ", omittingEmptySubsequences: true)
+            guard parts.count >= 3, let pid = Int32(parts[0]) else { continue }
+            let name = (String(parts[2...].joined(separator: " ")) as NSString).lastPathComponent
+            guard players.contains(name) else { continue }
+            // etime: [[dd-]hh:]mm:ss
+            var secs = 0.0
+            let e = String(parts[1]), dayParts = e.split(separator: "-")
+            let clock = dayParts.last!.split(separator: ":").compactMap { Double($0) }
+            for v in clock { secs = secs * 60 + v }
+            if dayParts.count == 2, let d = Double(dayParts[0]) { secs += d * 86_400 }
+            if secs < uptime { kill(pid, SIGTERM) }
+        }
+    }
+
+    /// On quit: stops playback the AI started elsewhere and ends every launched process group.
+    static func stopEverything() {
+        stopPlayersStartedSinceLaunch()
+        lock.lock(); let gs = groups, ms = media; lock.unlock()
+        for app in ms {
+            _ = runSync("/usr/bin/osascript", ["-e", "if application \"\(app)\" is running then tell application \"\(app)\" to pause"])
+        }
+        for g in gs { kill(-g, SIGTERM) }
+        usleep(300_000)
+        for g in gs { kill(-g, SIGKILL) }
+    }
+
     static let loginEnvironment: [String: String] = {
         var env = ProcessInfo.processInfo.environment
         let p = Process()
@@ -55,6 +118,8 @@ enum Shell {
         do { try p.run() } catch {
             return Result(code: -1, stdout: "", stderr: "\(error)")
         }
+        adopt(p)
+        if exe.hasSuffix("osascript") || exe.hasSuffix("zsh") { noteMedia(in: (args + [stdin ?? ""]).joined(separator: " ")) }
         if let s = stdin { inp.fileHandleForWriting.write(s.data(using: .utf8)!) }
         try? inp.fileHandleForWriting.close()
         var outData = Data(), errData = Data()
