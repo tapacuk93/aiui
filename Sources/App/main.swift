@@ -2,12 +2,12 @@ import Cocoa
 
 // CEF needs its NSApplication subclass to be the shared application.
 let app = AIUIApplication.shared
-let delegate = AppDelegate()
-app.delegate = delegate
-
 let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
     .appendingPathComponent("aiui", isDirectory: true)
 try? FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
+
+let delegate = AppDelegate(support: support)
+app.delegate = delegate
 
 // AIUI_WEB=/path/to/web serves the UI straight from a source tree (live edits + Cmd-R).
 let webRoot = ProcessInfo.processInfo.environment["AIUI_WEB"]

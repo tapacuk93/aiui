@@ -37,6 +37,7 @@ enum Prompts {
         `await aiui.sys({op:"read", path})` → {text}; `{op:"write", path, text}`
         `await aiui.sys({op:"clipboard"})` → {text}; `{op:"clipboard", text}` to set
         `await aiui.sys({op:"notify", title, text})`
+        `await aiui.memory.search("words")` → past actions/outcomes from the memory index
         `aiui.next(data)` → ask you for the next screen with `data` (object) as context
         `aiui.back()` → previous screen
       Style it to match the app: background transparent (app is #0b0b0f), text #e8e8ee, muted #8a8a99, \
@@ -62,6 +63,23 @@ enum Prompts {
     state), `target` (the circle involved), `text` (typed text), `data` (from html views). \
     Answer the event with the most useful next screen — often already containing the real result.
     """
+
+    static func memory(index: String) -> String {
+        """
+
+        ## Memory
+        The app keeps a size-limited cache of the user's actions, their outcomes, and a one-line \
+        index description of each. The index is `\(index)` (newest first: when | hits | action | \
+        description [key]); full entries are `entries/<key>.json` next to it. Search it (grep) when \
+        the user's history or preferences would make a screen better: what they open often, what they \
+        searched, what they made. Every screen you return must carry `note` (a one-line index \
+        description of what the user did and what came out, specific enough to find later) and \
+        `cacheable` (true only when the same action could show the same screen again — menus, \
+        categories, capabilities; false for live data, results, and anything that performed an action). \
+        Cacheable screens are replayed from the cache when the user repeats the action; such replays are \
+        listed for you at the top of the next event as `replayed`.
+        """
+    }
 
     static let pager = """
 
@@ -110,6 +128,8 @@ enum Prompts {
             "circles": ["type": "array", "items": circleSchema],
             "more": ["type": "boolean", "description": "expandable: show the More button"],
             "back": ["type": "boolean", "description": "context needs a visible Back button"],
+            "note": ["type": "string", "description": "one-line index description of this action and its outcome, for the memory index"],
+            "cacheable": ["type": "boolean", "description": "true if repeating the same action may reuse this screen (menus, categories); false for live data or performed actions"],
             "text": ["type": "string"],
             "html": ["type": "string"],
         ],

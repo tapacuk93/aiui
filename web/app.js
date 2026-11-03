@@ -53,6 +53,10 @@ async function call(name, body) {
 window.aiui = {
   call,
   sys: (op) => call('sys', op),
+  memory: {
+    search: (q) => call('cache', { op: 'search', q }).then((r) => r.results),
+    stats: () => call('cache', { op: 'stats' }),
+  },
   next: (data) => ask({ event: 'html', data }, { label: data && data.label }),
   back: () => back(),
   home: () => home(),
@@ -95,8 +99,9 @@ async function ask(evt, { label, replace = false, circle = null } = {}) {
   const my = ++seq;
   setBusy(true, circle);
   try {
-    const { screen } = await call('ai', payload);
+    const { screen, cached } = await call('ai', payload);
     if (my !== seq) return; // cancelled or superseded
+    if (cached) flashStatus('from memory');
     const next = normalize(screen);
     if (replace) {
       current.screen = next;
@@ -541,6 +546,14 @@ document.addEventListener('keydown', onKey);
 
 function esc(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+let flashTimer;
+function flashStatus(text) {
+  el.status.textContent = text;
+  document.body.classList.add('flash');
+  clearTimeout(flashTimer);
+  flashTimer = setTimeout(() => document.body.classList.remove('flash'), 1400);
 }
 
 let toastTimer;

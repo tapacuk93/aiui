@@ -1,7 +1,12 @@
 import Cocoa
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
-    let api = API()
+    let api: API
+
+    init(support: URL) {
+        api = API(support: support)
+        super.init()
+    }
     private var window: NSWindow?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -50,6 +55,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     @objc func showDevTools(_ sender: Any?) { AIUICef.showDevTools() }
     @objc func reloadPage(_ sender: Any?) { AIUICef.reload() }
+    @objc func clearCache(_ sender: Any?) {
+        api.cache.clear()
+    }
+
     @objc func newSession(_ sender: Any?) {
         api.resetSession()
         AIUICef.evalJS("window.aiui && aiui.home()")
@@ -83,6 +92,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let viewItem = NSMenuItem()
         let view = NSMenu(title: "View")
         view.addItem(withTitle: "New Session", action: #selector(newSession(_:)), keyEquivalent: "n").target = self
+        view.addItem(withTitle: "Clear Memory Cache", action: #selector(clearCache(_:)), keyEquivalent: "").target = self
         view.addItem(withTitle: "Reload", action: #selector(reloadPage(_:)), keyEquivalent: "r").target = self
         let dev = view.addItem(withTitle: "Developer Tools", action: #selector(showDevTools(_:)), keyEquivalent: "i")
         dev.keyEquivalentModifierMask = [.command, .option]

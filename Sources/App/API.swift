@@ -2,9 +2,21 @@ import Cocoa
 
 /// Native endpoints behind the page's fetch("/api/<name>").
 final class API: NSObject, AIUIHost {
-    let claude = Claude(persistent: true, systemPrompt: Prompts.system, schema: Prompts.screenSchema)
+    let cache: Cache
+    let claude: Claude
     /// Stateless pager: fetches more circles for the current screen in the background.
-    let pager = Claude(persistent: false, systemPrompt: Prompts.system + Prompts.pager, schema: Prompts.pageSchema)
+    let pager: Claude
+    /// Actions answered from the cache since the AI last heard from us.
+    private var replayed: [[String: Any]] = []
+
+    init(support: URL) {
+        let mb = Int(ProcessInfo.processInfo.environment["AIUI_CACHE_MB"] ?? "") ?? 64
+        cache = Cache(dir: support.appendingPathComponent("cache", isDirectory: true), limitMB: mb)
+        let memory = Prompts.memory(index: cache.indexText.path)
+        claude = Claude(persistent: true, systemPrompt: Prompts.system + memory, schema: Prompts.screenSchema)
+        pager = Claude(persistent: false, systemPrompt: Prompts.system + memory + Prompts.pager, schema: Prompts.pageSchema)
+        super.init()
+    }
 
     func resetSession() { pager.cancel(); claude.reset() }
     func shutdown() { pager.cancel(); claude.cancel() }
@@ -28,15 +40,39 @@ final class API: NSObject, AIUIHost {
 
         case "ai":
             pager.cancel()
-            let prompt = Self.prompt(for: input)
+            let action = Cache.action(from: input)
+            let key = Cache.key(for: action)
+            if (input["fresh"] as? Bool) != true, let screen = cache.lookup(key) {
+                replayed.append(action)
+                if replayed.count > 20 { replayed.removeFirst(replayed.count - 20) }
+                send(["screen": screen, "cached": true])
+                return
+            }
+            var event = input
+            if !replayed.isEmpty { event["replayed"] = replayed }
+            let prompt = Self.prompt(for: event)
             claude.next(prompt: prompt, progress: { line in
                 Self.emit(["type": "progress", "text": line])
-            }, done: { result in
+            }, done: { [weak self] result in
                 switch result {
-                case .success(let screen): send(["screen": screen])
+                case .success(let screen):
+                    guard let self else { return }
+                    self.replayed.removeAll()
+                    self.cache.store(key: key, action: action, outcome: screen)
+                    var clean = screen
+                    clean["note"] = nil
+                    clean["cacheable"] = nil
+                    send(["screen": clean])
                 case .failure(let e): fail(e.localizedDescription)
                 }
             })
+
+        case "cache":
+            switch input["op"] as? String ?? "stats" {
+            case "search": send(["results": cache.search(input["q"] as? String ?? "")])
+            case "clear": cache.clear(); send(cache.stats())
+            default: send(cache.stats())
+            }
 
         case "more":
             let data = (try? JSONSerialization.data(withJSONObject: input, options: [.prettyPrinted, .sortedKeys])) ?? Data()
