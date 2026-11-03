@@ -7,9 +7,12 @@ final class API: NSObject, AIUIHost {
     /// nil until a CLI is detected or an API key is given.
     private(set) var claude: AIEngine?
     private(set) var pager: AIEngine?
+    /// Live suggestions while the user types (stateless, separate so it never cancels paging).
+    private(set) var suggester: AIEngine?
     private(set) var engineID: String?   // cli id, or "key"
     private let systemPrompt: String
     private let pagerPrompt: String
+    private let suggestPrompt: String
     /// Actions answered from the cache since the AI last heard from us.
     private var replayed: [[String: Any]] = []
     /// The user's current flow: earlier actions along the path to the current screen.
@@ -30,6 +33,7 @@ final class API: NSObject, AIUIHost {
         let memory = Prompts.memory(index: cache.indexText.path)
         systemPrompt = Prompts.system + memory
         pagerPrompt = Prompts.system + memory + Prompts.pager
+        suggestPrompt = Prompts.system + memory + Prompts.suggest
         super.init()
         // Saved choice, else the first agent CLI found, else a saved API key.
         let saved = UserDefaults.standard.string(forKey: "engine")
@@ -42,26 +46,26 @@ final class API: NSObject, AIUIHost {
     /// Switches the AI to a detected CLI ("claude", "codex", "gemini") or the saved API key ("key").
     @discardableResult
     func use(_ id: String) -> Bool {
-        let main: AIEngine, page: AIEngine
+        let make: (Bool, String, String) -> AIEngine
         switch id {
         case "claude":
             guard Shell.which("claude") != nil else { return false }
-            main = Claude(persistent: true, systemPrompt: systemPrompt, schema: Prompts.screenSchema)
-            page = Claude(persistent: false, systemPrompt: pagerPrompt, schema: Prompts.pageSchema)
+            make = { Claude(persistent: $0, systemPrompt: $1, schema: $2) }
         case "codex", "gemini":
             guard Shell.which(id) != nil else { return false }
             let name = Provider.clis.first { $0.id == id }?.name ?? id
-            main = AgentCLI(id: id, label: name, persistent: true, systemPrompt: systemPrompt, schema: Prompts.screenSchema)
-            page = AgentCLI(id: id, label: name, persistent: false, systemPrompt: pagerPrompt, schema: Prompts.pageSchema)
+            make = { AgentCLI(id: id, label: name, persistent: $0, systemPrompt: $1, schema: $2) }
         case "key":
             guard let key = Provider.loadKey() else { return false }
-            main = APIEngine(key: key, persistent: true, systemPrompt: systemPrompt, schema: Prompts.screenSchema)
-            page = APIEngine(key: key, persistent: false, systemPrompt: pagerPrompt, schema: Prompts.pageSchema)
+            make = { APIEngine(key: key, persistent: $0, systemPrompt: $1, schema: $2) }
         default:
             return false
         }
-        claude?.cancel(); pager?.cancel()
-        claude = main; pager = page; engineID = id
+        claude?.cancel(); pager?.cancel(); suggester?.cancel()
+        claude = make(true, systemPrompt, Prompts.screenSchema)
+        pager = make(false, pagerPrompt, Prompts.pageSchema)
+        suggester = make(false, suggestPrompt, Prompts.suggestSchema)
+        engineID = id
         UserDefaults.standard.set(id, forKey: "engine")
         return true
     }
@@ -76,8 +80,8 @@ final class API: NSObject, AIUIHost {
         return out
     }
 
-    func resetSession() { pager?.cancel(); claude?.reset() }
-    func shutdown() { pager?.cancel(); claude?.cancel() }
+    func resetSession() { pager?.cancel(); suggester?.cancel(); claude?.reset() }
+    func shutdown() { pager?.cancel(); suggester?.cancel(); claude?.cancel() }
 
     func handleAPI(_ path: String, body: Data, reply: @escaping AIUIReply) {
         let input = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any] ?? [:]
@@ -113,9 +117,28 @@ final class API: NSObject, AIUIHost {
             }
             send(engineStatus())
 
+        case "suggest":
+            guard let suggester else { return fail("no-ai") }
+            var input = input
+            var words = (input["path"] as? [String]) ?? []
+            if let q = input["input"] as? String { words.append(q) }
+            let related = cache.related(words)
+            if !related.isEmpty { input["memory"] = related }
+            let flows = cache.overview(limit: 10)
+            if !flows.isEmpty { input["flows"] = flows }
+            let data = (try? JSONSerialization.data(withJSONObject: input, options: [.prettyPrinted, .sortedKeys])) ?? Data()
+            let prompt = "The user is typing on this screen. Suggest circles for their input:\n```json\n\(String(decoding: data, as: UTF8.self))\n```"
+            suggester.next(prompt: prompt, progress: { _ in }, done: { result in
+                switch result {
+                case .success(let r): send(r)
+                case .failure(let e): fail(e.localizedDescription)
+                }
+            })
+
         case "ai":
             guard let claude, let pager else { return fail("no-ai") }
             pager.cancel()
+            suggester?.cancel()
             let action = Cache.action(from: input)
             let key = Cache.key(for: action)
             let steps = advanceFlow(action)
@@ -165,6 +188,7 @@ final class API: NSObject, AIUIHost {
         case "cache":
             switch input["op"] as? String ?? "stats" {
             case "search": send(["results": cache.search(input["q"] as? String ?? "")])
+            case "likely": send(["label": cache.likely(path: input["path"] as? [String] ?? []) ?? NSNull()])
             case "clear": cache.clear(); send(cache.stats())
             default: send(cache.stats())
             }
@@ -193,7 +217,9 @@ final class API: NSObject, AIUIHost {
             })
 
         case "cancel":
-            if (input["pager"] as? Bool) == true { pager?.cancel() } else { claude?.cancel() }
+            if (input["pager"] as? Bool) == true { pager?.cancel() }
+            else if (input["suggest"] as? Bool) == true { suggester?.cancel() }
+            else { claude?.cancel() }
             send(["ok": true])
 
         case "reset":

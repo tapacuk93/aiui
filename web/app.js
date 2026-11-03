@@ -6,7 +6,7 @@ const el = {
   path: $('#path'), title: $('#title'), message: $('#message'),
   circles: $('#circles'), view: $('#view'), write: $('#write'),
   status: $('#status'), go: $('#go'), toast: $('#toast'),
-  prev: $('#prev'), more: $('#more'), stage: $('#stage'), close: $('#close'),
+  prev: $('#prev'), more: $('#more'), stage: $('#stage'), close: $('#close'), top: $('#top'),
 };
 
 // Human capabilities, each backed by technical ones.
@@ -37,7 +37,6 @@ const clone = (o) => JSON.parse(JSON.stringify(o));
 let stack = [];                       // previous {screen, label}
 let current = { screen: clone(ROOT), label: null };
 let busy = false;
-let writing = false;
 let pendingCircle = null;
 let seq = 0;                          // id of the AI turn currently wanted
 const paging = { loading: false, failed: false, token: 0, n: 0 };
@@ -217,7 +216,7 @@ async function connectKey(text) {
 
 function back() {
   if (busy) return cancel();
-  if (writing && current.screen.kind !== 'text') return stopWriting();
+  if (typing() && current.screen.kind !== 'text') return stopWriting(true);
   if (!stack.length) return;
   current = stack.pop();
   stopWriting(true);
@@ -236,6 +235,7 @@ function home() {
 
 function render() {
   const s = current.screen;
+  focusManual = false;
   paging.token++;
   paging.loading = false;
   paging.failed = false;
@@ -248,20 +248,26 @@ function render() {
   document.body.classList.remove('mode-circles', 'mode-text', 'mode-html');
   document.body.classList.add('mode-' + s.kind);
 
-  el.circles.innerHTML = '';
+  if (s.kind !== 'circles') el.circles.innerHTML = '';
   el.view.innerHTML = '';
 
   if (s.kind === 'circles') renderCircles(s);
   else if (s.kind === 'html') renderHTML(s);
-  else if (s.kind === 'text') startWriting(null, null, s.text || '');
+  else if (s.kind === 'text') startWriting(s.text || '');
   updateGo();
-  layoutPages();
+  fitStage();
+  layoutPages(typing());
+  if (s.kind === 'circles') initFocus(s);
 }
 
 function renderCircles(s) {
-  (s.circles || []).forEach((c) => {
+  const before = new Set([...el.circles.children].map((n) => n.dataset.id));
+  el.circles.innerHTML = '';
+  visibleCircles(s).forEach((c) => {
     if (c.removed) return;
-    el.circles.appendChild(circleEl(c, 0));
+    const node = circleEl(c, 0);
+    if (before.has(c.id)) node.style.animation = 'none'; // only new circles animate in
+    el.circles.appendChild(node);
   });
 }
 
@@ -330,8 +336,14 @@ function showPage() {
     n.hidden = !on;
     if (on) n.dataset.shown = String(s.page);
   }));
-  // Freeze every page up to the one shown.
-  s.frozen = pages.slice(0, (s.page || 0) + 1).map((p) => p.map((n) => n.dataset.id));
+  // Freeze every page up to the one shown (not while typing: live circles re-flow freely).
+  if (!typing()) s.frozen = pages.slice(0, (s.page || 0) + 1).map((p) => p.map((n) => n.dataset.id));
+  // Keep the focus ring on this page.
+  const shown = pages[s.page] || [];
+  if (shown.length && !shown.some((n) => n.dataset.id === focusedId())) {
+    setFocus((focusEdge === 'last' ? shown[shown.length - 1] : shown[0]).dataset.id);
+  }
+  focusEdge = 'first';
   updatePager();
 }
 
@@ -375,7 +387,7 @@ function prevPage() {
 // Keep one full page ready beyond the one shown.
 function maybePreload() {
   const s = current.screen;
-  if (s.kind !== 'circles' || !s.more || s.local || paging.loading || paging.failed || busy) return;
+  if (s.kind !== 'circles' || !s.more || s.local || typing() || paging.loading || paging.failed || busy) return;
   const page = s.page || 0, last = lastPage();
   const capacity = Math.max(...pages.map((p) => p.length), 1);
   const nextReady = last > page + 1 || (last === page + 1 && pages[last].length >= capacity);
@@ -433,7 +445,9 @@ new ResizeObserver(() => {
 
 function circleEl(c, i) {
   const node = document.createElement('div');
-  node.className = 'circle' + (c.selected ? ' selected' : '');
+  node.className = 'circle' + (c.selected ? ' selected' : '') + (c.typed ? ' typed' : '') +
+    (c.suggested ? ' suggested' : '') +
+    (c.id === focusedId() ? ' focused' : '');
   node.dataset.id = c.id;
   node.style.setProperty('--i', i);
   const size = Math.max(0.7, Math.min(1.5, Number(c.size) || 1));
@@ -454,12 +468,23 @@ function circleEl(c, i) {
   node.querySelector('.plus').addEventListener('click', (e) => { e.stopPropagation(); plus(c, node); });
   node.querySelector('.face').addEventListener('click', (e) => {
     e.stopPropagation();
+    setFocus(c.id, true);
     // Shift/Cmd-click selects instead of opening.
     if (e.shiftKey || e.metaKey) return toggleSelect(c, node);
-    if (current.screen.local) return localOpen(c);
-    ask({ event: 'open', target: circleSummary(c) }, { label: c.label, circle: node });
+    openCircle(c, node);
   });
   return node;
+}
+
+// Opens a circle: the typed-text circle sends the text; any other circle opens with the
+// typed text (if any) as context.
+function openCircle(c, node) {
+  if (c.typed) return submitText();
+  if (current.screen.local) return localOpen(c);
+  const text = typing() ? el.write.value.trim() : '';
+  const evt = { event: 'open', target: circleSummary(c) };
+  if (text) evt.text = text;
+  ask(evt, { label: c.label, circle: node });
 }
 
 function toggleSelect(c, node) {
@@ -468,6 +493,10 @@ function toggleSelect(c, node) {
 }
 
 function minus(c, node) {
+  if (c.suggested) {
+    live.circles = live.circles.filter((x) => x !== c);
+    return rerenderLive();
+  }
   const mode = c.minus || 'remove';
   if (mode === 'decrement' && c.value > 0) c.value -= 1;
   else if (c.selected) { c.selected = false; if (c.value > 1 && mode !== 'decrement') c.value = null; }
@@ -483,6 +512,13 @@ function minus(c, node) {
 }
 
 function plus(c, node) {
+  if (c.suggested) {
+    // Adopt the suggestion into the screen, selected.
+    live.circles = live.circles.filter((x) => x !== c);
+    const { suggested, ...rest } = c;
+    current.screen.circles.push({ ...rest, id: c.id.replace(/^s~/, 'a~'), selected: true });
+    return rerenderLive();
+  }
   const mode = c.plus || 'select';
   if (mode === 'more') {
     return ask({ event: 'more', target: circleSummary(c) }, { replace: true, circle: node });
@@ -498,6 +534,7 @@ function refresh(c, node) {
   fresh.style.animation = 'none';
   fresh.dataset.shown = node.dataset.shown || '';
   fresh.hidden = node.hidden;
+  fresh.classList.toggle('focused', node.classList.contains('focused'));
   node.replaceWith(fresh);
   pages = pages.map((p) => p.map((n) => (n === node ? fresh : n)));
   updateGo();
@@ -560,7 +597,8 @@ function updateGo() {
   const s = current.screen;
   const text = el.write.value.trim();
   let label = null;
-  if (writing && text) label = s.kind === 'text' && s.go ? s.go : 'Send';
+  if (s.kind === 'text' && text) label = s.go || 'Send';
+  else if (typing() && text) label = null; // Enter opens the focused circle
   else if (s.go) label = s.go;
   else if (anySelected()) label = 'Go';
   el.go.textContent = label || 'Go';
@@ -569,36 +607,124 @@ function updateGo() {
 
 el.go.addEventListener('click', (e) => {
   e.stopPropagation();
-  if (writing && el.write.value.trim()) return submitText();
+  if (current.screen.kind === 'text' && el.write.value.trim()) return submitText();
   if (current.screen.local) return;
   ask({ event: 'go' }, { label: current.screen.go || 'Go' });
 });
 
-// ---------------------------------------------------------------- writing
+// ---------------------------------------------------------------- focus
+// One focused circle per screen (a ring, separate from + selection). Arrows move it, Enter opens
+// it. A new screen starts on the AI's `focus`, else the user's most frequent choice, else the first.
 
-function startWriting(x, y, text) {
-  writing = true;
-  const w = innerWidth, h = innerHeight;
-  const px = x == null ? 60 : Math.max(60, Math.min(x, w - 320));
-  const py = y == null ? (current.screen.title ? 130 : 90) : Math.max(90, Math.min(y - 14, h - 220));
-  el.write.style.setProperty('--px', px + 'px');
-  el.write.style.setProperty('--py', py + 'px');
+let focusEdge = 'first'; // where focus lands after a page change
+let focusManual = false; // the user moved focus since the last keystroke
+
+function focusedId() {
+  return typing() ? live.focus : current.screen.focusId;
+}
+
+function setFocus(id, manual) {
+  if (typing()) live.focus = id; else current.screen.focusId = id;
+  if (manual) focusManual = true;
+  for (const n of el.circles.children) n.classList.toggle('focused', n.dataset.id === id);
+  // Bring its page into view.
+  const i = pages.findIndex((p) => p.some((n) => n.dataset.id === id));
+  if (i >= 0 && i !== current.screen.page) { current.screen.page = i; showPage(); }
+}
+
+function initFocus(s) {
+  const ids = [...el.circles.children].map((n) => n.dataset.id);
+  if (typing()) return setFocus(ids.includes(live.focus) ? live.focus : ids[0]);
+  if (ids.includes(s.focusId)) return setFocus(s.focusId);
+  if (s.focus && ids.includes(s.focus)) return setFocus(s.focus);
+  setFocus(ids[0]);
+  // The user's habit on this screen, from the flow index.
+  const path = [...stack.map((e) => e.label), current.label].filter(Boolean);
+  const screen = s;
+  call('cache', { op: 'likely', path }).then(({ label }) => {
+    if (!label || current.screen !== screen || focusManual || typing()) return;
+    const c = (screen.circles || []).find((x) => !x.removed && x.label === label);
+    if (c) setFocus(c.id);
+  }).catch(() => {});
+}
+
+function focusedNode() {
+  return [...el.circles.children].find((n) => n.dataset.id === focusedId() && !n.hidden);
+}
+
+// Spatial move among the circles on this page; past the edge, to the next/previous page.
+function moveFocus(dir) {
+  const nodes = [...el.circles.children].filter((n) => !n.hidden);
+  if (!nodes.length) return;
+  const cur = focusedNode();
+  if (!cur) return setFocus(nodes[0].dataset.id, true);
+  if (dir === 'next' || dir === 'prev') {
+    const i = nodes.indexOf(cur) + (dir === 'next' ? 1 : -1);
+    if (i >= 0 && i < nodes.length) return setFocus(nodes[i].dataset.id, true);
+    return edge(dir === 'next' ? 1 : -1);
+  }
+  const r0 = cur.getBoundingClientRect();
+  const c0 = { x: r0.left + r0.width / 2, y: r0.top + r0.height / 2 };
+  const v = { left: [-1, 0], right: [1, 0], up: [0, -1], down: [0, 1] }[dir];
+  let best = null, bestScore = Infinity;
+  for (const n of nodes) {
+    if (n === cur) continue;
+    const r = n.getBoundingClientRect();
+    const dx = r.left + r.width / 2 - c0.x, dy = r.top + r.height / 2 - c0.y;
+    const along = dx * v[0] + dy * v[1];
+    if (along <= 4) continue;
+    const across = Math.abs(dx * v[1] - dy * v[0]);
+    const score = along + across * 2.5;
+    if (score < bestScore) { bestScore = score; best = n; }
+  }
+  if (best) return setFocus(best.dataset.id, true);
+  edge(dir === 'right' || dir === 'down' ? 1 : -1);
+}
+
+function edge(step) {
+  focusManual = true;
+  if (step > 0) { focusEdge = 'first'; nextPage(); }
+  else { focusEdge = 'last'; prevPage(); }
+}
+
+// ---------------------------------------------------------------- typing
+// Typing any character opens a text input under the title (in its place when there is none).
+// Circles live-update around the input: first the typed text itself (focused by default; Enter
+// sends it), then matching circles of this screen, then circles the AI suggests for the input.
+
+const live = { focus: '__typed', circles: [], q: '', timer: 0, token: 0 };
+
+function typing() {
+  return document.body.classList.contains('typing');
+}
+
+function startWriting(text) {
+  const s = current.screen;
+  document.body.classList.add('typing');
+  document.body.classList.toggle('typing-text', s.kind === 'text');
   if (text != null) el.write.value = text;
-  el.write.placeholder = current.screen.kind === 'text' ? '' : 'Type anything — Enter to send, Esc to close';
-  document.body.classList.add('writing');
+  el.write.placeholder = s.kind === 'text' ? '' : 'Type — Enter opens the highlighted circle, ⌥Enter new line, Esc closes';
   el.write.focus();
+  autosize();
+  fitStage();
+  if (s.kind === 'circles') { live.focus = '__typed'; focusManual = false; rerenderLive(); }
   updateGo();
 }
 
 function stopWriting(clear) {
-  writing = false;
-  document.body.classList.remove('writing');
+  const was = typing();
+  document.body.classList.remove('typing', 'typing-text');
   if (clear) el.write.value = '';
   el.write.blur();
+  clearTimeout(live.timer);
+  live.circles = []; live.q = ''; live.token++;
+  autosize();
+  fitStage();
+  if (was && current.screen.kind === 'circles') { renderCircles(current.screen); layoutPages(true); initFocus(current.screen); }
   updateGo();
 }
 
-// Esc always gets out of typing: cancels a pending send, closes and clears the text area
+// Esc always gets out of typing: cancels a pending send and clears the input
 // (on an AI text screen it leaves the screen).
 function escapeWriting() {
   if (busy) cancel();
@@ -615,29 +741,130 @@ function submitText() {
   ask({ event: 'text', text }, { label: text.length > 28 ? text.slice(0, 26) + '…' : text });
 }
 
-el.write.addEventListener('input', updateGo);
+function matchScore(c, q) {
+  const label = String(c.label || '').toLowerCase(), hint = String(c.hint || '').toLowerCase();
+  if (label.startsWith(q)) return 4;
+  if (label.split(/\s+/).some((w) => w.startsWith(q))) return 3;
+  if (label.includes(q)) return 2;
+  if (hint.includes(q)) return 1;
+  return 0;
+}
+
+// The circles shown for the current input.
+function visibleCircles(s) {
+  const q = el.write.value.trim();
+  if (!typing() || !q || s.kind !== 'circles') return s.circles || [];
+  const ql = q.toLowerCase();
+  const typed = { id: '__typed', typed: true, icon: '✍️', label: q.length > 42 ? q.slice(0, 40) + '…' : q,
+    hint: 'as typed', size: 1.1 };
+  const matches = (s.circles || []).filter((c) => !c.removed)
+    .map((c) => [c, matchScore(c, ql)]).filter(([, v]) => v > 0)
+    .sort((a, b) => b[1] - a[1]).map(([c]) => c);
+  const seen = new Set(matches.map((c) => c.label.toLowerCase()));
+  const sugg = live.circles.filter((c) => !seen.has(c.label.toLowerCase()) && seen.add(c.label.toLowerCase()));
+  return [typed, ...matches, ...sugg];
+}
+
+function rerenderLive() {
+  if (current.screen.kind !== 'circles') return;
+  renderCircles(current.screen);
+  layoutPages(true);
+  const ids = [...el.circles.children].map((n) => n.dataset.id);
+  setFocus(ids.includes(live.focus) ? live.focus : ids[0]);
+  updateGo();
+}
+
+function onInput() {
+  autosize();
+  updateGo();
+  const s = current.screen;
+  if (s.kind !== 'circles') return;
+  const q = el.write.value.trim();
+  if (!q) { live.circles = []; live.focus = '__typed'; }
+  if (!focusManual) live.focus = '__typed';
+  focusManual = false;
+  rerenderLive();
+  // Ask the AI for circles inspired by the input once typing pauses.
+  clearTimeout(live.timer);
+  if (!q || s.local) return;
+  live.timer = setTimeout(() => suggestFor(q), 650);
+}
+
+async function suggestFor(q) {
+  const screen = current.screen;
+  const tok = ++live.token;
+  el.status.textContent = 'thinking about “' + (q.length > 30 ? q.slice(0, 28) + '…' : q) + '”';
+  document.body.classList.add('suggesting');
+  try {
+    const r = await call('suggest', {
+      input: q,
+      path: [...stack.map((e) => e.label), current.label].filter(Boolean),
+      screen: summary(screen),
+    });
+    if (tok !== live.token || screen !== current.screen || !typing()) return;
+    live.q = q;
+    live.circles = (r.circles || []).filter((c) => c && c.label)
+      .map((c, i) => ({ ...c, id: 's~' + (c.id || i), suggested: true }));
+    const wanted = r.focus && live.circles.find((c) => c.id === 's~' + r.focus || c.id === r.focus);
+    rerenderLive();
+    if (wanted && !focusManual) setFocus(wanted.id);
+  } catch (e) {
+    if (tok === live.token && e.message !== 'cancelled') flashStatus(e.message === 'no-ai' ? 'no AI connected' : 'no suggestions');
+  } finally {
+    if (tok === live.token) document.body.classList.remove('suggesting');
+  }
+}
+
+function autosize() {
+  el.write.style.height = 'auto';
+  el.write.style.height = Math.min(el.write.scrollHeight, innerHeight * 0.5) + 'px';
+}
+
+// The circles area starts below the header, whatever the header holds.
+function fitStage() {
+  const top = el.top.getBoundingClientRect().bottom;
+  el.stage.style.paddingTop = Math.max(70, Math.round(top + 18)) + 'px';
+}
+new ResizeObserver(fitStage).observe(el.top);
+
+el.write.addEventListener('input', onInput);
 el.write.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+  const kind = current.screen.kind;
+  // Option/Shift+Enter: new line (the input grows and pushes the circles down).
+  if (e.key === 'Enter' && (e.altKey || e.shiftKey)) {
     e.preventDefault();
-    submitText();
-  } else if (e.key === 'Escape') {
+    el.write.setRangeText('\n', el.write.selectionStart, el.write.selectionEnd, 'end');
+    return onInput();
+  }
+  if (e.key === 'Enter' && !e.isComposing) {
     e.preventDefault();
-    escapeWriting();
-  } else if (e.key === 'Backspace' && !el.write.value && current.screen.kind !== 'text') {
-    e.preventDefault();
-    stopWriting();
+    if (e.metaKey && (current.screen.go || anySelected())) return el.go.click();
+    if (kind === 'circles') {
+      const n = focusedNode();
+      const c = n && visibleCircles(current.screen).find((x) => x.id === n.dataset.id);
+      return c ? openCircle(c, n) : submitText();
+    }
+    return submitText();
+  }
+  if (e.key === 'Escape') { e.preventDefault(); return escapeWriting(); }
+  if (kind === 'circles') {
+    const empty = !el.write.value;
+    const map = { ArrowUp: 'up', ArrowDown: 'down', Tab: e.shiftKey ? 'prev' : 'next' };
+    if (empty) Object.assign(map, { ArrowLeft: 'left', ArrowRight: 'right' });
+    if (map[e.key]) { e.preventDefault(); moveFocus(map[e.key]); return; }
+    if (e.key === 'Backspace' && empty) { e.preventDefault(); return stopWriting(true); }
   }
   e.stopPropagation();
 });
 
-// Any empty place on screen becomes a text input at the click point.
+// A click on any empty place opens the text input.
 document.addEventListener('mousedown', (e) => {
   if (e.button !== 0) return;
   const t = e.target;
   if (t === el.write || t.closest('.circle, #nav, #view iframe, #toast, #close')) return;
   if (current.screen.kind === 'html' && t.closest('#view')) return;
   e.preventDefault();
-  startWriting(e.clientX, e.clientY);
+  startWriting();
 });
 
 // ---------------------------------------------------------------- keys
@@ -647,25 +874,39 @@ function isEditable(t) {
 }
 
 function onKey(e) {
-  if (e.key === 'Escape' && writing) { e.preventDefault(); return escapeWriting(); }
+  if (e.key === 'Escape' && typing()) { e.preventDefault(); return escapeWriting(); }
   if (isEditable(e.target)) return;
+  const circles = current.screen.kind === 'circles';
+  const arrows = { ArrowLeft: 'left', ArrowRight: 'right', ArrowUp: 'up', ArrowDown: 'down', Tab: e.shiftKey ? 'prev' : 'next' };
   if (e.key === 'Backspace' || (e.metaKey && e.key === '[')) {
     e.preventDefault();
-    if (!busy && !writing && prevPage()) return;
+    if (!busy && prevPage()) return;
     back();
   } else if (e.key === 'Escape') {
     if (busy) cancel();
-  } else if (/^(ArrowRight|ArrowDown|PageDown)$/.test(e.key) && current.screen.kind === 'circles') {
+  } else if (circles && arrows[e.key]) {
     e.preventDefault();
-    nextPage();
-  } else if (/^(ArrowLeft|ArrowUp|PageUp)$/.test(e.key) && current.screen.kind === 'circles') {
+    moveFocus(arrows[e.key]);
+  } else if (circles && (e.key === 'PageDown' || e.key === 'PageUp')) {
     e.preventDefault();
-    prevPage();
-  } else if (e.key === 'Enter' && (e.metaKey || current.screen.go || anySelected())) {
-    if (current.screen.kind !== 'html' || e.metaKey) { e.preventDefault(); el.go.click(); }
+    e.key === 'PageDown' ? nextPage() : prevPage();
+  } else if (e.key === 'Enter') {
+    if (e.metaKey && (current.screen.go || anySelected())) { e.preventDefault(); return el.go.click(); }
+    if (circles) {
+      const n = focusedNode();
+      const c = n && (current.screen.circles || []).find((x) => x.id === n.dataset.id);
+      if (c) { e.preventDefault(); return openCircle(c, n); }
+    }
+    if (current.screen.go || anySelected()) { e.preventDefault(); el.go.click(); }
+  } else if (circles && e.key === ' ') {
+    // Space selects the focused circle (like its + ear).
+    e.preventDefault();
+    const n = focusedNode();
+    const c = n && (current.screen.circles || []).find((x) => x.id === n.dataset.id);
+    if (c) toggleSelect(c, n);
   } else if (e.key.length === 1 && !e.metaKey && !e.ctrlKey && !e.altKey && current.screen.kind !== 'html') {
-    // Typing anywhere starts writing.
-    startWriting(null, null);
+    // Typing any symbol opens the input; the character lands in it.
+    startWriting();
   }
 }
 document.addEventListener('keydown', onKey);

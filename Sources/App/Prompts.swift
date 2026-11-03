@@ -58,6 +58,12 @@ enum Prompts {
       an explicit way back (multi-step flows, after an action, previews, confirmations); Backspace \
       always works anyway.
 
+    Keyboard: arrows move a focus ring between circles and Enter opens the focused one. Set `focus` \
+    to the id of the circle the user most likely wants next — it starts pre-selected. Typing shows a \
+    text input under the title; the circles then live-update around what is typed, and the first \
+    circle is the typed text itself. When the user opens a circle while typing, the event carries \
+    both `target` and `text`.
+
     Every screen may have a `title` and a `go` label (Go button, bottom center) — decide per screen; \
     omit them when they add nothing. Go means "do it / continue with what is selected". `message` is an \
     optional short line under the title (status, result summary, a question).
@@ -105,6 +111,24 @@ enum Prompts {
     truly exhausted. Do not perform any actions; only list.
     """
 
+    static let suggest = """
+
+    ## Live suggestion mode
+    You are now the suggester, a separate background call made while the user is still typing on a \
+    screen. You get the screen, the flow index and `input` (what they have typed so far). Return 3–8 \
+    circles inspired by the input: what they most likely mean or want to do with it on this screen — \
+    completions, concrete targets, next actions — informed by their past flows. Be fast: answer from \
+    what you know and the index; use a tool only when one quick lookup clearly matters. Do not perform \
+    any actions. Set `focus` to a circle id only when it is clearly better than sending the typed text \
+    as is; otherwise leave it unset.
+    """
+
+    static let suggestSchema: String = json([
+        "type": "object",
+        "properties": ["circles": ["type": "array", "items": circleSchema], "focus": ["type": "string"]],
+        "required": ["circles"],
+    ])
+
     static let pageSchema: String = json([
         "type": "object",
         "properties": ["circles": ["type": "array", "items": circleSchema], "more": ["type": "boolean"]],
@@ -141,6 +165,7 @@ enum Prompts {
             "circles": ["type": "array", "items": circleSchema],
             "more": ["type": "boolean", "description": "expandable: show the More button"],
             "back": ["type": "boolean", "description": "context needs a visible Back button"],
+            "focus": ["type": "string", "description": "id of the circle the user most likely wants next; it starts pre-selected"],
             "note": ["type": "string", "description": "one-line index description of this action and its outcome, for the memory index"],
             "reuse": ["type": "string", "description": "key of a stored outcome (from memory/index) to show instead of building a new one"],
             "cacheable": ["type": "boolean", "description": "true if repeating the same action may reuse this screen (menus, categories); false for live data or performed actions"],

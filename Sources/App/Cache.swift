@@ -126,6 +126,16 @@ final class Cache {
         return entry.outcome.mapValues { $0.value }
     }
 
+    /// The circle the user most often opens on the screen at `path` (by label), if any.
+    func likely(path: [String]) -> String? {
+        let rows = index.values.filter { row in
+            let a = row.action.mapValues { $0.value }
+            return a["event"] as? String == "open" && ((a["path"] as? [Any])?.map { "\($0)" } ?? []) == path
+        }
+        return rows.max { $0.hits != $1.hits ? $0.hits < $1.hits : $0.lastUsed < $1.lastUsed }
+            .flatMap { $0.action["target"]?.value as? String }
+    }
+
     /// The flow index in brief: most recent and most used flows, one line each.
     func overview(limit: Int = 16) -> [String] {
         let recent = index.values.sorted { $0.lastUsed > $1.lastUsed }.prefix(limit * 2 / 3)
