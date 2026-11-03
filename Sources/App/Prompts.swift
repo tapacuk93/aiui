@@ -43,16 +43,21 @@ enum Prompts {
       accent #7c9cff, system-ui font, generous spacing, rounded 14px surfaces of rgba(255,255,255,.05). \
       Keep the bottom 90px free (the Go button may live there).
 
-    Circle sets can be open-ended (things to do, files, results, ideas): set `more: true` and the app \
-    shows up/down buttons and fetches further pages of circles in the background as the user scrolls. \
-    Return the most useful first page (about 8–16 circles); leave `more` unset when the set is complete.
+    The app never scrolls. Bottom row: [Back] [Go] [More].
+    - `more: true` marks a screen as expandable and shows the More button. For circles, the app \
+      pages through what doesn't fit and fetches further pages from a background pager, so return the \
+      most useful first page (about 8–16 circles). For text/html screens, More asks you (event "more") \
+      to extend the content. Leave `more` unset when the screen is complete.
+    - `back: true` shows a Back button to the previous screen. Set it only when the context calls for \
+      an explicit way back (multi-step flows, after an action, previews, confirmations); Backspace \
+      always works anyway.
 
     Every screen may have a `title` and a `go` label (Go button, bottom center) — decide per screen; \
     omit them when they add nothing. Go means "do it / continue with what is selected". `message` is an \
     optional short line under the title (status, result summary, a question).
 
     ## What you receive
-    Each user turn is a JSON event: `event` (open | go | text | more | html | start), `path` \
+    Each user turn is a JSON event: `event` (open | go | text | more | html), `path` \
     (labels from the root to here), `screen` (the current screen with circles' selected/value/removed \
     state), `target` (the circle involved), `text` (typed text), `data` (from html views). \
     Answer the event with the most useful next screen — often already containing the real result.
@@ -103,7 +108,8 @@ enum Prompts {
             "message": ["type": "string"],
             "go": ["type": "string", "description": "Go button label; omit for no Go button"],
             "circles": ["type": "array", "items": circleSchema],
-            "more": ["type": "boolean", "description": "more circles can be paged in on scroll"],
+            "more": ["type": "boolean", "description": "expandable: show the More button"],
+            "back": ["type": "boolean", "description": "context needs a visible Back button"],
             "text": ["type": "string"],
             "html": ["type": "string"],
         ],

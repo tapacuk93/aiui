@@ -6,7 +6,7 @@ const el = {
   path: $('#path'), title: $('#title'), message: $('#message'),
   circles: $('#circles'), view: $('#view'), write: $('#write'),
   status: $('#status'), go: $('#go'), toast: $('#toast'),
-  up: $('#up'), down: $('#down'),
+  prev: $('#prev'), more: $('#more'), stage: $('#stage'),
 };
 
 // Human capabilities, each backed by technical ones.
@@ -134,7 +134,7 @@ function setBusy(on, circle) {
   pendingCircle = on ? circle : null;
   if (pendingCircle) pendingCircle.classList.add('pending');
   if (on) el.status.textContent = 'thinking';
-  else requestAnimationFrame(updatePager);
+  else updatePager();
 }
 
 // ---------------------------------------------------------------- navigation
@@ -162,6 +162,7 @@ function render() {
   const s = current.screen;
   paging.token++;
   paging.loading = false;
+  wantNext = false;
   const labels = [...stack.map((e) => e.label), current.label].filter(Boolean);
   el.path.innerHTML = labels.map((l) => `<span>${esc(l)}</span>`).join('');
   el.title.textContent = s.title || '';
@@ -177,38 +178,115 @@ function render() {
   else if (s.kind === 'html') renderHTML(s);
   else if (s.kind === 'text') startWriting(null, null, s.text || '');
   updateGo();
-  requestAnimationFrame(updatePager);
+  layoutPages();
 }
 
 function renderCircles(s) {
-  (s.circles || []).forEach((c, i) => {
+  (s.circles || []).forEach((c) => {
     if (c.removed) return;
-    el.circles.appendChild(circleEl(c, i));
+    el.circles.appendChild(circleEl(c, 0));
   });
-  el.circles.scrollTop = s.scrollTop || 0;
 }
 
-// ---------------------------------------------------------------- paging
+// ---------------------------------------------------------------- pages
+// No scrolling: circles that don't fit go to further pages. "More" shows the next page
+// (asking the AI pager for one when the set is open-ended); "Back" appears after page one.
 
+let pages = [];      // arrays of circle nodes
+let wantNext = false; // More was pressed while the next page was still loading
+
+function layoutPages() {
+  const s = current.screen;
+  if (s.kind !== 'circles') { pages = []; return updatePager(); }
+  const nodes = [...el.circles.children].filter((n) => !n.classList.contains('leaving'));
+  const firstShown = nodes.find((n) => !n.hidden);
+  nodes.forEach((n) => { n.hidden = false; });
+
+  const cs = getComputedStyle(el.stage);
+  const avail = el.stage.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom) - 48;
+  const gap = parseFloat(getComputedStyle(el.circles).rowGap) || 0;
+
+  const rows = [];
+  for (const n of nodes) {
+    const last = rows[rows.length - 1];
+    if (last && Math.abs(n.offsetTop - last.top) < 3) {
+      last.nodes.push(n);
+      last.h = Math.max(last.h, n.offsetHeight);
+    } else rows.push({ top: n.offsetTop, h: n.offsetHeight, nodes: [n] });
+  }
+  pages = [];
+  let cur = [], used = 0;
+  for (const r of rows) {
+    const need = r.h + (cur.length ? gap : 0);
+    if (cur.length && used + need > avail) { pages.push(cur); cur = []; used = 0; }
+    cur.push(...r.nodes);
+    used += cur.length === r.nodes.length ? r.h : need;
+  }
+  if (cur.length) pages.push(cur);
+
+  // Keep the circles the user was looking at in view after a resize.
+  if (firstShown) {
+    const i = pages.findIndex((p) => p.includes(firstShown));
+    if (i >= 0) s.page = i;
+  }
+  s.page = Math.max(0, Math.min(s.page || 0, pages.length - 1));
+  showPage();
+}
+
+function showPage() {
+  const s = current.screen;
+  pages.forEach((p, i) => p.forEach((n, j) => {
+    const on = i === s.page;
+    if (on && n.hidden) n.style.setProperty('--i', j); // stagger the entrance
+    n.hidden = !on;
+  }));
+  updatePager();
+}
+
+function lastPage() { return Math.max(0, pages.length - 1); }
+
+// More: on every screen the AI marks expandable (`more`), and whenever circle pages remain.
+// Back: after paging forward, or when the AI says the context needs it (`back`).
 function updatePager() {
-  const s = current.screen, c = el.circles;
+  const s = current.screen;
   const circles = s.kind === 'circles';
-  const canUp = c.scrollTop > 4;
-  const canDown = c.scrollTop + c.clientHeight < c.scrollHeight - 4;
-  el.up.classList.toggle('on', circles && canUp);
-  el.down.classList.toggle('on', circles && (canDown || (!!s.more && paging.loading)));
-  el.down.classList.toggle('loading', circles && !canDown && paging.loading);
-  if (circles) s.scrollTop = c.scrollTop;
-  maybeLoadMore();
+  const page = s.page || 0;
+  el.prev.classList.toggle('on', (circles && page > 0) || (!!s.back && stack.length > 0));
+  el.more.classList.toggle('on', (circles && page < lastPage()) || !!s.more);
+  el.more.classList.toggle('loading', circles && page >= lastPage() && paging.loading && wantNext);
+  maybePreload();
 }
 
-// Preload the next page whenever less than one screen of circles is left below.
-function maybeLoadMore() {
-  const s = current.screen, c = el.circles;
+function nextPage() {
+  const s = current.screen;
+  if (s.kind !== 'circles') {
+    // Non-circle screens grow by asking the AI to extend them.
+    if (s.more) ask({ event: 'more' }, { label: 'More' });
+    return;
+  }
+  if ((s.page || 0) < lastPage()) { s.page = (s.page || 0) + 1; showPage(); return; }
+  if (!s.more) return;
+  wantNext = true;
+  if (!paging.loading) loadMore(); else updatePager();
+}
+
+function prevPage() {
+  const s = current.screen;
+  if (s.kind !== 'circles' || !(s.page > 0)) return false;
+  s.page -= 1;
+  wantNext = false;
+  showPage();
+  return true;
+}
+
+// Keep one full page ready beyond the one shown.
+function maybePreload() {
+  const s = current.screen;
   if (s.kind !== 'circles' || !s.more || paging.loading || busy) return;
-  const remaining = c.scrollHeight - (c.scrollTop + c.clientHeight);
-  if (remaining > c.clientHeight) return;
-  loadMore();
+  const page = s.page || 0, last = lastPage();
+  const capacity = Math.max(...pages.map((p) => p.length), 1);
+  const nextReady = last > page + 1 || (last === page + 1 && pages[last].length >= capacity);
+  if (!nextReady) loadMore();
 }
 
 async function loadMore() {
@@ -224,10 +302,12 @@ async function loadMore() {
     if (tok !== paging.token || screen !== current.screen) return;
     const seen = new Set(screen.circles.map((c) => c.label.toLowerCase()));
     const fresh = (page.circles || []).filter((c) => c && c.label && !seen.has(c.label.toLowerCase()));
-    fresh.forEach((c, i) => {
+    fresh.forEach((c) => {
       c = { ...c, id: (c.id || 'c') + '~p' + (++paging.n) };
       screen.circles.push(c);
-      el.circles.appendChild(circleEl(c, i));
+      const node = circleEl(c, 0);
+      node.hidden = true;
+      el.circles.appendChild(node);
     });
     screen.more = page.more !== false && fresh.length > 0;
   } catch (e) {
@@ -238,21 +318,17 @@ async function loadMore() {
   } finally {
     if (tok === paging.token) {
       paging.loading = false;
-      requestAnimationFrame(updatePager);
+      const advance = wantNext;
+      wantNext = false;
+      layoutPages();
+      if (advance && (screen.page || 0) < lastPage()) { screen.page += 1; showPage(); }
     }
   }
 }
 
-function page(dir) {
-  el.circles.scrollBy({ top: dir * el.circles.clientHeight * 0.85 });
-}
-
-el.up.addEventListener('click', (e) => { e.stopPropagation(); page(-1); });
-el.down.addEventListener('click', (e) => { e.stopPropagation(); page(1); });
-el.up.addEventListener('mousedown', (e) => e.stopPropagation());
-el.down.addEventListener('mousedown', (e) => e.stopPropagation());
-el.circles.addEventListener('scroll', updatePager, { passive: true });
-new ResizeObserver(updatePager).observe(el.circles);
+el.prev.addEventListener('click', (e) => { e.stopPropagation(); if (!prevPage()) back(); });
+el.more.addEventListener('click', (e) => { e.stopPropagation(); nextPage(); });
+new ResizeObserver(() => layoutPages()).observe(el.stage);
 
 function circleEl(c, i) {
   const node = document.createElement('div');
@@ -297,7 +373,7 @@ function minus(c, node) {
   else {
     c.removed = true;
     node.classList.add('leaving');
-    node.addEventListener('animationend', () => { node.remove(); updateGo(); updatePager(); }, { once: true });
+    node.addEventListener('animationend', () => { node.remove(); updateGo(); layoutPages(); }, { once: true });
     return;
   }
   refresh(c, node);
@@ -426,7 +502,7 @@ el.write.addEventListener('keydown', (e) => {
 document.addEventListener('mousedown', (e) => {
   if (e.button !== 0) return;
   const t = e.target;
-  if (t === el.write || t.closest('.circle, #go, #pager, #view iframe, #toast')) return;
+  if (t === el.write || t.closest('.circle, #nav, #view iframe, #toast')) return;
   if (current.screen.kind === 'html' && t.closest('#view')) return;
   e.preventDefault();
   startWriting(e.clientX, e.clientY);
@@ -442,13 +518,16 @@ function onKey(e) {
   if (isEditable(e.target)) return;
   if (e.key === 'Backspace' || (e.metaKey && e.key === '[')) {
     e.preventDefault();
+    if (!busy && !writing && prevPage()) return;
     back();
   } else if (e.key === 'Escape') {
     if (busy) cancel();
-  } else if ((e.key === 'ArrowDown' || e.key === 'PageDown' || e.key === 'ArrowUp' || e.key === 'PageUp')
-             && current.screen.kind === 'circles') {
+  } else if (/^(ArrowRight|ArrowDown|PageDown)$/.test(e.key) && current.screen.kind === 'circles') {
     e.preventDefault();
-    page(e.key === 'ArrowDown' || e.key === 'PageDown' ? 1 : -1);
+    nextPage();
+  } else if (/^(ArrowLeft|ArrowUp|PageUp)$/.test(e.key) && current.screen.kind === 'circles') {
+    e.preventDefault();
+    prevPage();
   } else if (e.key === 'Enter' && (e.metaKey || current.screen.go || anySelected())) {
     if (current.screen.kind !== 'html' || e.metaKey) { e.preventDefault(); el.go.click(); }
   } else if (e.key.length === 1 && !e.metaKey && !e.ctrlKey && !e.altKey && current.screen.kind !== 'html') {
