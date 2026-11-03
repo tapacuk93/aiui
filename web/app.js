@@ -129,10 +129,7 @@ async function ask(evt, { label, replace = false, circle = null, retried = false
     const { screen, cached, published } = await call('ai', payload);
     if (my !== seq) return; // cancelled or superseded
     if (!cached) learnSoon();
-    if (savedUtility) {
-      setTimeout(() => flashStatus('🧰 ' + [...savedUtility.path, savedUtility.name].join(' › ')), 300);
-      initUser();
-    }
+    if (published) setTimeout(() => flashStatus('🧩 +' + published), 300);
     if (cached) flashStatus(t('fromMemory'));
     const next = normalize(screen);
     if (replace) {

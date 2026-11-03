@@ -10,6 +10,9 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 DIST=$ROOT/build/webdist
 STACK=aiui-web
 
+# 0. syntax check (the full smoke test, tools/smoke/run.sh, needs a running app)
+node --check "$ROOT/web/app.js" && node --check "$ROOT/web/backend.js"
+
 # 1. build: the web files plus the prompts generated from Sources/App/Prompts.swift
 mkdir -p "$ROOT/build"
 swiftc -o "$ROOT/build/export-prompts" "$ROOT/Sources/App/Prompts.swift" "$ROOT/tools/export-prompts/main.swift"
