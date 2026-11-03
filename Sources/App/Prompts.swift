@@ -190,8 +190,14 @@ enum Prompts {
     (left): HTML scenes with `aiui.bar.add(id, icon, title, fnOrPrompt, {global})` and \
     `aiui.bar.remove(id)`; any screen with `bar: [{id, icon, title, prompt, global}]` and \
     `barRemove: [ids]`. A function runs in the scene; a prompt comes back to you as event `bar`. \
-    `global: true` (prompt only) keeps the icon across screens and launches — for things the user \
-    will want everywhere (e.g. a player's ⏯, a timer). Icon: one emoji.
+    `global: true` keeps the icon across screens and launches — for things the user will want \
+    everywhere (e.g. a player's ⏯, a timer). Clicking a global icon elsewhere opens its applet \
+    (the scene that added it) and runs the function there. Icon: one emoji.
+    One applet per purpose: events carry `applets` — the user's existing HTML scenes (key, title, \
+    opens). Never build a near-copy of one: when the request is (almost) an existing applet, set \
+    `reuse` to its key and `merge` to what this request adds — the app returns to that applet and \
+    folds the addition into its next improvement. Build a new scene only for a different purpose, \
+    and give it a distinct title.
     Hints: events carry `hints` — lessons from this app's own retrospectives on what went wrong \
     before (text (scope, ×evidence)). Follow them.
     Keyboard: scenes implement the well-known browser keys where they apply — arrows, Space and \
@@ -497,9 +503,16 @@ enum Prompts {
 
     static let librarian = """
 
-    ## Librarian mode
-    You are now the librarian, a separate background call reviewing the shared utility library \
-    (every module with its code and use count). Keep it small, sorted and dependable: merge \
+    ## Librarian mode — app unity
+    You are now the librarian, a periodic background call whose goal is one unified app without \
+    code duplication. You get the shared utility library (every module with its code and use \
+    count) and the user's applets (`scenes`: key, title, opens, uses, html). Find code written \
+    twice — in two modules, or inline in scenes where a module (or a new shared `component`/`util`) \
+    could serve all — and unify it: move it into one module, and return the scenes rewritten to \
+    use it (`scenes`: key, html, uses — same behaviour, same `aiui.state` keys, same look; only \
+    scenes you change). Applets that serve the same purpose are merged (`sceneMerges`: from → \
+    into, the one kept absorbing what the other did — return the kept one rewritten in `scenes`). \
+    Keep the library small, sorted and dependable: merge \
     duplicates or near-duplicates into one better module (`merge`: from ids → the merged module), \
     fix bugs and tighten code, keep each module's public `lib.<name>` signature compatible \
     (`updates` with id and only the changed fields; a new path/name re-files it), file modules \
@@ -530,6 +543,18 @@ enum Prompts {
                 "required": ["from", "into"],
             ] as [String: Any]],
             "remove": ["type": "array", "items": ["type": "string"]],
+            "scenes": ["type": "array", "items": [
+                "type": "object",
+                "properties": ["key": ["type": "string"], "html": ["type": "string"],
+                               "uses": ["type": "array", "items": ["type": "string"]],
+                               "changes": ["type": "string"]] as [String: Any],
+                "required": ["key", "html"],
+            ] as [String: Any]],
+            "sceneMerges": ["type": "array", "items": [
+                "type": "object",
+                "properties": ["from": ["type": "string"], "into": ["type": "string"], "why": ["type": "string"]],
+                "required": ["from", "into"],
+            ] as [String: Any]],
         ] as [String: Any],
         "required": ["updates"],
     ])
@@ -647,7 +672,8 @@ enum Prompts {
             "fullscreen": ["type": "boolean", "description": "this screen is best experienced full screen (games, media, reading, canvases); the app offers a full-screen button"],
             "live": ["type": "boolean", "description": "circles would gain from a background pass filling real data (counts, previews, statuses)"],
             "note": ["type": "string", "description": "one-line index description of this action and its outcome, for the memory index"],
-            "reuse": ["type": "string", "description": "key of a stored outcome (from memory/index) to show instead of building a new one"],
+            "reuse": ["type": "string", "description": "key of a stored outcome (from memory/index) or of an existing applet to show instead of building a new one"],
+            "merge": ["type": "string", "description": "with reuse of an applet: what this request adds to it (queued as its next improvement)"],
             "cacheable": ["type": "boolean", "description": "true if repeating the same action may reuse this screen (menus, categories); false for live data or performed actions"],
             "text": ["type": "string"],
             "html": ["type": "string"],

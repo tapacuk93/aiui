@@ -7,7 +7,7 @@ const el = {
   circles: $('#circles'), view: $('#view'), write: $('#write'),
   status: $('#status'), go: $('#go'), toast: $('#toast'),
   prev: $('#prev'), more: $('#more'), stage: $('#stage'), close: $('#close'), top: $('#top'), who: $('#who'), full: $('#full'), ctx: $('#ctx'),
-  activity: $('#activity'), pauseBtn: $('#pauseBtn'), settingsBtn: $('#settingsBtn'),
+  activity: $('#activity'), procs: $('#procs'), pauseBtn: $('#pauseBtn'), settingsBtn: $('#settingsBtn'),
   console: $('#console'), consoleLog: $('#consoleLog'), consoleForm: $('#consoleForm'), consoleInput: $('#consoleInput'),
   consoleBtn: $('#consoleBtn'), sceneBar: $('#sceneBar'),
 };
@@ -175,7 +175,8 @@ window.aiui = {
     if (e.type === 'appChanged') { log('activity', `app ↺ ${e.key}`); return appNotify(e.key, e.value); }
     if (e.type === 'improved') { log('done', `✨ improved «${e.title}»`); return onImproved(e); }
     if (e.type === 'componentImproved') return onComponentImproved(e);
-    if (e.type === 'activity') { if (e.done) activityEnd(e.id); else activityStart(e.id, e.title); return; }
+    if (e.type === 'merged') { for (const x of [current, ...stack]) if (x.key === e.from) x.key = e.into; return onImproved({ key: e.into }); }
+    if (e.type === 'activity') { if (e.done) activityEnd(e.id); else activityStart(e.id, e.title, e.key || null, true); return; }
     if (e.type !== 'progress') return;
     activityDetail('ai', e.text);
     log('ai', e.text);
@@ -267,7 +268,7 @@ async function ask(evt, { label, replace = false, circle = null, retried = false
     journal('timeout', current.screen, `no screen within ${HARD_LIMIT_MS / 1000}s for ${evt.event} ${(evt.target && evt.target.label) || evt.text || ''}`);
   }, HARD_LIMIT_MS);
   try {
-    const { screen, cached, published, key: sceneKey } = await call('ai', payload);
+    const { screen, cached, published, key: sceneKey, returned } = await call('ai', payload);
     if (my !== seq) return; // cancelled or superseded
     if (cached) flashStatus(t('fromMemory'));
     if (published) setTimeout(() => flashStatus('🧩 +' + published), 300);
@@ -281,6 +282,9 @@ async function ask(evt, { label, replace = false, circle = null, retried = false
       if (current === interim && !typing()) { render(); flashStatus(t('updated')); }
       return;
     }
+    // An applet already open (here or back in the history) is returned to, not opened twice.
+    if (returned) flashStatus('↩︎ ' + t('returnedTo') + ' «' + (next.title || '') + '»');
+    if (!replace && sceneKey && (returned || next.kind === 'html') && returnTo(sceneKey, next)) { stopWriting(true); render(); return; }
     if (replace) {
       current.screen = next;
     } else {
@@ -470,6 +474,32 @@ function back() {
     return invokeScene('back').then((handled) => { if (!handled && current.screen === s) leaveBack(); });
   }
   leaveBack();
+}
+
+// Goes back to the history entry showing applet `key` (updating its screen if one is given).
+function returnTo(key, screen) {
+  if (current.key === key) { if (screen) current.screen = screen; return true; }
+  const i = stack.findIndex((e) => e.key === key);
+  if (i < 0) return false;
+  forwardStack = [];
+  current = stack[i];
+  stack = stack.slice(0, i);
+  if (screen) current.screen = screen;
+  return true;
+}
+// Opens applet `key`: returns to it when it is in the history, else shows its stored scene.
+async function openApplet(key, label) {
+  if (returnTo(key)) { stopWriting(true); render(); return true; }
+  try {
+    const { screen } = await callRaw('usage', { op: 'outcome', key });
+    if (!screen) return false;
+    forwardStack = [];
+    stack.push(current);
+    current = { screen: normalize(screen), label: label || screen.title, key };
+    stopWriting(true);
+    render();
+    return true;
+  } catch { return false; }
 }
 
 function leaveBack() {
@@ -1057,7 +1087,7 @@ const SCENE_SHIM = `<script>(() => {
     add(id, icon, title, fn, opts = {}) {
       if (typeof fn === 'function') barFns[id] = fn;
       parent.postMessage({ aiuiBar: { id: String(id), icon: String(icon).slice(0, 4), title: String(title || '').slice(0, 60),
-        prompt: typeof fn === 'string' ? fn.slice(0, 500) : undefined, global: !!opts.global && typeof fn === 'string' } }, '*');
+        prompt: typeof fn === 'string' ? fn.slice(0, 500) : undefined, global: !!opts.global } }, '*');
     },
     remove(id) { delete barFns[id]; parent.postMessage({ aiuiBarRemove: String(id) }, '*'); },
   };
@@ -1241,6 +1271,11 @@ function viewReady() {
   s.ready = true;
   const f = el.view.querySelector('iframe');
   try { f && f.contentWindow.postMessage({ aiuiReadySignal: true }, '*'); } catch {}
+  // A global icon opened this applet: run its action now that the scene is up.
+  if (pendingBarClick && pendingBarClick.key === current.key) {
+    const id = pendingBarClick.id; pendingBarClick = null;
+    setTimeout(() => { try { f && f.contentWindow.postMessage({ aiuiBarClick: id }, '*'); } catch {} }, 50);
+  }
 }
 
 // The in-frame UI test reported: reveal the tested render; repair it if anything is wrong.
@@ -1979,7 +2014,7 @@ const STR = {
   aboutYou: 'About you', aboutYouEmpty: 'Nothing learned yet. It builds up as you use the app.',
   tooLong: 'This took too long — try again, or ask differently.',
   fixing: 'this screen got stuck — fixing…', fixed: 'fixed', couldNotFix: 'Could not fix this screen:', stillWorking: 'still working', updated: 'updated', updating: 'updating…',
-  improvedLive: 'improved — reloaded live, state kept', mediaFailed: 'could not play', checking: 'checking the scene…', scenesTitle: 'Scenes — usage and self-improvement',
+  improvedLive: 'improved — reloaded live, state kept', returnedTo: 'back to', processes: 'Running now', mediaFailed: 'could not play', checking: 'checking the scene…', scenesTitle: 'Scenes — usage and self-improvement',
   settingsTitle: 'Settings', setPause: 'Pause all background work', setPrefetch: 'Prepare screens while the pointer heads to a circle',
   setRefine: 'Refresh live circles with real data', setMenus: 'AI context menus', setQa: 'Test every scene (layout, interactions, accessibility)',
   setDod: 'Definition of Done + tests for every scene', setQuick: 'Interim screen after', setQaMin: 'Repair scenes scoring below',
@@ -2627,7 +2662,12 @@ if (zoomLevel !== 1) applyZoom();
 
 const activities = new Map(); // id → { title, detail, at }
 let lastDone = null;          // { title, ms }
-function activityStart(id, title) { activities.set(id, { title, at: performance.now() }); renderActivity(); log('activity', '▶ ' + title); }
+// Each activity remembers where it belongs: the history entry it started from, or the applet
+// (scene key) a native background job works on — clicking it in the list goes there.
+function activityStart(id, title, key, native = false) {
+  activities.set(id, { title, at: performance.now(), entry: native ? null : current, key: key || (native ? null : current.key) || null });
+  renderActivity(); log('activity', '▶ ' + title);
+}
 function activityDetail(id, detail) { const a = activities.get(id); if (a) { a.detail = detail; renderActivity(); } }
 function activityEnd(id) {
   const a = activities.get(id);
@@ -2655,7 +2695,43 @@ function actRank(id) {
   const k = String(id).split(/[:\-]/)[0];
   return ACT_RANK[k] ?? 25;
 }
+// Clicking the activity text expands the running processes upwards; each goes to its scene.
+function toggleProcs(on = el.procs.hidden) {
+  el.procs.hidden = !on || !activities.size;
+  if (!el.procs.hidden) renderProcs();
+}
+function renderProcs() {
+  const list = [...activities.entries()].map(([id, a]) => ({ id, ...a, rank: actRank(id) })).sort((a, b) => b.rank - a.rank || b.at - a.at);
+  if (!list.length) { el.procs.hidden = true; return; }
+  el.procs.innerHTML = `<h4>${esc(t('processes'))}</h4>`;
+  for (const a of list) {
+    const b = document.createElement('button');
+    b.type = 'button'; b.setAttribute('role', 'menuitem');
+    const where = a.entry ? (a.entry.label || a.entry.screen.title || '') : (a.key ? '↗' : '');
+    b.innerHTML = `<span class="p-title">${esc(a.title)}${a.detail && a.detail !== a.title ? ' — ' + esc(a.detail) : ''}</span>` +
+      `<span class="p-where">${esc(where)}</span><span class="p-time">${fmtSecs((performance.now() - a.at) / 1000)}</span>`;
+    const target = a.entry || a.key;
+    if (!target) b.disabled = true;
+    b.addEventListener('click', (e) => { e.stopPropagation(); el.procs.hidden = true; goToActivity(a); });
+    el.procs.appendChild(b);
+  }
+}
+function goToActivity(a) {
+  // The entry it started from, wherever it is in the history now.
+  if (a.entry && a.entry !== current) {
+    const i = stack.indexOf(a.entry);
+    if (i >= 0) { forwardStack = []; current = a.entry; stack = stack.slice(0, i); stopWriting(true); render(); return; }
+  }
+  if (a.entry === current) return;
+  if (a.key) openApplet(a.key);
+}
+el.activity.addEventListener('click', (e) => { e.stopPropagation(); toggleProcs(); });
+el.activity.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleProcs(); } });
+document.addEventListener('pointerdown', (e) => { if (!el.procs.hidden && !el.procs.contains(e.target) && e.target !== el.activity) el.procs.hidden = true; });
+setInterval(() => { if (!el.procs.hidden) renderProcs(); }, 1000);
+
 function renderActivity() {
+  if (el.procs && !el.procs.hidden) renderProcs();
   const list = [...activities.entries()].map(([id, a]) => ({ ...a, rank: actRank(id) }))
     .sort((a, b) => b.rank - a.rank || b.at - a.at);
   el.activity.classList.toggle('busy', list.length > 0);
@@ -2883,9 +2959,12 @@ el.consoleForm.addEventListener('submit', async (e) => {
 // function, or sends its prompt to the AI; global ones stay across screens and launches.
 let globalBar = (() => { try { return JSON.parse(localStorage.getItem('aiui.bar')) || []; } catch { return []; } })();
 function saveGlobalBar() { try { localStorage.setItem('aiui.bar', JSON.stringify(globalBar.filter((b) => !b.media))); } catch {} }
+let pendingBarClick = null; // { key, id }: a global icon's action waiting for its applet to be ready
 function barAdd(item, fromScene) {
-  const it = { id: String(item.id), icon: String(item.icon || '•').slice(0, 4), title: String(item.title || ''), prompt: item.prompt, scene: fromScene && !item.prompt };
-  if (item.global && it.prompt) { globalBar = [...globalBar.filter((b) => b.id !== it.id), it]; saveGlobalBar(); }
+  const it = { id: String(item.id), icon: String(item.icon || '•').slice(0, 4), title: String(item.title || ''), prompt: item.prompt, scene: fromScene && !item.prompt,
+    // The applet that added it: a click elsewhere opens it.
+    origin: current.key ? { key: current.key, label: current.label || current.screen.title || '' } : null };
+  if (item.global && (it.prompt || it.origin)) { globalBar = [...globalBar.filter((b) => b.id !== it.id), it]; saveGlobalBar(); }
   else { const s = current.screen; s.bar = [...(s.bar || []).filter((b) => b.id !== it.id), it]; }
   renderSceneBar();
 }
@@ -2909,6 +2988,13 @@ function renderSceneBar() {
       e.stopPropagation();
       log('activity', `${b.icon} ${b.title || b.id}`);
       if (b.media) return player.paused ? mediaResume() : mediaPause();
+      // Elsewhere: the icon opens its applet (and runs its action there).
+      if (b.origin && b.origin.key && current.key !== b.origin.key) {
+        if (b.scene) pendingBarClick = { key: b.origin.key, id: b.id };
+        return openApplet(b.origin.key, b.origin.label).then((ok) => {
+          if (!ok) { pendingBarClick = null; if (b.prompt) ask({ event: 'bar', action: { id: b.id, title: b.title, prompt: b.prompt } }, { label: b.title || b.icon }); }
+        });
+      }
       if (b.prompt) return ask({ event: 'bar', action: { id: b.id, title: b.title, prompt: b.prompt } }, { label: b.title || b.icon });
       const f = el.view.querySelector('iframe');
       if (f) f.contentWindow.postMessage({ aiuiBarClick: b.id }, '*');

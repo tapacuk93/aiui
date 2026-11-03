@@ -176,7 +176,7 @@ final class API: NSObject {
         guard let improver, improving == nil, let scene = usage.due(), let current = cache.raw(scene.key),
               (current["kind"] as? String) == "html" else { return }
         improving = scene.key
-        Self.activity("improve", "improving «\(scene.title)» in the background")
+        Self.activity("improve", "improving «\(scene.title)» in the background", key: scene.key)
         var input: [String: Any] = [
             "scene": current,
             "usage": ["opens": scene.opens, "minutes": Int(scene.dwellMs / 60000), "interactions": scene.interactions,
@@ -245,25 +245,66 @@ final class API: NSObject {
     }
 
     /// The librarian reviews the utility library after several publishes, or daily.
+    /// The applets' code for the unity pass (bounded).
+    private func unityScenes() -> [[String: Any]] {
+        var budget = 160_000
+        return usage.applets(limit: 30).compactMap { a in
+            guard budget > 0, let key = a["key"] as? String, let s = cache.raw(key), (s["kind"] as? String) == "html",
+                  let html = s["html"] as? String else { return nil }
+            budget -= html.count
+            var r = a
+            r["html"] = String(html.prefix(20_000))
+            r["uses"] = s["uses"] ?? []
+            return r
+        }
+    }
+    private static let unityKey = "lastUnityPass"
+    private var unityDue: Bool {
+        let last = UserDefaults.standard.object(forKey: Self.unityKey) as? Date ?? .distantPast
+        return last < Date().addingTimeInterval(-6 * 3600) && usage.applets(limit: 3).count >= 2
+    }
+
+    /// The periodic unity pass: one app without duplicated code — modules merged and tightened,
+    /// scenes rewritten onto shared modules, applets with the same purpose merged.
     func reviewLibraryIfDue(force: Bool = false) {
-        guard let librarian, !reviewing, force || utilities.needsReview else { return }
+        guard let librarian, !reviewing, force || utilities.needsReview || unityDue else { return }
         reviewing = true
-        Self.activity("librarian", "reviewing the utility library")
+        UserDefaults.standard.set(Date(), forKey: Self.unityKey)
+        Self.activity("librarian", "unifying the app: shared code, no duplicates")
+        let scenes = unityScenes()
         let data = (try? JSONSerialization.data(withJSONObject: ["modules": utilities.reviewInput(),
-                                                                   "categories": utilities.categories],
+                                                                   "categories": utilities.categories,
+                                                                   "scenes": scenes],
                                                 options: [.prettyPrinted, .sortedKeys])) ?? Data()
-        librarian.next(prompt: "Review the utility library:\n```json\n\(String(decoding: data, as: UTF8.self))\n```",
+        librarian.next(prompt: "Unify the app — review the library and the applets:\n```json\n\(String(decoding: data, as: UTF8.self))\n```",
                        progress: { _ in }, done: { [weak self] r in
             guard let self else { return }
             self.reviewing = false
             Self.activity("librarian", nil)
-            if case .success(let result) = r { self.utilities.applyReview(result) }
+            guard case .success(let result) = r else { return }
+            self.utilities.applyReview(result)
+            let known = Set(scenes.compactMap { $0["key"] as? String })
+            for m in result["sceneMerges"] as? [[String: Any]] ?? [] {
+                guard let from = m["from"] as? String, let into = m["into"] as? String,
+                      known.contains(from), known.contains(into), from != into else { continue }
+                self.usage.merge(from, into: into)
+                self.hints.add(kind: "unity", scene: from, detail: "merged into \(into): \(m["why"] as? String ?? "")")
+                Self.emit(["type": "merged", "from": from, "into": into])
+            }
+            for sc in result["scenes"] as? [[String: Any]] ?? [] {
+                guard let key = sc["key"] as? String, known.contains(key), let html = sc["html"] as? String, html.count > 40,
+                      var cur = self.cache.raw(key) else { continue }
+                cur["html"] = html
+                if let u = sc["uses"] as? [String] { cur["uses"] = u }
+                self.cache.replace(key, with: cur)
+                Self.emit(["type": "improved", "key": key, "title": self.usage.scene(key)?.title ?? "", "changes": sc["changes"] as? String ?? ""])
+            }
         })
     }
 
     /// Native background activity, titled, for the status bar.
-    static func activity(_ id: String, _ title: String?) {
-        emit(["type": "activity", "id": id, "title": title ?? NSNull(), "done": title == nil])
+    static func activity(_ id: String, _ title: String?, key: String? = nil) {
+        emit(["type": "activity", "id": id, "title": title ?? NSNull(), "done": title == nil, "key": key ?? NSNull()])
     }
 
     /// Pulls in what other devices wrote (called when the app becomes active, and every minute).
@@ -273,6 +314,7 @@ final class API: NSObject {
         guard !Self.paused else { return }   // background work waits while paused
         improveIfDue()
         improveComponentIfDue()
+        reviewLibraryIfDue()
         avoid.recheckDue()
         libraries.maintain()      // keeps installing while there is room (no-op while busy)
         AICoin.shared.refreshBalance()
@@ -406,7 +448,7 @@ final class API: NSObject {
             var input = input
             input["language"] = language
             let action = Cache.action(from: input)
-            let key = Cache.key(for: action)
+            let key = usage.canonical(Cache.key(for: action))
             let steps = advanceFlow(action)
             if let screen = input["outcome"] as? [String: Any] {
                 cache.store(key: key, action: action, flow: steps, outcome: screen)
@@ -426,7 +468,7 @@ final class API: NSObject {
             scout?.cancel()
             refiner?.cancel()
             let action = Cache.action(from: input)
-            let key = Cache.key(for: action)
+            let key = usage.canonical(Cache.key(for: action))
             let steps = advanceFlow(action)
             if (input["fresh"] as? Bool) != true, let screen = cache.lookup(key) {
                 replayed.append(action)
@@ -447,6 +489,8 @@ final class API: NSObject {
             if !memory.isEmpty { event["memory"] = memory }
             let flows = cache.overview()
             if !flows.isEmpty { event["flows"] = flows }
+            let applets = usage.applets()
+            if !applets.isEmpty { event["applets"] = applets }
             let bad = avoid.overview()
             if !bad.isEmpty { event["avoid"] = bad }
             event["libraries"] = libraries.overview(words)
@@ -478,6 +522,22 @@ final class API: NSObject {
                     self.replayed.removeAll()
                     self.prefetched.removeAll()
                     var screen = screen
+                    // One applet per purpose: a request that is (almost) an existing applet returns to
+                    // it — the AI says so with `reuse` + `merge`, or the new scene would carry the
+                    // same title as one. What the request adds is queued as the applet's next improvement.
+                    let wanted = (screen["reuse"] as? String).map { self.usage.canonical($0) }
+                    let sameTitle = (screen["kind"] as? String) == "html" ? (screen["title"] as? String).flatMap { self.usage.applet(titled: $0) } : nil
+                    if let ak = [wanted, sameTitle].compactMap({ $0 }).first(where: { self.usage.scene($0) != nil }),
+                       ak != key, let existing = self.cache.raw(ak), (existing["kind"] as? String) == "html" {
+                        let asked = (screen["merge"] as? String) ?? (input["text"] as? String)
+                            ?? ((input["target"] as? [String: Any])?["label"] as? String) ?? ""
+                        self.usage.request(ak, asked)
+                        var clean = existing
+                        clean["note"] = nil; clean["cacheable"] = nil
+                        send(["screen": clean, "key": ak, "returned": true])
+                        return
+                    }
+                    screen["merge"] = nil
                     // `reuse`: the AI picked a stored outcome instead of rebuilding it.
                     if let rk = screen.removeValue(forKey: "reuse") as? String, !rk.isEmpty,
                        var stored = self.cache.outcome(rk) {

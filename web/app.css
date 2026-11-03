@@ -619,6 +619,27 @@ body.paused #pauseBtn { color: var(--accent); }
   text-overflow: ellipsis;
   text-align: right;
 }
+#activity { cursor: pointer; border-radius: 5px; padding: 3px 6px; }
+#activity:hover { color: var(--fg); background: var(--accent-soft); }
+#procs {
+  position: fixed; right: 8px; bottom: calc(30px + env(safe-area-inset-bottom)); z-index: 30;
+  min-width: 260px; max-width: min(460px, 90vw); max-height: 50vh; overflow: auto;
+  padding: 6px; border: 1px solid var(--line); border-radius: 10px;
+  background: color-mix(in srgb, var(--bg) 96%, transparent); backdrop-filter: blur(12px);
+  box-shadow: 0 8px 28px rgba(0,0,0,.18); font: 12px/1.35 -apple-system, system-ui, sans-serif; color: var(--fg);
+  animation: procs-up .14s ease-out;
+}
+@keyframes procs-up { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+#procs h4 { margin: 2px 6px 6px; font: 600 11px/1 -apple-system, system-ui, sans-serif; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+#procs button {
+  display: flex; width: 100%; gap: 8px; align-items: baseline; text-align: left; padding: 6px 8px; border: 0; border-radius: 7px;
+  background: transparent; color: inherit; font: inherit; cursor: pointer;
+}
+#procs button:hover, #procs button:focus-visible { background: var(--accent-soft); outline: none; }
+#procs button[disabled] { cursor: default; opacity: .75; }
+#procs .p-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#procs .p-where { color: var(--muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 40%; }
+#procs .p-time { color: var(--muted); font-variant-numeric: tabular-nums; font-size: 11px; }
 #activity.busy::before { content: '● '; color: var(--accent); animation: pulse-dot 1.1s ease-in-out infinite; }
 #bottom { bottom: 24px; }
 #status { display: none; }           /* progress moved to the status bar */

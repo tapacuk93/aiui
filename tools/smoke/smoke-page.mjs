@@ -380,6 +380,56 @@ const result = await ev(`(async () => {
     stopWriting(true); WebBackend.call = realCall; home();
     if (!plain.typing || plain.value !== 'h' || !plain.below || !keptKey || !metaOpens) throw new Error(JSON.stringify({ plain, keptKey, metaOpens }));
   });
+  await step('one applet per purpose: a returned applet is gone back to, not opened twice', async () => {
+    const realCall = WebBackend.call;
+    const applet = { kind: 'html', title: 'Notes', html: '<p>notes</p><script>aiui.ready()<\\/script>' };
+    WebBackend.call = async (name, body) => name === 'ai' ? (body.event === 'text' ? { screen: applet, key: 'k-notes', returned: true } : { screen: applet, key: 'k-notes' }) : realCall(name, body);
+    home();
+    await ask({ event: 'open', target: { label: 'Notes' } }, { label: 'Notes' });
+    stack.push(current); current = { screen: normalize({ kind: 'circles', title: 'Other', circles: [{ id: 'a', label: 'A' }] }), label: 'Other' }; render();
+    const depth = stack.length;
+    await ask({ event: 'text', text: 'a notes app please' }, { label: 'notes app' });
+    WebBackend.call = realCall;
+    const ok = current.key === 'k-notes' && stack.length === depth - 1 && !stack.some((e) => e.key === 'k-notes');
+    const info = { key: current.key, depth, now: stack.length };
+    home();
+    if (!ok) throw new Error(JSON.stringify(info));
+  });
+  await step('a global icon added by an applet opens that applet from elsewhere', async () => {
+    const realCall = WebBackend.call;
+    let hit = 0; const h = (e) => { if (e.data && e.data.timerHit) hit++; }; addEventListener('message', h);
+    const applet = { kind: 'html', title: 'Timer', html: '<p>t</p><script>aiui.bar.add("tmr", "⏱", "Timer", () => parent.postMessage({ timerHit: 1 }, "*"), { global: true }); aiui.ready()<\\/script>' };
+    WebBackend.call = async (name, body) => {
+      if (name === 'ai') return { screen: applet, key: 'k-timer' };
+      if (name === 'usage' && body.op === 'outcome' && body.key === 'k-timer') return { screen: applet };
+      return realCall(name, body);
+    };
+    home();
+    await ask({ event: 'open', target: { label: 'Timer' } }, { label: 'Timer' });
+    for (let i = 0; i < 60 && !globalBar.some((b) => b.id === 'tmr'); i++) await new Promise(r => setTimeout(r, 100));
+    home(); await new Promise(r => setTimeout(r, 100));
+    const btn = [...el.sceneBar.querySelectorAll('button')].find((b) => b.textContent === '⏱');
+    if (btn) btn.click();
+    for (let i = 0; i < 80 && !hit; i++) await new Promise(r => setTimeout(r, 100));
+    const info = { btn: !!btn, key: current.key, hit };
+    barRemove('tmr'); removeEventListener('message', h); WebBackend.call = realCall; home();
+    if (!btn || info.key !== 'k-timer' || !hit) throw new Error(JSON.stringify(info));
+  });
+  await step('clicking the activity text lists processes; a process goes to its scene', async () => {
+    home();
+    const from = current;
+    stack.push(current); current = { screen: normalize({ kind: 'circles', title: 'Work', circles: [{ id: 'a', label: 'A' }] }), label: 'Work' }; render();
+    const workEntry = current;
+    activityStart('more:777', 'Loading more');
+    stack.push(current); current = { screen: normalize({ kind: 'circles', title: 'Elsewhere', circles: [{ id: 'b', label: 'B' }] }), label: 'Elsewhere' }; render();
+    el.activity.click();
+    const shown = !el.procs.hidden && el.procs.querySelectorAll('button').length >= 1;
+    const item = [...el.procs.querySelectorAll('button')].find((b) => b.textContent.includes('Loading more'));
+    if (item) item.click();
+    const back = current === workEntry;
+    activityEnd('more:777'); home();
+    if (!shown || !item || !back) throw new Error(JSON.stringify({ shown, item: !!item, back }));
+  });
   await step('scenes add icons to the bottom bar; clicking runs the scene', async () => {
     const realCall = WebBackend.call;
     let clicked = false; const h = (e) => { if (e.data && e.data.barHit) clicked = true; }; addEventListener('message', h);

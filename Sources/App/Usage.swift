@@ -20,6 +20,8 @@ final class Usage {
         var lastImproved: Date?
         var nextImprove: Date?
         var findings: [String]
+        /// A near-duplicate merged into another scene: opening it returns to that one.
+        var mergedInto: String?
     }
 
     private let file: URL
@@ -44,7 +46,7 @@ final class Usage {
         guard let key = r["key"] as? String, !key.isEmpty else { return }
         let now = Date()
         var s = scenes[key] ?? Scene(key: key, title: "", opens: 0, dwellMs: 0, interactions: 0, lastUsed: now, firstUsed: now,
-                                     usedSinceImprove: 0, improves: 0, lastImproved: nil, nextImprove: nil, findings: [])
+                                     usedSinceImprove: 0, improves: 0, lastImproved: nil, nextImprove: nil, findings: [], mergedInto: nil)
         if let t = r["title"] as? String, !t.isEmpty { s.title = t }
         if (r["opened"] as? Bool) == true { s.opens += 1; s.usedSinceImprove += 1 }
         s.dwellMs += r["dwellMs"] as? Double ?? 0
@@ -65,7 +67,7 @@ final class Usage {
     /// The scene most due for improvement (used since its last one), if any.
     func due() -> Scene? {
         let now = Date()
-        return scenes.values.filter { $0.usedSinceImprove > 0 && ($0.nextImprove ?? .distantFuture) <= now }
+        return scenes.values.filter { $0.mergedInto == nil && $0.usedSinceImprove > 0 && ($0.nextImprove ?? .distantFuture) <= now }
             .max { Double($0.opens) * 1000 + $0.dwellMs / 1000 < Double($1.opens) * 1000 + $1.dwellMs / 1000 }
     }
 
@@ -107,6 +109,57 @@ final class Usage {
     }
 
     func scene(_ key: String) -> Scene? { scenes[key] }
+
+    /// The scene a key stands for now (following merges).
+    func canonical(_ key: String) -> String {
+        var k = key, hops = 0
+        while let n = scenes[k]?.mergedInto, n != k, hops < 8 { k = n; hops += 1 }
+        return k
+    }
+
+    /// The user's applets (scenes in use, merges excluded), most used first — so a new request
+    /// that is almost one of them returns to it instead of building a near-copy.
+    func applets(limit: Int = 40) -> [[String: Any]] {
+        scenes.values.filter { $0.mergedInto == nil && !$0.title.isEmpty }
+            .sorted { $0.opens > $1.opens }.prefix(limit)
+            .map { ["key": $0.key, "title": $0.title, "opens": $0.opens] }
+    }
+
+    /// An existing applet with this title (normalised), if any.
+    func applet(titled title: String) -> String? {
+        let n = Self.norm(title)
+        guard !n.isEmpty else { return nil }
+        return scenes.values.filter { $0.mergedInto == nil && Self.norm($0.title) == n }.max { $0.opens < $1.opens }?.key
+    }
+    static func norm(_ s: String) -> String {
+        s.lowercased().unicodeScalars.filter { CharacterSet.alphanumerics.contains($0) }.map(String.init).joined()
+    }
+
+    /// The user asked for more of an applet (a request it should absorb): improve it soon with that in mind.
+    func request(_ key: String, _ text: String) {
+        guard var s = scenes[key], !text.isEmpty else { return }
+        s.findings = Array((["The user also asked for: " + String(text.prefix(300))] + s.findings).prefix(20))
+        s.usedSinceImprove = max(1, s.usedSinceImprove)
+        s.nextImprove = Date()
+        s.lastUsed = Date()
+        scenes[key] = s
+        persist()
+    }
+
+    /// Merges a near-duplicate scene into another (the unity pass).
+    func merge(_ from: String, into: String) {
+        guard from != into, scenes[into] != nil, var s = scenes[from] else { return }
+        s.mergedInto = into
+        s.lastUsed = Date()
+        scenes[from] = s
+        if var t = scenes[into] {
+            t.opens += s.opens; t.dwellMs += s.dwellMs; t.interactions += s.interactions
+            t.findings = Array((t.findings + s.findings).prefix(20))
+            t.usedSinceImprove = max(1, t.usedSinceImprove); t.nextImprove = Date(); t.lastUsed = Date()
+            scenes[into] = t
+        }
+        persist()
+    }
 
     // MARK: - Storage
 
