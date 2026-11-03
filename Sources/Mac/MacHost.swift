@@ -56,6 +56,8 @@ extension API {
             } else {
                 send(["text": pb.string(forType: .string) ?? ""])
             }
+        case "native":                            // native tools: {op:'native', action:'ensure', ids:[...]}
+            NativeLibraries.shared.handle(input.filter { $0.key != "op" }, send: send, fail: fail)
         case "notify":
             let title = input["title"] as? String ?? "AI UI"
             let text = input["text"] as? String ?? ""

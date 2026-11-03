@@ -3,6 +3,8 @@
 #   ./build.sh          build
 #   ./build.sh run      build and launch (serving web/ live from the source tree)
 #   ./build.sh clean    remove build/ (keeps vendor/)
+#   --native-pack       also bundle the default native tools (Resources/native-pack, hash-checked
+#                       against web/native.json) so they install offline on first launch
 set -euo pipefail
 cd "${0:A:h}"
 
@@ -82,6 +84,12 @@ for pair in ":" " (GPU):.gpu" " (Renderer):.renderer" " (Plugin):.plugin" " (Ale
   cp "$BUILD/aiui-helper" "$h/MacOS/$name"
   sed -e "s/\${NAME}/$name/g" -e "s/\${SUFFIX}/$suffix_id/g" Resources/HelperInfo.plist > "$h/Info.plist"
 done
+
+# Optional offline pack of the default native tools (before signing: it is sealed with the app).
+if (( ${@[(Ie)--native-pack]} )); then
+  echo "• native pack"
+  python3 -I tools/native/catalog.py pack "$APP/Contents/Resources/native-pack" --cache "$ROOT/vendor/native-cache"
+fi
 
 # Ad-hoc signature (required on Apple silicon). Inside-out: framework, helpers, app.
 codesign --force --sign - "$APP/Contents/Frameworks/Chromium Embedded Framework.framework" >/dev/null 2>&1

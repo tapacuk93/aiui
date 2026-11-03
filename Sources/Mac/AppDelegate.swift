@@ -109,6 +109,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTo
     @objc func showNetwork(_ sender: Any?) { AIUICef.evalJS("window.aiui && aiui.menuUsed && aiui.menuUsed(), window.aiui && aiui.network()") }
     @objc func showActivity(_ sender: Any?) { AIUICef.evalJS("window.aiui && aiui.menuUsed && aiui.menuUsed(), window.aiui && aiui.activityScreen()") }
     @objc func showJSLibraries(_ sender: Any?) { AIUICef.evalJS("window.aiui && aiui.menuUsed && aiui.menuUsed(), window.aiui && aiui.jsLibraries()") }
+    @objc func showNativeLibraries(_ sender: Any?) { AIUICef.evalJS("window.aiui && aiui.menuUsed && aiui.menuUsed(), window.aiui && aiui.nativeLibraries()") }
 
     @objc func showLibrary(_ sender: Any?) {
         AIUICef.evalJS("window.aiui && aiui.menuUsed && aiui.menuUsed(), window.aiui && aiui.library()")
@@ -169,6 +170,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTo
         view.addItem(withTitle: "What AI UI Knows About You…", action: #selector(showProfile(_:)), keyEquivalent: "").target = self
         view.addItem(withTitle: "Utility Library…", action: #selector(showLibrary(_:)), keyEquivalent: "").target = self
         view.addItem(withTitle: "Installed JS Libraries…", action: #selector(showJSLibraries(_:)), keyEquivalent: "").target = self
+        view.addItem(withTitle: "Native Libraries…", action: #selector(showNativeLibraries(_:)), keyEquivalent: "").target = self
         let sys = view.addItem(withTitle: "Settings & System", action: #selector(showSystem(_:)), keyEquivalent: "d")
         sys.keyEquivalentModifierMask = [.command, .shift]
         sys.target = self

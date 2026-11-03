@@ -82,6 +82,10 @@ enum Shell {
         let extra = ["\(home)/.local/bin", "/opt/homebrew/bin", "/usr/local/bin"]
         var parts = (env["PATH"] ?? "/usr/bin:/bin").split(separator: ":").map(String.init)
         for e in extra where !parts.contains(e) { parts.append(e) }
+        // Native tools the app installs (NativeLibraries): last, so the user's own installs win.
+        let native = NativeLibraries.binDir.path
+        if !parts.contains(native) { parts.append(native) }
+        env["AIUI_NATIVE_BIN"] = native
         env["PATH"] = parts.joined(separator: ":")
         return env
     }()

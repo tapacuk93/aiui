@@ -176,6 +176,7 @@ window.aiui = {
   settings: () => ({ ...settings, paused }),
   reloadScene: () => reloadScene(), find: () => find(), forward: () => forward(), zoom: (d) => zoom(d), print: () => printScene(),
   jsLibraries: () => showJSLibraries(),
+  nativeLibraries: () => showNativeLibraries(),
   get screen() { return current.screen; },
   _event(e) {
     if (e.type === 'consoleProgress') return log('ai', e.text);
@@ -2244,6 +2245,7 @@ const STR = {
   actTranslate: 'translating the interface', actLearn: 'learning about you', actLibs: 'loading JS libraries',
   actLab: 'testing every interaction (phone, other theme)', actRunDoD: 'running the Definition of Done tests',
   actReview: 'checking layout, readability, accessibility', jsLibs: 'JS libraries',
+  nativeLibs: 'Native libraries', setNative: 'Download native libraries',
   actImprove: 'improving', actRevise: 'updating from memory', actComponent: 'improving component', actRetro: 'learning from what went wrong',
   actLibrarian: 'integrating shared components and utilities',
   qaCancel: 'Cancel', qaPause: 'Pause', qaResume: 'Resume', qaStop: 'Stop', qaSkip: 'Skip',
@@ -2770,6 +2772,7 @@ async function showSystem() {
   let d;
   try { d = await call('system'); } catch (e) { return toast(e.message); }
   try { d.scenes = (await callRaw('usage', { op: 'list' })).scenes; } catch {}
+  if (NATIVE && !IOS_BRIDGE) try { d.native = await callRaw('native', { op: 'status' }); } catch {}
   const row = (k, v) => `<tr><th>${esc(k)}</th><td>${v}</td></tr>`;
   const list = (a) => (a && a.length) ? '<ul>' + a.map((x) => `<li>${esc(x)}</li>`).join('') + '</ul>' : '<span class="m">—</span>';
   const sec = (title, rows) => `<section><h2>${esc(title)}</h2><table>${rows.join('')}</table></section>`;
@@ -2785,6 +2788,7 @@ async function showSystem() {
       ${tog('qa', t('setQa'))}${tog('dod', t('setDod'))}
       ${num('quickAfter', t('setQuick'), 1, 60, 's')}${num('qaMin', t('setQaMin'), 0, 100, '/ 100')}
       <label class="opt">${esc(t('setBudget'))} <input type="number" data-a="budget" min="0.5" max="100" step="0.5" value="${budgetGB}"> GB</label>
+      ${nativeSettingHtml(d.native)}
     </div>
     <div class="btns">
       <button data-a="zoom" data-arg="-1">−</button><button data-a="zoom" data-arg="0">100%</button><button data-a="zoom" data-arg="1">+</button>
@@ -2826,6 +2830,7 @@ async function showSystem() {
   ${sec('JS libraries', [row('Installed', esc(`${l.installed ?? '—'} of ${l.catalog ?? '—'} in the catalog`)),
     row('Disk', esc(fmtBytes(l.usedBytes) + ' of ' + fmtBytes(l.budgetBytes))),
     row('Installing now', esc((l.installing || []).join(', ') || '—'))])}
+  ${nativeSection(d.native, sec, row)}
   ${sec('Utility library', [row('Modules', esc(u.total ?? 0)), row('Last review', esc(u.lastReview || '—'))])}
   ${sec('You', [row('Traits learned', esc(p.traits ?? 0)), row('Most certain', list(p.top)),
     row('Session check', esc(who.guest ? 'guest mode' : who.suspect ? 'looks like someone else: ' + who.suspect.join('; ') : 'normal'))])}
@@ -3437,6 +3442,7 @@ async function settingsAction(name, arg) {
     clearCache: () => call('cache', { op: 'clear' }), clearAvoid: () => call('avoid', { op: 'clear' }),
     provider: () => showSetup(), zoom: () => zoom(Number(arg) || 0), budget: () => callRaw('window', { op: 'budget', gb: Number(arg) }),
     pause: () => setPaused(!!arg),
+    nativeDownloads: () => callRaw('native', { op: 'setting', on: !!arg }),
   };
   if (acts[name]) { await acts[name](); flashStatus('✓ ' + name); }
 }

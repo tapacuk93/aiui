@@ -1,0 +1,197 @@
+{
+ "fetched": "2026-11-03T18:09:28Z",
+ "catalogVersion": 2026110302,
+ "artifacts": [
+  {
+   "tool": "ffmpeg",
+   "version": "9.0.2",
+   "url": "https://ffmpeg.martin-riedl.de/download/macos/arm64/1789931890_9.0.2/ffmpeg.zip",
+   "sha256": "c8ed4c4e6978a03c485edbfe4e0a5dc2380f8a30bba5150531b31b094492d924",
+   "bytes": 28395699,
+   "checksum": "build server .sha256",
+   "matched": true,
+   "executables": {
+    "ffmpeg": "ffmpeg (arm64)"
+   }
+  },
+  {
+   "tool": "ffmpeg",
+   "version": "9.0.2",
+   "url": "https://ffmpeg.martin-riedl.de/download/macos/arm64/1789931890_9.0.2/ffprobe.zip",
+   "sha256": "fcbe839537485eaee7a7a8bc5cbc0f90d53617e80943e8a5b2e31cb851197ea6",
+   "bytes": 28317701,
+   "checksum": "build server .sha256",
+   "matched": true,
+   "executables": {
+    "ffprobe": "ffprobe (arm64)"
+   }
+  },
+  {
+   "tool": "yt-dlp",
+   "version": "2026.10.26",
+   "url": "https://github.com/yt-dlp/yt-dlp/releases/download/2026.10.26/yt-dlp_macos",
+   "sha256": "0f922c15ccc0b83eefa1c8bc9104e434318c4bf16e408e1ee93b7745a6efe0aa",
+   "bytes": 37466304,
+   "checksum": "GitHub release asset digest + release checksum file",
+   "matched": true,
+   "executables": {
+    "yt-dlp": "yt-dlp_macos (universal (arm64))"
+   }
+  },
+  {
+   "tool": "pandoc",
+   "version": "3.13",
+   "url": "https://github.com/jgm/pandoc/releases/download/3.13/pandoc-3.13-arm64-macOS.zip",
+   "sha256": "f436d18bebbfb3ddd326597686dacab9fac5dc23bd060495020f35a28a43a7c3",
+   "bytes": 43148194,
+   "checksum": "GitHub release asset digest",
+   "matched": true,
+   "executables": {
+    "pandoc": "pandoc-3.13-arm64/bin/pandoc (arm64)"
+   }
+  },
+  {
+   "tool": "jq",
+   "version": "1.8.2",
+   "url": "https://github.com/jqlang/jq/releases/download/jq-1.8.2/jq-macos-arm64",
+   "sha256": "2d75340ba57a4b4b4c8708a21c2dc8e958a48aaa8bba13b27f77f6e4c0eca07e",
+   "bytes": 841504,
+   "checksum": "GitHub release asset digest + release checksum file",
+   "matched": true,
+   "executables": {
+    "jq": "jq-macos-arm64 (arm64)"
+   }
+  },
+  {
+   "tool": "ripgrep",
+   "version": "15.2.0",
+   "url": "https://github.com/BurntSushi/ripgrep/releases/download/15.2.0/ripgrep-15.2.0-aarch64-apple-darwin.tar.gz",
+   "sha256": "3750b2e93f37e0c692657da574d7019a101c0084da05a790c83fd335bad973e4",
+   "bytes": 1764284,
+   "checksum": "GitHub release asset digest",
+   "matched": true,
+   "executables": {
+    "rg": "ripgrep-15.2.0-aarch64-apple-darwin/rg (arm64)"
+   }
+  },
+  {
+   "tool": "exiftool",
+   "version": "13.60",
+   "url": "https://sourceforge.net/projects/exiftool/files/Image-ExifTool-13.60.tar.gz/download",
+   "sha256": "c8e3c42576f46d862e4cd9c192989776e7363931e890c95056bcd6293e83ea36",
+   "bytes": 7941781,
+   "checksum": "exiftool.org/checksums.txt",
+   "matched": true,
+   "executables": {
+    "exiftool": "Image-ExifTool-13.60/exiftool (script:/usr/bin/env perl)"
+   }
+  },
+  {
+   "tool": "xpdf-tools",
+   "version": "4.06",
+   "url": "https://dl.xpdfreader.com/xpdf-tools-mac-4.06.tar.gz",
+   "sha256": "c0a2992348c0407356cec39f2f4b2e73705fb77edc852a4e9196e222712451a8",
+   "bytes": 15452690,
+   "checksum": "none (GPG signature only); pinned at refresh",
+   "matched": false,
+   "executables": {
+    "pdftotext": "xpdf-tools-mac-4.06/binARM/pdftotext (arm64)",
+    "pdftoppm": "xpdf-tools-mac-4.06/binARM/pdftoppm (arm64)",
+    "pdftopng": "xpdf-tools-mac-4.06/binARM/pdftopng (arm64)",
+    "pdfinfo": "xpdf-tools-mac-4.06/binARM/pdfinfo (arm64)",
+    "pdfimages": "xpdf-tools-mac-4.06/binARM/pdfimages (arm64)",
+    "pdffonts": "xpdf-tools-mac-4.06/binARM/pdffonts (arm64)",
+    "pdfdetach": "xpdf-tools-mac-4.06/binARM/pdfdetach (arm64)",
+    "pdftohtml": "xpdf-tools-mac-4.06/binARM/pdftohtml (arm64)",
+    "pdftops": "xpdf-tools-mac-4.06/binARM/pdftops (arm64)"
+   }
+  },
+  {
+   "tool": "qpdf",
+   "version": "12.4.2",
+   "url": "https://github.com/qpdf/qpdf/releases/download/v12.4.2/qpdf-12.4.2-bin-macos-arm64.zip",
+   "sha256": "62e46987a30ea167cbc530ccb22690aec3d8c812ed09979a941bcee92e504b79",
+   "bytes": 3269125,
+   "checksum": "GitHub release asset digest + release checksum file",
+   "matched": true,
+   "executables": {
+    "qpdf": "bin/qpdf (arm64)",
+    "fix-qdf": "bin/fix-qdf (arm64)",
+    "zlib-flate": "bin/zlib-flate (arm64)"
+   }
+  },
+  {
+   "tool": "7zip",
+   "version": "26.05",
+   "url": "https://github.com/ip7z/7zip/releases/download/26.05/7z2605-mac.tar.xz",
+   "sha256": "12ef6830317743cfd3f0ab1724bde43fcc270d8b6d8564f8c12c2a2b7f993570",
+   "bytes": 1868068,
+   "checksum": "GitHub release asset digest",
+   "matched": true,
+   "executables": {
+    "7zz": "7zz (universal (arm64))"
+   }
+  },
+  {
+   "tool": "duckdb",
+   "version": "2.0.0",
+   "url": "https://github.com/duckdb/duckdb/releases/download/v2.0.0/duckdb-cli-osx-arm64.tar.gz",
+   "sha256": "188a36fe8883ef52e69165a0cbb6031ef679c8e6c448a1ce22951964149b7f96",
+   "bytes": 19169633,
+   "checksum": "GitHub release asset digest",
+   "matched": true,
+   "executables": {
+    "duckdb": "duckdb (universal (arm64))"
+   }
+  },
+  {
+   "tool": "fd",
+   "version": "10.5.0",
+   "url": "https://github.com/sharkdp/fd/releases/download/v10.5.0/fd-v10.5.0-aarch64-apple-darwin.tar.gz",
+   "sha256": "b67e1836c468e42e411984b56e52fa7abec08c2bd22c867398e7cc134aac5e12",
+   "bytes": 1334374,
+   "checksum": "GitHub release asset digest",
+   "matched": true,
+   "executables": {
+    "fd": "fd-v10.5.0-aarch64-apple-darwin/fd (arm64)"
+   }
+  },
+  {
+   "tool": "yq",
+   "version": "4.54.1",
+   "url": "https://github.com/mikefarah/yq/releases/download/v4.54.1/yq_darwin_arm64",
+   "sha256": "fee511a181bd8b3e6b7da98842b41973bfac8cd3bcd341ed29a584620b5b2844",
+   "bytes": 13414050,
+   "checksum": "GitHub release asset digest",
+   "matched": true,
+   "executables": {
+    "yq": "yq_darwin_arm64 (arm64)"
+   }
+  },
+  {
+   "tool": "typst",
+   "version": "0.15.1",
+   "url": "https://github.com/typst/typst/releases/download/v0.15.1/typst-aarch64-apple-darwin.tar.xz",
+   "sha256": "48f62ed034aa3a7978309579ac6ca00045e2ef0da73114e8af27cfd8e74dc05a",
+   "bytes": 14438168,
+   "checksum": "GitHub release asset digest",
+   "matched": true,
+   "executables": {
+    "typst": "typst-aarch64-apple-darwin/typst (arm64)"
+   }
+  },
+  {
+   "tool": "fzf",
+   "version": "0.74.5",
+   "url": "https://github.com/junegunn/fzf/releases/download/v0.74.5/fzf-0.74.5-darwin_arm64.tar.gz",
+   "sha256": "ada808c7401b9949ce8842274ac16a6b6193fd32dcada396884a6a9a89e5985a",
+   "bytes": 2154490,
+   "checksum": "GitHub release asset digest + release checksum file",
+   "matched": true,
+   "executables": {
+    "fzf": "fzf (arm64)"
+   }
+  }
+ ],
+ "errors": []
+}

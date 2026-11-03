@@ -1,0 +1,490 @@
+{
+ "version": 2026110302,
+ "generated": "2026-11-03T18:09:28Z",
+ "platform": "macos-arm64",
+ "about": "Native command-line tools for macOS arm64 that the AI and AI-written scenes use through the app's shell. Only prebuilt binaries published by the projects themselves (or the build the project's own download page links to), self-contained apart from macOS system libraries. tools/native/catalog.py resolves this into web/native.json. Not available as such binaries (so not listed): ImageMagick, tesseract, poppler (xpdf-tools covers pdftotext/pdftoppm), whisper.cpp (releases ship no macOS CLI), sqlite3 (part of macOS).",
+ "tools": [
+  {
+   "id": "ffmpeg",
+   "version": "9.0.2",
+   "default": true,
+   "description": "FFmpeg and FFprobe: convert, cut, mix and inspect audio and video",
+   "purpose": "transcoding, trimming, extracting audio or frames, thumbnails, GIFs, probing media metadata (ffprobe -of json)",
+   "license": "GPL-3.0-or-later",
+   "homepage": "https://ffmpeg.org",
+   "source": "https://ffmpeg.martin-riedl.de (static macOS arm64 builds linked from ffmpeg.org/download.html)",
+   "release": "https://ffmpeg.martin-riedl.de/",
+   "bytes": 56713400,
+   "installedBytes": 132490944,
+   "executables": [
+    "ffmpeg",
+    "ffprobe"
+   ],
+   "check": [
+    "ffmpeg",
+    "-version"
+   ],
+   "artifacts": [
+    {
+     "url": "https://ffmpeg.martin-riedl.de/download/macos/arm64/1789931890_9.0.2/ffmpeg.zip",
+     "name": "ffmpeg.zip",
+     "format": "zip",
+     "sha256": "c8ed4c4e6978a03c485edbfe4e0a5dc2380f8a30bba5150531b31b094492d924",
+     "bytes": 28395699,
+     "bin": {
+      "ffmpeg": "ffmpeg"
+     }
+    },
+    {
+     "url": "https://ffmpeg.martin-riedl.de/download/macos/arm64/1789931890_9.0.2/ffprobe.zip",
+     "name": "ffprobe.zip",
+     "format": "zip",
+     "sha256": "fcbe839537485eaee7a7a8bc5cbc0f90d53617e80943e8a5b2e31cb851197ea6",
+     "bytes": 28317701,
+     "bin": {
+      "ffprobe": "ffprobe"
+     }
+    }
+   ]
+  },
+  {
+   "id": "yt-dlp",
+   "version": "2026.10.26",
+   "default": true,
+   "description": "yt-dlp: download video, audio and metadata from YouTube and 1000+ sites",
+   "purpose": "fetching media or its metadata/subtitles from video sites (-J for JSON, -x for audio)",
+   "license": "Unlicense",
+   "homepage": "https://github.com/yt-dlp/yt-dlp",
+   "source": "GitHub releases (yt-dlp_macos, universal2)",
+   "release": "https://github.com/yt-dlp/yt-dlp/releases/tag/2026.10.26",
+   "bytes": 37466304,
+   "installedBytes": 37466304,
+   "executables": [
+    "yt-dlp"
+   ],
+   "check": [
+    "yt-dlp",
+    "--version"
+   ],
+   "artifacts": [
+    {
+     "url": "https://github.com/yt-dlp/yt-dlp/releases/download/2026.10.26/yt-dlp_macos",
+     "name": "yt-dlp_macos",
+     "format": "file",
+     "sha256": "0f922c15ccc0b83eefa1c8bc9104e434318c4bf16e408e1ee93b7745a6efe0aa",
+     "bytes": 37466304,
+     "bin": {
+      "yt-dlp": "yt-dlp_macos"
+     }
+    }
+   ]
+  },
+  {
+   "id": "pandoc",
+   "version": "3.13",
+   "default": true,
+   "description": "Pandoc: convert between Markdown, HTML, DOCX, ODT, EPUB, LaTeX and more",
+   "purpose": "document conversion (md ↔ docx/html/epub/odt), extracting text from Word files",
+   "license": "GPL-2.0-or-later",
+   "homepage": "https://pandoc.org",
+   "source": "GitHub releases (arm64-macOS.zip)",
+   "release": "https://github.com/jgm/pandoc/releases/tag/3.13",
+   "bytes": 43148194,
+   "installedBytes": 195688990,
+   "executables": [
+    "pandoc"
+   ],
+   "check": [
+    "pandoc",
+    "--version"
+   ],
+   "artifacts": [
+    {
+     "url": "https://github.com/jgm/pandoc/releases/download/3.13/pandoc-3.13-arm64-macOS.zip",
+     "name": "pandoc-3.13-arm64-macOS.zip",
+     "format": "zip",
+     "sha256": "f436d18bebbfb3ddd326597686dacab9fac5dc23bd060495020f35a28a43a7c3",
+     "bytes": 43148194,
+     "bin": {
+      "pandoc": "pandoc-3.13-arm64/bin/pandoc"
+     }
+    }
+   ]
+  },
+  {
+   "id": "jq",
+   "version": "1.8.2",
+   "default": true,
+   "description": "jq: query and transform JSON on the command line",
+   "purpose": "filtering, reshaping and pretty-printing JSON from APIs and tools",
+   "license": "MIT",
+   "homepage": "https://jqlang.org",
+   "source": "GitHub releases (jq-macos-arm64)",
+   "release": "https://github.com/jqlang/jq/releases/tag/jq-1.8.2",
+   "bytes": 841504,
+   "installedBytes": 841504,
+   "executables": [
+    "jq"
+   ],
+   "check": [
+    "jq",
+    "--version"
+   ],
+   "artifacts": [
+    {
+     "url": "https://github.com/jqlang/jq/releases/download/jq-1.8.2/jq-macos-arm64",
+     "name": "jq-macos-arm64",
+     "format": "file",
+     "sha256": "2d75340ba57a4b4b4c8708a21c2dc8e958a48aaa8bba13b27f77f6e4c0eca07e",
+     "bytes": 841504,
+     "bin": {
+      "jq": "jq-macos-arm64"
+     }
+    }
+   ]
+  },
+  {
+   "id": "ripgrep",
+   "version": "15.2.0",
+   "default": true,
+   "description": "ripgrep (rg): very fast recursive text search",
+   "purpose": "searching files and folders by content (rg --json for structured results)",
+   "license": "MIT OR Unlicense",
+   "homepage": "https://github.com/BurntSushi/ripgrep",
+   "source": "GitHub releases (aarch64-apple-darwin)",
+   "release": "https://github.com/BurntSushi/ripgrep/releases/tag/15.2.0",
+   "bytes": 1764284,
+   "installedBytes": 4391690,
+   "executables": [
+    "rg"
+   ],
+   "check": [
+    "rg",
+    "--version"
+   ],
+   "artifacts": [
+    {
+     "url": "https://github.com/BurntSushi/ripgrep/releases/download/15.2.0/ripgrep-15.2.0-aarch64-apple-darwin.tar.gz",
+     "name": "ripgrep-15.2.0-aarch64-apple-darwin.tar.gz",
+     "format": "tar",
+     "sha256": "3750b2e93f37e0c692657da574d7019a101c0084da05a790c83fd335bad973e4",
+     "bytes": 1764284,
+     "bin": {
+      "rg": "ripgrep-15.2.0-aarch64-apple-darwin/rg"
+     }
+    }
+   ]
+  },
+  {
+   "id": "exiftool",
+   "version": "13.60",
+   "default": true,
+   "description": "ExifTool: read and write metadata of photos, videos, PDFs and audio",
+   "purpose": "camera/GPS/date metadata, renaming photos by date, stripping metadata (exiftool -json)",
+   "license": "Artistic-1.0-Perl OR GPL-1.0-or-later",
+   "homepage": "https://exiftool.org",
+   "source": "exiftool.org (Perl distribution; runs on macOS's /usr/bin/perl)",
+   "release": "https://exiftool.org",
+   "bytes": 7941781,
+   "installedBytes": 32754655,
+   "executables": [
+    "exiftool"
+   ],
+   "check": [
+    "exiftool",
+    "-ver"
+   ],
+   "artifacts": [
+    {
+     "url": "https://sourceforge.net/projects/exiftool/files/Image-ExifTool-13.60.tar.gz/download",
+     "name": "Image-ExifTool-13.60.tar.gz",
+     "format": "tar",
+     "sha256": "c8e3c42576f46d862e4cd9c192989776e7363931e890c95056bcd6293e83ea36",
+     "bytes": 7941781,
+     "bin": {
+      "exiftool": "Image-ExifTool-13.60/exiftool"
+     }
+    }
+   ]
+  },
+  {
+   "id": "xpdf-tools",
+   "version": "4.06",
+   "default": true,
+   "description": "Xpdf tools: pdftotext, pdftoppm, pdftopng, pdfinfo, pdfimages, pdffonts",
+   "purpose": "extracting text, images and info from PDFs, rendering PDF pages to images",
+   "license": "GPL-2.0-or-later OR GPL-3.0",
+   "homepage": "https://www.xpdfreader.com",
+   "source": "xpdfreader.com (xpdf-tools-mac, binARM)",
+   "release": "https://www.xpdfreader.com/download.html",
+   "bytes": 15452690,
+   "installedBytes": 38875455,
+   "executables": [
+    "pdfdetach",
+    "pdffonts",
+    "pdfimages",
+    "pdfinfo",
+    "pdftohtml",
+    "pdftopng",
+    "pdftoppm",
+    "pdftops",
+    "pdftotext"
+   ],
+   "check": [
+    "pdftotext",
+    "-v"
+   ],
+   "checkCodes": [
+    99
+   ],
+   "artifacts": [
+    {
+     "url": "https://dl.xpdfreader.com/xpdf-tools-mac-4.06.tar.gz",
+     "name": "xpdf-tools-mac-4.06.tar.gz",
+     "format": "tar",
+     "sha256": "c0a2992348c0407356cec39f2f4b2e73705fb77edc852a4e9196e222712451a8",
+     "bytes": 15452690,
+     "bin": {
+      "pdftotext": "xpdf-tools-mac-4.06/binARM/pdftotext",
+      "pdftoppm": "xpdf-tools-mac-4.06/binARM/pdftoppm",
+      "pdftopng": "xpdf-tools-mac-4.06/binARM/pdftopng",
+      "pdfinfo": "xpdf-tools-mac-4.06/binARM/pdfinfo",
+      "pdfimages": "xpdf-tools-mac-4.06/binARM/pdfimages",
+      "pdffonts": "xpdf-tools-mac-4.06/binARM/pdffonts",
+      "pdfdetach": "xpdf-tools-mac-4.06/binARM/pdfdetach",
+      "pdftohtml": "xpdf-tools-mac-4.06/binARM/pdftohtml",
+      "pdftops": "xpdf-tools-mac-4.06/binARM/pdftops"
+     }
+    }
+   ]
+  },
+  {
+   "id": "qpdf",
+   "version": "12.4.2",
+   "default": true,
+   "description": "QPDF: merge, split, rotate, decrypt, repair and linearize PDFs",
+   "purpose": "PDF page operations without re-rendering (qpdf --empty --pages a.pdf b.pdf -- out.pdf)",
+   "license": "Apache-2.0",
+   "homepage": "https://qpdf.sourceforge.io",
+   "source": "GitHub releases (bin-macos-arm64.zip, ships its libqpdf)",
+   "release": "https://github.com/qpdf/qpdf/releases/tag/v12.4.2",
+   "bytes": 3269125,
+   "installedBytes": 8687904,
+   "executables": [
+    "fix-qdf",
+    "qpdf",
+    "zlib-flate"
+   ],
+   "check": [
+    "qpdf",
+    "--version"
+   ],
+   "artifacts": [
+    {
+     "url": "https://github.com/qpdf/qpdf/releases/download/v12.4.2/qpdf-12.4.2-bin-macos-arm64.zip",
+     "name": "qpdf-12.4.2-bin-macos-arm64.zip",
+     "format": "zip",
+     "sha256": "62e46987a30ea167cbc530ccb22690aec3d8c812ed09979a941bcee92e504b79",
+     "bytes": 3269125,
+     "bin": {
+      "qpdf": "bin/qpdf",
+      "fix-qdf": "bin/fix-qdf",
+      "zlib-flate": "bin/zlib-flate"
+     }
+    }
+   ]
+  },
+  {
+   "id": "7zip",
+   "version": "26.05",
+   "default": true,
+   "description": "7-Zip (7zz): pack and unpack 7z, zip, rar, tar, gz, xz, iso and more",
+   "purpose": "opening any archive format (7zz x file -oDIR), creating 7z/zip archives",
+   "license": "LGPL-2.1-or-later (with unRAR restriction)",
+   "homepage": "https://www.7-zip.org",
+   "source": "GitHub releases of ip7z/7zip (official, 7zXXXX-mac.tar.xz)",
+   "release": "https://github.com/ip7z/7zip/releases/tag/26.05",
+   "bytes": 1868068,
+   "installedBytes": 6314046,
+   "executables": [
+    "7zz"
+   ],
+   "check": [
+    "7zz",
+    "i"
+   ],
+   "artifacts": [
+    {
+     "url": "https://github.com/ip7z/7zip/releases/download/26.05/7z2605-mac.tar.xz",
+     "name": "7z2605-mac.tar.xz",
+     "format": "tar",
+     "sha256": "12ef6830317743cfd3f0ab1724bde43fcc270d8b6d8564f8c12c2a2b7f993570",
+     "bytes": 1868068,
+     "bin": {
+      "7zz": "7zz"
+     }
+    }
+   ]
+  },
+  {
+   "id": "duckdb",
+   "version": "2.0.0",
+   "default": false,
+   "description": "DuckDB: SQL on CSV, Parquet and JSON files, fast analytics",
+   "purpose": "querying and aggregating data files with SQL (duckdb -json -c \"select ... from 'f.csv'\")",
+   "license": "MIT",
+   "homepage": "https://duckdb.org",
+   "source": "GitHub releases (duckdb-cli-osx-arm64)",
+   "release": "https://github.com/duckdb/duckdb/releases/tag/v2.0.0",
+   "bytes": 19169633,
+   "installedBytes": 66244528,
+   "executables": [
+    "duckdb"
+   ],
+   "check": [
+    "duckdb",
+    "--version"
+   ],
+   "artifacts": [
+    {
+     "url": "https://github.com/duckdb/duckdb/releases/download/v2.0.0/duckdb-cli-osx-arm64.tar.gz",
+     "name": "duckdb-cli-osx-arm64.tar.gz",
+     "format": "tar",
+     "sha256": "188a36fe8883ef52e69165a0cbb6031ef679c8e6c448a1ce22951964149b7f96",
+     "bytes": 19169633,
+     "bin": {
+      "duckdb": "duckdb"
+     }
+    }
+   ]
+  },
+  {
+   "id": "fd",
+   "version": "10.5.0",
+   "default": false,
+   "description": "fd: fast, friendly file finder",
+   "purpose": "finding files by name or extension (fd -e pdf . ~/Documents)",
+   "license": "MIT OR Apache-2.0",
+   "homepage": "https://github.com/sharkdp/fd",
+   "source": "GitHub releases (aarch64-apple-darwin)",
+   "release": "https://github.com/sharkdp/fd/releases/tag/v10.5.0",
+   "bytes": 1334374,
+   "installedBytes": 3104388,
+   "executables": [
+    "fd"
+   ],
+   "check": [
+    "fd",
+    "--version"
+   ],
+   "artifacts": [
+    {
+     "url": "https://github.com/sharkdp/fd/releases/download/v10.5.0/fd-v10.5.0-aarch64-apple-darwin.tar.gz",
+     "name": "fd-v10.5.0-aarch64-apple-darwin.tar.gz",
+     "format": "tar",
+     "sha256": "b67e1836c468e42e411984b56e52fa7abec08c2bd22c867398e7cc134aac5e12",
+     "bytes": 1334374,
+     "bin": {
+      "fd": "fd-v10.5.0-aarch64-apple-darwin/fd"
+     }
+    }
+   ]
+  },
+  {
+   "id": "yq",
+   "version": "4.54.1",
+   "default": false,
+   "description": "yq: query and edit YAML, TOML, XML and JSON",
+   "purpose": "reading and editing config files (yq '.a.b' f.yaml, -o json)",
+   "license": "MIT",
+   "homepage": "https://github.com/mikefarah/yq",
+   "source": "GitHub releases (yq_darwin_arm64)",
+   "release": "https://github.com/mikefarah/yq/releases/tag/v4.54.1",
+   "bytes": 13414050,
+   "installedBytes": 13414050,
+   "executables": [
+    "yq"
+   ],
+   "check": [
+    "yq",
+    "--version"
+   ],
+   "artifacts": [
+    {
+     "url": "https://github.com/mikefarah/yq/releases/download/v4.54.1/yq_darwin_arm64",
+     "name": "yq_darwin_arm64",
+     "format": "file",
+     "sha256": "fee511a181bd8b3e6b7da98842b41973bfac8cd3bcd341ed29a584620b5b2844",
+     "bytes": 13414050,
+     "bin": {
+      "yq": "yq_darwin_arm64"
+     }
+    }
+   ]
+  },
+  {
+   "id": "typst",
+   "version": "0.15.1",
+   "default": false,
+   "description": "Typst: typeset documents to PDF from simple markup",
+   "purpose": "making good-looking PDFs (letters, invoices, reports) from markup",
+   "license": "Apache-2.0",
+   "homepage": "https://typst.app",
+   "source": "GitHub releases (aarch64-apple-darwin)",
+   "release": "https://github.com/typst/typst/releases/tag/v0.15.1",
+   "bytes": 14438168,
+   "installedBytes": 45072281,
+   "executables": [
+    "typst"
+   ],
+   "check": [
+    "typst",
+    "--version"
+   ],
+   "artifacts": [
+    {
+     "url": "https://github.com/typst/typst/releases/download/v0.15.1/typst-aarch64-apple-darwin.tar.xz",
+     "name": "typst-aarch64-apple-darwin.tar.xz",
+     "format": "tar",
+     "sha256": "48f62ed034aa3a7978309579ac6ca00045e2ef0da73114e8af27cfd8e74dc05a",
+     "bytes": 14438168,
+     "bin": {
+      "typst": "typst-aarch64-apple-darwin/typst"
+     }
+    }
+   ]
+  },
+  {
+   "id": "fzf",
+   "version": "0.74.5",
+   "default": false,
+   "description": "fzf: fuzzy finder and fuzzy filter for lists",
+   "purpose": "fuzzy-matching a query against lines (fzf --filter 'query')",
+   "license": "MIT",
+   "homepage": "https://github.com/junegunn/fzf",
+   "source": "GitHub releases (darwin_arm64)",
+   "release": "https://github.com/junegunn/fzf/releases/tag/v0.74.5",
+   "bytes": 2154490,
+   "installedBytes": 5345648,
+   "executables": [
+    "fzf"
+   ],
+   "check": [
+    "fzf",
+    "--version"
+   ],
+   "artifacts": [
+    {
+     "url": "https://github.com/junegunn/fzf/releases/download/v0.74.5/fzf-0.74.5-darwin_arm64.tar.gz",
+     "name": "fzf-0.74.5-darwin_arm64.tar.gz",
+     "format": "tar",
+     "sha256": "ada808c7401b9949ce8842274ac16a6b6193fd32dcada396884a6a9a89e5985a",
+     "bytes": 2154490,
+     "bin": {
+      "fzf": "fzf"
+     }
+    }
+   ]
+  }
+ ]
+}

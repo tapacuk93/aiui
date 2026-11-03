@@ -108,6 +108,13 @@ final class API: NSObject {
         // Background library maintenance: shortly after launch, then every 6 hours.
         DispatchQueue.main.asyncAfter(deadline: .now() + 20) { [weak self] in self?.libraries.maintain() }
         Timer.scheduledTimer(withTimeInterval: 6 * 3600, repeats: true) { [weak self] _ in self?.libraries.maintain() }
+        #if os(macOS)
+        // Native tools share the disk budget with the cache and the JS libraries.
+        let native = NativeLibraries.shared, libs = libraries
+        libs.cacheBytes = { cache.totalBytes + native.used }
+        native.otherBytes = { cache.totalBytes + libs.used }
+        native.start()
+        #endif
         // Improvements follow each applet's own schedule, early ones within seconds: check often.
         Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
             guard let self, !Self.paused else { return }
@@ -373,6 +380,9 @@ final class API: NSObject {
         let bad = avoid.overview(limit: 20)
         if !bad.isEmpty { input["avoid"] = bad }
         input["libraries"] = libraries.overview()
+        #if os(macOS)
+        input["native"] = NativeLibraries.shared.overview()
+        #endif
         let h = hints.relevant(words, limit: 8)
         if !h.isEmpty { input["hints"] = h }
         let data = (try? JSONSerialization.data(withJSONObject: input, options: [.prettyPrinted, .sortedKeys])) ?? Data()
@@ -552,6 +562,9 @@ final class API: NSObject {
             let bad = avoid.overview()
             if !bad.isEmpty { event["avoid"] = bad }
             event["libraries"] = libraries.overview(words)
+            #if os(macOS)
+            event["native"] = NativeLibraries.shared.overview()
+            #endif
             let h = hints.relevant(words)
             if !h.isEmpty { event["hints"] = h }
             let lib = utilities.overview(words)
@@ -791,6 +804,9 @@ final class API: NSObject {
             case ("component", "cancel"): componentImprover?.cancel()
             case ("retro", "cancel"): retro?.cancel()
             case ("librarian", "cancel"): librarian?.cancel()
+            #if os(macOS)
+            case (let id, "cancel") where id.hasPrefix("native-"): NativeLibraries.shared.cancel(String(id.dropFirst(7)))
+            #endif
             default: break
             }
             send(["ok": true])
@@ -917,6 +933,13 @@ final class API: NSObject {
 
         case "sys":
             Self.sys(input, send: send, fail: fail)
+
+        case "native":                            // native tools: list | ensure | remove | update | rollback | setting
+            #if os(macOS)
+            NativeLibraries.shared.handle(input, send: send, fail: fail)
+            #else
+            fail("Native tools need the AI UI Mac app.")
+            #endif
 
         default:
             reply(404, "application/json", Data(#"{"error":"unknown endpoint"}"#.utf8))

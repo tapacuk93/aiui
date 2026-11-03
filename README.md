@@ -37,6 +37,20 @@ A native macOS app whose whole UI is one Blink webview (CEF), driven by the `cla
   background within a budget it shares with the memory cache: 10 GB, at most 10% of the free disk,
   nothing below 5 GB free; least recently used go first. Screens declare `libs` and get local copies.
   View › Installed JS Libraries…
+- **Native libraries** (Mac): command-line tools for the AI and its scenes — default set ffmpeg/ffprobe, yt-dlp,
+  pandoc, jq, ripgrep, exiftool, xpdf-tools (pdftotext, pdftoppm, …), qpdf, 7-Zip (7zz); on request duckdb, fd,
+  yq, typst, fzf. Only the projects' own prebuilt arm64 binaries, each artifact pinned by SHA-256 in
+  `web/native.json` (`tools/native/catalog.py refresh` resolves `tools/native/sources.json`; a newer catalog is
+  fetched from aiui.oeaio.com/native.json). Installed under `Application Support/aiui/native/<id>/<version>/`,
+  hash-checked before unpacking, quarantine cleared only after that, live after the tool's own `--version` check,
+  swapped atomically with the previous version kept for rollback; `native/bin` is on the PATH of every shell the
+  app runs (after the user's own tools; `$AIUI_NATIVE_BIN`). The default set installs in the background on first
+  launch — from a bundled pack first (`./build.sh --native-pack`), then by download only when policy allows:
+  the setting "Download native libraries" (Settings), no admin denial (managed preference
+  `AllowNativeDownloads = false`), no Low Data Mode or metered network, background work not paused. Events tell
+  the AI what is installed; it asks for more with `aiui-native ensure <id>` from its shell, scenes with
+  `aiui.sys({op:'native', action:'ensure', ids:[…]})`. Shares the disk budget; least recently used extras go
+  first. View › Native Libraries… (tests: `tools/native/harness/run.sh`)
 - **Self-checking screens**: every AI view renders hidden first while a UI test checks its real
   layout (overlaps, cropped text, overflow, contrast, broken images, emptiness). The tested render
   is then shown, and problems are repaired by the AI in place. Views also report errors and failed or slow

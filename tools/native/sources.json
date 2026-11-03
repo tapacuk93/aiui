@@ -1,0 +1,121 @@
+{
+  "about": "Native command-line tools for macOS arm64 that the AI and AI-written scenes use through the app's shell. Only prebuilt binaries published by the projects themselves (or the build the project's own download page links to), self-contained apart from macOS system libraries. tools/native/catalog.py resolves this into web/native.json. Not available as such binaries (so not listed): ImageMagick, tesseract, poppler (xpdf-tools covers pdftotext/pdftoppm), whisper.cpp (releases ship no macOS CLI), sqlite3 (part of macOS).",
+  "tools": [
+    {
+      "id": "ffmpeg", "default": true, "license": "GPL-3.0-or-later",
+      "homepage": "https://ffmpeg.org", "source": "https://ffmpeg.martin-riedl.de (static macOS arm64 builds linked from ffmpeg.org/download.html)",
+      "description": "FFmpeg and FFprobe: convert, cut, mix and inspect audio and video",
+      "purpose": "transcoding, trimming, extracting audio or frames, thumbnails, GIFs, probing media metadata (ffprobe -of json)",
+      "resolver": {"type": "ffmpeg-riedl", "files": ["ffmpeg", "ffprobe"]},
+      "check": ["ffmpeg", "-version"]
+    },
+    {
+      "id": "yt-dlp", "default": true, "license": "Unlicense",
+      "homepage": "https://github.com/yt-dlp/yt-dlp", "source": "GitHub releases (yt-dlp_macos, universal2)",
+      "description": "yt-dlp: download video, audio and metadata from YouTube and 1000+ sites",
+      "purpose": "fetching media or its metadata/subtitles from video sites (-J for JSON, -x for audio)",
+      "resolver": {"type": "github", "repo": "yt-dlp/yt-dlp", "assets": [{"match": "^yt-dlp_macos$", "format": "file", "bin": {"yt-dlp": "yt-dlp_macos"}}],
+                   "sums": "SHA2-256SUMS"},
+      "check": ["yt-dlp", "--version"]
+    },
+    {
+      "id": "pandoc", "default": true, "license": "GPL-2.0-or-later",
+      "homepage": "https://pandoc.org", "source": "GitHub releases (arm64-macOS.zip)",
+      "description": "Pandoc: convert between Markdown, HTML, DOCX, ODT, EPUB, LaTeX and more",
+      "purpose": "document conversion (md ↔ docx/html/epub/odt), extracting text from Word files",
+      "resolver": {"type": "github", "repo": "jgm/pandoc", "assets": [{"match": "^pandoc-[0-9.]+-arm64-macOS\\.zip$", "format": "zip", "exe": ["pandoc"]}]},
+      "check": ["pandoc", "--version"]
+    },
+    {
+      "id": "jq", "default": true, "license": "MIT",
+      "homepage": "https://jqlang.org", "source": "GitHub releases (jq-macos-arm64)",
+      "description": "jq: query and transform JSON on the command line",
+      "purpose": "filtering, reshaping and pretty-printing JSON from APIs and tools",
+      "resolver": {"type": "github", "repo": "jqlang/jq", "assets": [{"match": "^jq-macos-arm64$", "format": "file", "bin": {"jq": "jq-macos-arm64"}}],
+                   "sums": "sha256sum.txt"},
+      "check": ["jq", "--version"]
+    },
+    {
+      "id": "ripgrep", "default": true, "license": "MIT OR Unlicense",
+      "homepage": "https://github.com/BurntSushi/ripgrep", "source": "GitHub releases (aarch64-apple-darwin)",
+      "description": "ripgrep (rg): very fast recursive text search",
+      "purpose": "searching files and folders by content (rg --json for structured results)",
+      "resolver": {"type": "github", "repo": "BurntSushi/ripgrep", "assets": [{"match": "^ripgrep-[0-9.]+-aarch64-apple-darwin\\.tar\\.gz$", "format": "tar", "exe": ["rg"]}]},
+      "check": ["rg", "--version"]
+    },
+    {
+      "id": "exiftool", "default": true, "license": "Artistic-1.0-Perl OR GPL-1.0-or-later",
+      "homepage": "https://exiftool.org", "source": "exiftool.org (Perl distribution; runs on macOS's /usr/bin/perl)",
+      "description": "ExifTool: read and write metadata of photos, videos, PDFs and audio",
+      "purpose": "camera/GPS/date metadata, renaming photos by date, stripping metadata (exiftool -json)",
+      "resolver": {"type": "exiftool"},
+      "check": ["exiftool", "-ver"]
+    },
+    {
+      "id": "xpdf-tools", "default": true, "license": "GPL-2.0-or-later OR GPL-3.0",
+      "homepage": "https://www.xpdfreader.com", "source": "xpdfreader.com (xpdf-tools-mac, binARM)",
+      "description": "Xpdf tools: pdftotext, pdftoppm, pdftopng, pdfinfo, pdfimages, pdffonts",
+      "purpose": "extracting text, images and info from PDFs, rendering PDF pages to images",
+      "resolver": {"type": "xpdf", "exe": ["pdftotext", "pdftoppm", "pdftopng", "pdfinfo", "pdfimages", "pdffonts", "pdfdetach", "pdftohtml", "pdftops"], "prefer": "/binARM/"},
+      "check": ["pdftotext", "-v"], "checkCodes": [99]
+    },
+    {
+      "id": "qpdf", "default": true, "license": "Apache-2.0",
+      "homepage": "https://qpdf.sourceforge.io", "source": "GitHub releases (bin-macos-arm64.zip, ships its libqpdf)",
+      "description": "QPDF: merge, split, rotate, decrypt, repair and linearize PDFs",
+      "purpose": "PDF page operations without re-rendering (qpdf --empty --pages a.pdf b.pdf -- out.pdf)",
+      "resolver": {"type": "github", "repo": "qpdf/qpdf", "assets": [{"match": "^qpdf-[0-9.]+-bin-macos-arm64\\.zip$", "format": "zip", "exe": ["qpdf", "fix-qdf", "zlib-flate"]}],
+                   "sums": "^qpdf-[0-9.]+\\.sha256$"},
+      "check": ["qpdf", "--version"]
+    },
+    {
+      "id": "7zip", "default": true, "license": "LGPL-2.1-or-later (with unRAR restriction)",
+      "homepage": "https://www.7-zip.org", "source": "GitHub releases of ip7z/7zip (official, 7zXXXX-mac.tar.xz)",
+      "description": "7-Zip (7zz): pack and unpack 7z, zip, rar, tar, gz, xz, iso and more",
+      "purpose": "opening any archive format (7zz x file -oDIR), creating 7z/zip archives",
+      "resolver": {"type": "github", "repo": "ip7z/7zip", "assets": [{"match": "^7z[0-9]+-mac\\.tar\\.xz$", "format": "tar", "exe": ["7zz"]}]},
+      "check": ["7zz", "i"]
+    },
+    {
+      "id": "duckdb", "default": false, "license": "MIT",
+      "homepage": "https://duckdb.org", "source": "GitHub releases (duckdb-cli-osx-arm64)",
+      "description": "DuckDB: SQL on CSV, Parquet and JSON files, fast analytics",
+      "purpose": "querying and aggregating data files with SQL (duckdb -json -c \"select ... from 'f.csv'\")",
+      "resolver": {"type": "github", "repo": "duckdb/duckdb", "assets": [{"match": "^duckdb-cli-osx-arm64\\.(tar\\.gz|zip)$", "format": "auto", "exe": ["duckdb"]}]},
+      "check": ["duckdb", "--version"]
+    },
+    {
+      "id": "fd", "default": false, "license": "MIT OR Apache-2.0",
+      "homepage": "https://github.com/sharkdp/fd", "source": "GitHub releases (aarch64-apple-darwin)",
+      "description": "fd: fast, friendly file finder",
+      "purpose": "finding files by name or extension (fd -e pdf . ~/Documents)",
+      "resolver": {"type": "github", "repo": "sharkdp/fd", "assets": [{"match": "^fd-v[0-9.]+-aarch64-apple-darwin\\.tar\\.gz$", "format": "tar", "exe": ["fd"]}]},
+      "check": ["fd", "--version"]
+    },
+    {
+      "id": "yq", "default": false, "license": "MIT",
+      "homepage": "https://github.com/mikefarah/yq", "source": "GitHub releases (yq_darwin_arm64)",
+      "description": "yq: query and edit YAML, TOML, XML and JSON",
+      "purpose": "reading and editing config files (yq '.a.b' f.yaml, -o json)",
+      "resolver": {"type": "github", "repo": "mikefarah/yq", "assets": [{"match": "^yq_darwin_arm64$", "format": "file", "bin": {"yq": "yq_darwin_arm64"}}]},
+      "check": ["yq", "--version"]
+    },
+    {
+      "id": "typst", "default": false, "license": "Apache-2.0",
+      "homepage": "https://typst.app", "source": "GitHub releases (aarch64-apple-darwin)",
+      "description": "Typst: typeset documents to PDF from simple markup",
+      "purpose": "making good-looking PDFs (letters, invoices, reports) from markup",
+      "resolver": {"type": "github", "repo": "typst/typst", "assets": [{"match": "^typst-aarch64-apple-darwin\\.tar\\.xz$", "format": "tar", "exe": ["typst"]}]},
+      "check": ["typst", "--version"]
+    },
+    {
+      "id": "fzf", "default": false, "license": "MIT",
+      "homepage": "https://github.com/junegunn/fzf", "source": "GitHub releases (darwin_arm64)",
+      "description": "fzf: fuzzy finder and fuzzy filter for lists",
+      "purpose": "fuzzy-matching a query against lines (fzf --filter 'query')",
+      "resolver": {"type": "github", "repo": "junegunn/fzf", "assets": [{"match": "^fzf-[0-9.]+-darwin_arm64\\.tar\\.gz$", "format": "tar", "exe": ["fzf"]}],
+                   "sums": "_checksums\\.txt$"},
+      "check": ["fzf", "--version"]
+    }
+  ]
+}
