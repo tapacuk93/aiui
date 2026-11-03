@@ -189,6 +189,19 @@ window.aiui = {
 
 // ---------------------------------------------------------------- AI turns
 
+// Is `next` the screen `here` again: same title, mostly the same circles, or the clicked one again?
+function repeatsScreen(next, here, target) {
+  const norm = (x) => String(x || '').trim().toLowerCase();
+  if (!next || !here) return false;
+  if (next.title && norm(next.title) === norm(here.title)) return true;
+  const a = new Set((next.circles || []).map((c) => norm(c.label)).filter(Boolean));
+  if (!a.size) return false;
+  if (target && target.label && a.has(norm(target.label))) return true;
+  const b = new Set((here.circles || []).filter((c) => !c.removed).map((c) => norm(c.label)).filter(Boolean));
+  const shared = [...a].filter((l) => b.has(l)).length;
+  return shared >= 3 && shared / Math.min(a.size, b.size) >= 0.5;
+}
+
 function summary(screen) {
   const s = { kind: screen.kind };
   for (const k of ['title', 'message', 'go']) if (screen[k]) s[k] = screen[k];
@@ -249,6 +262,9 @@ async function ask(evt, { label, replace = false, circle = null, retried = false
       const q = await call('quick', payload);
       if (my !== seq || interim || !busy || !q || !q.kind) return;
       const { note, cacheable, reuse, publish, ...screen } = q;
+      // A quick screen that repeats this one (or lists the circle just clicked again) only looks
+      // like the click did nothing: keep waiting, with the circle still showing it is loading.
+      if (repeatsScreen(screen, current.screen, evt.target)) { log('ai', 'quick screen repeated this one: still waiting'); flashStatus(t('stillWorking')); return; }
       stack.push(current);
       interim = { screen: { ...normalize(screen), interim: true }, label: label || screen.title || evt.event };
       current = interim;

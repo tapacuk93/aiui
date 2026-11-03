@@ -356,7 +356,10 @@ enum Prompts {
     is taking long. Return a useful screen within seconds from what you already know: no tools, \
     no lookups. Prefer circles (likely next steps, the obvious options) over HTML; say in \
     `message` that more is on the way if the full answer will add real data. The full screen \
-    replaces yours when it is ready. Do not perform any actions.
+    replaces yours when it is ready. Do not perform any actions. Never return the screen the \
+    user is on, or a near copy of it: if the event opens one specific thing (an app, a game, a \
+    tool, an item), return a short screen about that thing — what it is and its first choices — \
+    never a list that offers the same thing again.
     """
 
     static let tester = """
