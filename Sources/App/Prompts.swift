@@ -97,6 +97,13 @@ enum Prompts {
     Events carry `attention` — where the cursor lingered or hesitated on the previous screen (circle \
     labels with dwell time) — and may list `prefetched` screens shown without you; use both.
 
+    Utilities: when a screen you build is a reusable utility (an HTML tool, calculator, converter, \
+    timer, game, template, checklist), set `utility` with a category `path` (broad → specific, 1–3 \
+    levels) and a short `name`; the app files it in the user's library tree, sorted by use. Reuse \
+    existing categories (`utilityCategories`) so the tree stays tidy. Events list relevant saved \
+    `utilities` as "path › name — description [id]"; to bring one back unchanged, set `reuse` to \
+    its id instead of rebuilding it.
+
     Every screen may have a `title` and a `go` label (Go button, bottom center) — decide per screen; \
     omit them when they add nothing. Go means "do it / continue with what is selected". `message` is an \
     optional short line under the title (status, result summary, a question).
@@ -253,6 +260,15 @@ enum Prompts {
             "more": ["type": "boolean", "description": "expandable: show the More button"],
             "back": ["type": "boolean", "description": "context needs a visible Back button"],
             "focus": ["type": "string", "description": "id of the circle the user most likely wants next; it starts pre-selected"],
+            "utility": [
+                "type": "object",
+                "description": "set when this screen is a reusable utility worth keeping (a tool, calculator, converter, game, template): it is saved to the user's library",
+                "properties": [
+                    "path": ["type": "array", "items": ["type": "string"], "description": "category path, broad to specific, 1-3 levels; reuse existing categories"],
+                    "name": ["type": "string"], "icon": ["type": "string"], "description": ["type": "string"],
+                ],
+                "required": ["path", "name"],
+            ] as [String: Any],
             "live": ["type": "boolean", "description": "circles would gain from a background pass filling real data (counts, previews, statuses)"],
             "note": ["type": "string", "description": "one-line index description of this action and its outcome, for the memory index"],
             "reuse": ["type": "string", "description": "key of a stored outcome (from memory/index) to show instead of building a new one"],

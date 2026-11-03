@@ -20,6 +20,15 @@ A native macOS app whose whole UI is one Blink webview (CEF), driven by the `cla
   repeats, and the AI is told about those replays on its next turn. View › Clear Memory Cache empties it.
 - The AI can also return a full-screen `text` screen, or a second-level `html` view it writes itself. That view is
   webview-aware and calls `aiui.sys(...)`, `aiui.next(...)` and `aiui.back()`.
+- **Language**: the AI writes in the system language. The app's own words and root circles are
+  translated once by the AI and cached.
+- **Cursor trajectories**: the circle the pointer is heading for is highlighted, and its screen is
+  prefetched in the background (read-only), so opening it is instant. Where the pointer lingered or
+  hesitated goes to the AI as `attention`. Screens marked `live` get a background pass that updates
+  their circles in place with real data.
+- **Utilities library**: reusable things the AI builds (tools, calculators, converters, games) are
+  saved to a category tree, sorted by use, and reachable from the root's Utilities circle. The AI
+  sees the library and can bring any utility back by id.
 - The app gives the AI full system access: `claude` runs with `--permission-mode bypassPermissions`, and
   `aiui.sys` exposes shell, JXA/AppleScript (every Cocoa API), open, file read/write, clipboard and notifications.
 

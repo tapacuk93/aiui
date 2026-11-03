@@ -113,8 +113,12 @@ async function ask(evt, { label, replace = false, circle = null } = {}) {
   const my = ++seq;
   setBusy(true, circle);
   try {
-    const { screen, cached } = await call('ai', payload);
+    const { screen, cached, savedUtility } = await call('ai', payload);
     if (my !== seq) return; // cancelled or superseded
+    if (savedUtility) {
+      setTimeout(() => flashStatus('🧰 ' + [...savedUtility.path, savedUtility.name].join(' › ')), 300);
+      initLibrary();
+    }
     if (cached) flashStatus(t('fromMemory'));
     const next = normalize(screen);
     if (replace) {
@@ -209,8 +213,30 @@ async function showSetup() {
   }, 'AI');
 }
 
+// ---------------------------------------------------------------- utilities library
+// Reusable utilities the AI built, filed in a category tree and sorted by use. Browsing it is
+// local; opening a utility shows it instantly.
+
+async function showLibrary(path = []) {
+  let r;
+  try { r = await call('utilities', { op: 'tree', path }); } catch (e) { return toast(e.message); }
+  const circles = [
+    ...r.categories.map((c) => ({ id: 'cat:' + c.name, icon: '📁', label: c.name, hint: String(c.count), cat: true })),
+    ...r.utilities.map((u) => ({ id: 'util:' + u.id, icon: u.icon || '🧰', label: u.name, hint: u.description, util: u.id })),
+  ];
+  push({ kind: 'circles', local: 'library', libPath: path, more: false, back: true,
+    title: path.length ? path[path.length - 1] : t('root.utilities'), circles }, path.length ? path[path.length - 1] : t('root.utilities'));
+}
+
 async function localOpen(c) {
   const kind = current.screen.local;
+  if (kind === 'library') {
+    if (c.cat) return showLibrary([...current.screen.libPath, c.label]);
+    try {
+      const { screen } = await call('utilities', { op: 'open', id: c.util });
+      return push(normalize(screen), c.label);
+    } catch (e) { return toast(e.message); }
+  }
   if (kind !== 'setup') return;
   if (c.id === 'key') {
     return push({
@@ -508,6 +534,7 @@ function circleEl(c, i) {
 function openCircle(c, node) {
   if (c.typed) return submitText();
   if (current.screen.local) return localOpen(c);
+  if (c.id === 'utilities' && !stack.length) return showLibrary([]);
   const text = typing() ? el.write.value.trim() : '';
   const evt = { event: 'open', target: circleSummary(c) };
   if (text) evt.text = text;
@@ -521,6 +548,13 @@ function toggleSelect(c, node) {
 }
 
 function minus(c, node) {
+  if (current.screen.local === 'library' && c.util) {
+    call('utilities', { op: 'delete', id: c.util, path: current.screen.libPath }).catch(() => {});
+    c.removed = true;
+    node.classList.add('leaving');
+    node.addEventListener('animationend', () => { node.remove(); layoutPages(); }, { once: true });
+    return;
+  }
   if (c.suggested) {
     live.circles = live.circles.filter((x) => x !== c);
     return rerenderLive();
@@ -708,9 +742,11 @@ function initFocus(s) {
   setFocus(ids[0]);
   // The user's habit on this screen, from the flow index.
   const path = [...stack.map((e) => e.label), current.label].filter(Boolean);
-  const screen = s;
+  const screen = s, asked = performance.now();
   call('cache', { op: 'likely', path }).then(({ label }) => {
+    // Only as the initial pre-selection: never once the user has moved, or after a moment.
     if (!label || current.screen !== screen || focusManual || typing()) return;
+    if (performance.now() - asked > 400 || lastPointerMove > asked) return;
     const c = (screen.circles || []).find((x) => !x.removed && x.label === label);
     if (c) setFocus(c.id);
   }).catch(() => {});
@@ -873,9 +909,10 @@ async function suggestFor(q) {
     live.q = q;
     live.circles = (r.circles || []).filter((c) => c && c.label)
       .map((c, i) => ({ ...c, id: 's~' + (c.id || i), suggested: true }));
-    const wanted = r.focus && live.circles.find((c) => c.id === 's~' + r.focus || c.id === r.focus);
     rerenderLive();
-    if (wanted && !focusManual) setFocus(wanted.id);
+    // r.focus marks the AI's best guess without moving the ring: the typed text stays the default.
+    const wanted = r.focus && live.circles.find((c) => c.id === 's~' + r.focus || c.id === r.focus);
+    if (wanted) { const n = [...el.circles.children].find((x) => x.dataset.id === wanted.id); if (n) n.classList.add('heading'); }
   } catch (e) {
     if (tok === live.token && e.message !== 'cancelled') flashStatus(e.message === 'no-ai' ? 'no AI connected' : 'no suggestions');
   } finally {
@@ -1010,7 +1047,21 @@ const STR = {
   ready: 'ready', asTyped: 'as typed',
   typeHint: 'Type — Enter opens the highlighted circle, ⌥Enter new line, Esc closes',
 };
+STR['root.utilities'] = 'Utilities'; STR['root.utilities.hint'] = 'your saved tools';
 for (const c of ROOT.circles) { STR['root.' + c.id] = c.label; STR['root.' + c.id + '.hint'] = c.hint; }
+
+// The root shows a Utilities circle once the library has something in it.
+async function initLibrary() {
+  try {
+    const r = await call('utilities', { op: 'tree', path: [] });
+    if (!r.total) return;
+    const circle = { id: 'utilities', icon: '🧰', label: t('root.utilities'), hint: t('root.utilities.hint') };
+    if (!ROOT.circles.some((c) => c.id === 'utilities')) ROOT.circles.unshift(circle);
+    const root = stack.length ? stack[0].screen : current.screen;
+    if (root.circles && !root.circles.some((c) => c.id === 'utilities')) root.circles.unshift({ ...circle });
+    if (!stack.length && !typing()) render();
+  } catch {}
+}
 let LANG = (navigator.language || 'en');
 let L10N = null;
 function t(k) { return (L10N && L10N[k]) || STR[k] || k; }
@@ -1018,7 +1069,7 @@ function t(k) { return (L10N && L10N[k]) || STR[k] || k; }
 function applyStrings() {
   el.prev.textContent = t('back');
   el.more.textContent = t('more');
-  for (const c of ROOT.circles) { c.label = t('root.' + c.id); c.hint = t('root.' + c.id + '.hint'); }
+  for (const c of ROOT.circles) { if (STR['root.' + c.id]) { c.label = t('root.' + c.id); c.hint = t('root.' + c.id + '.hint'); } }
   // The root screen on display picks up the translated labels.
   const root = stack.length ? stack[0].screen : current.screen;
   for (const c of root.circles || []) {
@@ -1075,7 +1126,10 @@ el.circles.addEventListener('mouseover', (e) => {
   if (!n || n.dataset.id === hoverId) return;
   endHover();
   hoverId = n.dataset.id; hoverStart = performance.now();
-  if (!typing() && n.dataset.id !== focusedId()) setFocus(n.dataset.id, true); // the focus ring follows the pointer
+  // The focus ring follows the pointer only when the pointer itself moved onto the circle — not
+  // when circles re-flowed or updated under a resting pointer.
+  const moved = performance.now() - lastPointerMove < 80;
+  if (moved && !typing() && n.dataset.id !== focusedId()) setFocus(n.dataset.id, true);
 });
 el.circles.addEventListener('mouseleave', endHover);
 function endHover() {
@@ -1086,8 +1140,13 @@ function endHover() {
   hoverId = null;
 }
 
+let lastPointerMove = 0;
+let lastPointer = { x: -1, y: -1 };
 document.addEventListener('mousemove', (e) => {
   const now = performance.now();
+  if (e.clientX === lastPointer.x && e.clientY === lastPointer.y) return; // synthetic, no motion
+  lastPointer = { x: e.clientX, y: e.clientY };
+  lastPointerMove = now;
   trail.push({ x: e.clientX, y: e.clientY, t: now });
   while (trail.length > 10 || (trail.length && now - trail[0].t > 250)) trail.shift();
   if (current.screen.kind !== 'circles' || busy) return;
@@ -1192,3 +1251,4 @@ function maybeRefine(s) {
 render();
 // No AI available yet: ask for one.
 call('engine', { op: 'status' }).then((st) => { if (!st.active) showSetup(); else initLanguage(); }).catch(() => {});
+initLibrary();

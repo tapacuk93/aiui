@@ -54,7 +54,7 @@ const WebBackend = (() => {
   }
 
   function actionOf(input) {
-    const a = { event: input.event || '?' };
+    const a = { event: input.event || '?', language: input.language || navigator.language };
     if (input.path) a.path = input.path;
     if (input.target && input.target.label) a.target = input.target.label;
     if (input.text) a.text = input.text;
@@ -126,6 +126,58 @@ const WebBackend = (() => {
     saveCache(c);
     return c[key];
   }
+
+  // ------------------------------------------------------------- utilities library
+
+  const UTILS = 'aiui.utils', UTILS_LIMIT = 2 * 1024 * 1024;
+  const loadUtils = () => { try { return JSON.parse(localStorage.getItem(UTILS)) || {}; } catch { return {}; } };
+  function saveUtils(u) {
+    let json = JSON.stringify(u);
+    const ids = Object.keys(u).sort((a, b) => u[a].lastUsed - u[b].lastUsed);
+    while (json.length > UTILS_LIMIT && ids.length) { delete u[ids.shift()]; json = JSON.stringify(u); }
+    try { localStorage.setItem(UTILS, json); } catch {}
+  }
+  async function saveUtility(screen) {
+    const m = screen.utility;
+    if (!m || !m.name) return null;
+    const path = (m.path || []).filter(Boolean).slice(0, 3);
+    const h = await crypto.subtle.digest('SHA-256', new TextEncoder().encode((path.join('/') + '/' + m.name).toLowerCase()));
+    const id = 'u' + [...new Uint8Array(h)].slice(0, 6).map((b) => b.toString(16).padStart(2, '0')).join('');
+    const { utility, note, cacheable, reuse, ...stored } = screen;
+    const u = loadUtils(), prev = u[id];
+    u[id] = { id, name: m.name, icon: m.icon || '🧰', description: m.description || '', path: path.length ? path : ['General'],
+      screen: stored, created: prev ? prev.created : Date.now(), lastUsed: Date.now(), uses: prev ? prev.uses : 0 };
+    saveUtils(u);
+    return u[id];
+  }
+  function utilTree(path) {
+    const all = Object.values(loadUtils());
+    const under = all.filter((i) => JSON.stringify(i.path.slice(0, path.length)) === JSON.stringify(path));
+    const cats = {}, here = [];
+    for (const i of under) {
+      if (i.path.length > path.length) {
+        const c = i.path[path.length];
+        cats[c] = cats[c] || { name: c, count: 0, uses: 0 };
+        cats[c].count++; cats[c].uses += i.uses;
+      } else here.push(i);
+    }
+    return {
+      categories: Object.values(cats).sort((a, b) => b.uses - a.uses || a.name.localeCompare(b.name)),
+      utilities: here.sort((a, b) => b.uses - a.uses || a.name.localeCompare(b.name))
+        .map((i) => ({ id: i.id, name: i.name, icon: i.icon, description: i.description })),
+      total: all.length,
+    };
+  }
+  function utilOverview(words, limit = 30) {
+    const ws = words.join(' ').toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+    return Object.values(loadUtils()).map((i) => {
+      const hay = (i.path.join(' ') + ' ' + i.name + ' ' + i.description).toLowerCase();
+      return [i, ws.reduce((n, w) => n + (hay.includes(w) ? 1 : 0), 0)];
+    }).sort((a, b) => b[1] - a[1] || b[0].uses - a[0].uses).slice(0, limit)
+      .map(([i]) => `${[...i.path, i.name].join(' › ')} — ${i.description} [${i.id}]`);
+  }
+  const utilCategories = () => [...new Set(Object.values(loadUtils())
+    .flatMap((i) => i.path.map((_, n) => i.path.slice(0, n + 1).join(' › '))))].sort();
 
   // ------------------------------------------------------------- model calls
 
@@ -244,6 +296,8 @@ const WebBackend = (() => {
     if (mem.length) event.memory = mem;
     const ov = overview();
     if (ov.length) event.flows = ov;
+    const uo = utilOverview(words);
+    if (uo.length) { event.utilities = uo; event.utilityCategories = utilCategories(); }
 
     const prompt = 'UI event from aiui:\n' + json(event) + '\nDo what it needs, then return the next screen.';
     const messages = [...convo];
@@ -251,6 +305,11 @@ const WebBackend = (() => {
       openScreen, 'ai', progress);
     convo = messages; openScreen = callId; replayed = []; prefetchedShown = [];
     let out = screen;
+    if (out.reuse && /^u/.test(out.reuse) && loadUtils()[out.reuse]) {
+      const u = loadUtils(), item = u[out.reuse];
+      item.uses++; item.lastUsed = Date.now(); saveUtils(u);
+      out = { ...item.screen, ...(out.title ? { title: out.title } : {}), note: out.note, cacheable: out.cacheable };
+    }
     if (out.reuse) {
       const e = touch(out.reuse);
       if (e) {
@@ -260,7 +319,9 @@ const WebBackend = (() => {
       }
       delete out.reuse;
     }
-    return { screen: store(key, action, steps, out) };
+    const saved = await saveUtility(out);
+    const { utility, ...shown } = store(key, action, steps, out);
+    return { screen: shown, ...(saved ? { savedUtility: { id: saved.id, path: saved.path, name: saved.name } } : {}) };
   }
 
   async function side(channel, systemExtra, schemaName, input, intro) {
@@ -344,6 +405,16 @@ const WebBackend = (() => {
       }
       case 'reset': convo = []; openScreen = null; return { ok: true };
       case 'sys': return sys(body);
+      case 'utilities': {
+        if (body.op === 'open') {
+          const u = loadUtils(), item = u[body.id];
+          if (!item) throw err('Utility not found.');
+          item.uses++; item.lastUsed = Date.now(); saveUtils(u);
+          return { screen: item.screen };
+        }
+        if (body.op === 'delete') { const u = loadUtils(); delete u[body.id]; saveUtils(u); }
+        return utilTree(body.path || []);
+      }
       case 'cache': {
         if (body.op === 'likely') return { label: likely(body.path) };
         if (body.op === 'clear') { localStorage.removeItem(CACHE); return {}; }

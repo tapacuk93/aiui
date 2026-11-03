@@ -3,6 +3,7 @@ import Cocoa
 /// Native endpoints behind the page's fetch("/api/<name>").
 final class API: NSObject, AIUIHost {
     let cache: Cache
+    let utilities: Utilities
     /// The AI behind screens (persistent session) and the stateless background pager.
     /// nil until a CLI is detected or an API key is given.
     private(set) var claude: AIEngine?
@@ -36,6 +37,7 @@ final class API: NSObject, AIUIHost {
     init(support: URL) {
         let mb = Int(ProcessInfo.processInfo.environment["AIUI_CACHE_MB"] ?? "") ?? 64
         cache = Cache(dir: support.appendingPathComponent("cache", isDirectory: true), limitMB: mb)
+        utilities = Utilities(dir: support.appendingPathComponent("utilities", isDirectory: true))
         let memory = Prompts.memory(index: cache.indexText.path)
         systemPrompt = Prompts.system + memory
         pagerPrompt = Prompts.system + memory + Prompts.pager
@@ -156,6 +158,7 @@ final class API: NSObject, AIUIHost {
         case "suggest":
             guard let suggester else { return fail("no-ai") }
             var input = input
+            input["language"] = language
             var words = (input["path"] as? [String]) ?? []
             if let q = input["input"] as? String { words.append(q) }
             let related = cache.related(words)
@@ -189,6 +192,8 @@ final class API: NSObject, AIUIHost {
 
         case "adopt":
             // A prefetched screen was opened: record it like a normal turn and tell the AI next time.
+            var input = input
+            input["language"] = language
             let action = Cache.action(from: input)
             let key = Cache.key(for: action)
             let steps = advanceFlow(action)
@@ -202,6 +207,8 @@ final class API: NSObject, AIUIHost {
             send(["ok": true])
 
         case "ai":
+            var input = input
+            input["language"] = language
             guard let claude, let pager else { return fail("no-ai") }
             pager.cancel()
             suggester?.cancel()
@@ -229,6 +236,11 @@ final class API: NSObject, AIUIHost {
             if !memory.isEmpty { event["memory"] = memory }
             let flows = cache.overview()
             if !flows.isEmpty { event["flows"] = flows }
+            let utils = utilities.overview(words)
+            if !utils.isEmpty {
+                event["utilities"] = utils
+                event["utilityCategories"] = utilities.categories
+            }
             let prompt = Self.prompt(for: event)
             claude.next(prompt: prompt, progress: { line in
                 Self.emit(["type": "progress", "text": line])
@@ -239,7 +251,11 @@ final class API: NSObject, AIUIHost {
                     self.replayed.removeAll()
                     self.prefetched.removeAll()
                     var screen = screen
-                    // `reuse`: the AI picked a stored outcome instead of rebuilding it.
+                    // `reuse`: the AI picked a stored outcome (or a saved utility) instead of rebuilding it.
+                    if let rk = screen["reuse"] as? String, rk.hasPrefix("u"), var util = self.utilities.open(rk) {
+                        for k in ["title", "message", "note", "cacheable"] { if let v = screen[k] { util[k] = v } }
+                        screen = util
+                    }
                     if let rk = screen.removeValue(forKey: "reuse") as? String, !rk.isEmpty,
                        var stored = self.cache.outcome(rk) {
                         for k in ["title", "message", "go", "more", "back", "note", "cacheable"] {
@@ -251,10 +267,28 @@ final class API: NSObject, AIUIHost {
                     var clean = screen
                     clean["note"] = nil
                     clean["cacheable"] = nil
-                    send(["screen": clean])
+                    var reply: [String: Any] = ["screen": clean]
+                    if let saved = self.utilities.save(from: screen) {
+                        reply["savedUtility"] = ["id": saved.id, "path": saved.path, "name": saved.name]
+                    }
+                    clean["utility"] = nil
+                    reply["screen"] = clean
+                    send(reply)
                 case .failure(let e): fail(e.localizedDescription)
                 }
             })
+
+        case "utilities":
+            switch input["op"] as? String ?? "tree" {
+            case "open":
+                guard let screen = utilities.open(input["id"] as? String ?? "") else { return fail("Utility not found.") }
+                send(["screen": screen])
+            case "delete":
+                utilities.delete(input["id"] as? String ?? "")
+                send(utilities.tree(at: input["path"] as? [String] ?? []))
+            default:
+                send(utilities.tree(at: input["path"] as? [String] ?? []))
+            }
 
         case "cache":
             switch input["op"] as? String ?? "stats" {
@@ -267,6 +301,7 @@ final class API: NSObject, AIUIHost {
         case "more":
             guard let pager else { return fail("no-ai") }
             var input = input
+            input["language"] = language
             var words = (input["path"] as? [String]) ?? []
             if let t = (input["screen"] as? [String: Any])?["title"] as? String { words.append(t) }
             let related = cache.related(words)

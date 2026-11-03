@@ -75,6 +75,8 @@ final class Cache {
     /// The parts of a UI event that identify the action (not the whole screen state).
     static func action(from input: [String: Any]) -> [String: Any] {
         var a: [String: Any] = ["event": input["event"] ?? "?"]
+        // Outcomes are in the user's language: a different language is a different action.
+        if let lang = input["language"] as? String { a["language"] = lang }
         if let path = input["path"] as? [Any] { a["path"] = path }
         if let t = input["target"] as? [String: Any], let label = t["label"] { a["target"] = label }
         if let text = input["text"] as? String, !text.isEmpty { a["text"] = text }
