@@ -669,14 +669,32 @@ function render() {
 
 // Keeps each circle's text inside it: a label that wraps leaves the hint one line; a label
 // that still overflows gets a smaller size.
+// Words are never split: a word wider than the circle, or text taller than it, shrinks the
+// label (down to 9px) until it fits; the hint goes first when space is short.
 function fitText(node) {
   const label = node.querySelector('.label'), hint = node.querySelector('.hint');
+  const face = node.querySelector('.face');
   if (!label) return;
-  const lh = parseFloat(getComputedStyle(label).lineHeight) || 17;
-  const lines = Math.round(label.scrollHeight / lh);
-  node.classList.toggle('long', lines >= 2);
-  node.classList.toggle('longer', lines >= 3);
-  if (hint) hint.style.webkitLineClamp = lines >= 2 ? '1' : '';
+  label.style.fontSize = '';
+  if (hint) hint.style.display = '';
+  const measure = () => {
+    const lh = parseFloat(getComputedStyle(label).lineHeight) || 17;
+    const lines = Math.round(label.scrollHeight / lh);
+    node.classList.toggle('long', lines >= 2);
+    node.classList.toggle('longer', lines >= 3);
+    if (hint) hint.style.webkitLineClamp = lines >= 2 ? '1' : '';
+  };
+  measure();
+  if (!label.clientWidth) return;   // not laid out yet (hidden): fit when it shows
+  const tooWide = () => label.scrollWidth > label.clientWidth + 1;
+  const tooTall = () => face && face.scrollHeight > face.clientHeight + 1;
+  if (hint && tooTall()) hint.style.display = 'none';
+  let size = parseFloat(getComputedStyle(label).fontSize) || 15;
+  for (let i = 0; i < 16 && size > 9 && (tooWide() || tooTall()); i++) {
+    size -= 0.5;
+    label.style.fontSize = size + 'px';
+    measure();
+  }
 }
 
 function renderCircles(s) {
@@ -2262,6 +2280,10 @@ function onKey(e) {
   }
 }
 document.addEventListener('keydown', onKey);
+// No page zoom on phones (iOS Safari ignores user-scalable=no): pinch is blocked; scenes that
+// want zoom handle their own touches inside their frame.
+for (const t of ['gesturestart', 'gesturechange']) document.addEventListener(t, (e) => e.preventDefault(), { passive: false });
+document.addEventListener('touchmove', (e) => { if (e.touches.length > 1) e.preventDefault(); }, { passive: false });
 // ` toggles the console from anywhere — before any input or scene handler sees it.
 window.addEventListener('keydown', (e) => {
   if (e.key === '`' && !e.metaKey && !e.ctrlKey && !e.altKey && e.target !== el.consoleInput) { e.preventDefault(); e.stopImmediatePropagation(); toggleConsole(); }

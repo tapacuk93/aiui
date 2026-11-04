@@ -58,7 +58,9 @@ html, body {
   font: 15px/1.4 -apple-system, system-ui, "SF Pro Text", sans-serif;
   -webkit-font-smoothing: antialiased;
   overflow: hidden;
+  -webkit-user-select: none;     /* iOS: no selection handles on a long press */
   user-select: none;
+  -webkit-text-size-adjust: 100%;
   cursor: text; /* every empty place is a place to write */
 }
 
@@ -304,6 +306,7 @@ body.busy #view { opacity: .7; transition: opacity .3s; }
   caret-color: var(--accent);
   font: 400 22px/1.4 -apple-system, system-ui, sans-serif;
   text-align: center;
+  -webkit-user-select: text;
   user-select: text;
 }
 #write::placeholder { color: var(--faint); font-size: 15px; }
@@ -458,6 +461,8 @@ html.web #webnote:hover { color: var(--accent); }
 @media (hover: none) {
   html, body { cursor: auto; }
   .circle { -webkit-tap-highlight-color: transparent; }
+  .circle, .circle * { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+  input, textarea, select { font-size: max(16px, 1em); }   /* iOS zooms into smaller fields on focus */
 }
 
 /* ---------- phones ---------- */
@@ -493,12 +498,15 @@ html.web #webnote:hover { color: var(--accent); }
 
 .label {
   max-width: 92%;
-  overflow-wrap: anywhere;
+  overflow-wrap: normal;          /* wrap between words only; fitText shrinks a word that is too long */
+  word-break: normal;
+  hyphens: manual;
   display: -webkit-box;
   -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
+.face > * { flex-shrink: 0; }   /* overflow must show (and be fitted), not squeeze a line half away */
 .circle.long .icon { margin-bottom: 4px; font-size: calc(26px * var(--s)); }
 .circle.longer .label { font-size: calc(13px * min(var(--s), 1.15)); }
 .circle.longer .hint { display: none; }
