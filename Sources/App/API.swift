@@ -110,8 +110,9 @@ final class API: NSObject {
         let saved = UserDefaults.standard.string(forKey: "engine")
         let env = ProcessInfo.processInfo.environment["AIUI_ENGINE"]
         let clis = Provider.detectedCLIs()
-        if let want = env ?? saved, use(want) { return }
-        if let first = clis.first { _ = use(first) } else if !use("key") { _ = use("aicoin") }
+        // (No early return: the timers and hooks below must be set up whichever engine is chosen.)
+        if let want = env ?? saved, use(want) {
+        } else if let first = clis.first { _ = use(first) } else if !use("key") { _ = use("aicoin") }
         appStore.onChange = { key, value in Self.emit(["type": "appChanged", "key": key, "value": value]) }
         // Background library maintenance: shortly after launch, then every 6 hours.
         DispatchQueue.main.asyncAfter(deadline: .now() + 20) { [weak self] in self?.libraries.maintain() }
