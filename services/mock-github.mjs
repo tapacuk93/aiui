@@ -8,7 +8,7 @@ import { gitBlobSha } from './src/util.mjs';
 const sha1 = (s) => createHash('sha1').update(s).digest('hex');
 
 export async function startMockGitHub({ token = 'test-token', repo = 'tapacuk93/aiui-shared', port = 0 } = {}) {
-  const blobs = new Map(), trees = new Map(), commits = new Map(), refs = new Map();
+  const blobs = new Map(), trees = new Map(), commits = new Map(), refs = new Map(), tags = new Map();
   const calls = [];
 
   function putTree(entries) {
@@ -51,8 +51,18 @@ export async function startMockGitHub({ token = 'test-token', repo = 'tapacuk93/
       return [201, { sha }];
     }
     if (method === 'POST' && p === '/git/trees') {
-      if (body.base_tree) return [422, { message: 'base_tree not supported by the mock' }];
-      return [201, { sha: putTree(body.tree.map(({ path, mode, sha }) => ({ path, mode, sha }))) }];
+      const files = new Map();
+      if (body.base_tree) {
+        const base = trees.get(body.base_tree);
+        if (!base) return [422, { message: 'unknown base_tree' }];
+        for (const e of base) files.set(e.path, e);
+      }
+      for (const { path, mode, sha } of body.tree) {
+        if (sha === null) {   // deleting a path (or a whole directory)
+          for (const k of [...files.keys()]) if (k === path || k.startsWith(path + '/')) files.delete(k);
+        } else files.set(path, { path, mode, sha });
+      }
+      return [201, { sha: putTree([...files.values()]) }];
     }
     if (method === 'POST' && p === '/git/commits') return [201, { sha: putCommit(body.message, body.tree, body.parents || []) }];
     if (method === 'PATCH' && (m = p.match(/^\/git\/refs\/heads\/(.+)$/))) {
@@ -63,6 +73,17 @@ export async function startMockGitHub({ token = 'test-token', repo = 'tapacuk93/
       if (!body.force && !c.parents.some((x) => x.sha === old)) return [422, { message: 'Update is not a fast forward' }];
       refs.set(branch, body.sha);
       return [200, { ref: `refs/heads/${branch}`, object: { sha: body.sha } }];
+    }
+    if (method === 'POST' && p === '/git/refs' && body.ref.startsWith('refs/tags/')) {
+      const name = body.ref.slice('refs/tags/'.length);
+      if (tags.has(name)) return [422, { message: 'Reference already exists' }];
+      if (!commits.has(body.sha)) return [422, { message: 'Object does not exist' }];
+      tags.set(name, body.sha);
+      return [201, { ref: body.ref, object: { sha: body.sha } }];
+    }
+    if (method === 'PATCH' && (m = p.match(/^\/git\/refs\/tags\/(.+)$/))) {
+      tags.set(decodeURIComponent(m[1]), body.sha);
+      return [200, { ref: `refs/tags/${m[1]}`, object: { sha: body.sha } }];
     }
     if (method === 'POST' && p === '/git/refs') {
       const branch = body.ref.replace(/^refs\/heads\//, '');
@@ -98,7 +119,9 @@ export async function startMockGitHub({ token = 'test-token', repo = 'tapacuk93/
   const url = `http://127.0.0.1:${server.address().port}`;
 
   return {
-    url, token, repo, calls, refs, commits,
+    url, token, repo, calls, refs, commits, tags,
+    // The files at a commit: Map path -> Buffer.
+    filesAt(commit) { return new Map(trees.get(commits.get(commit).tree.sha).map((e) => [e.path, blobs.get(e.sha)])); },
     // The files on a branch: Map path -> Buffer.
     files(branch = 'main') {
       const head = refs.get(branch);

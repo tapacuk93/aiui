@@ -9,7 +9,10 @@
 //   handles   handle                 -> id
 //   contacts  owner, id              GSI byOther (id, owner)
 //   events    owner, sk              TTL expires
-//   control   k                      TTL expires: replay marks, rate counters; key:<item key> -> id; meta:<name>
+//   control   k                      TTL expires: replay marks, rate counters; key:<item key> -> id; meta:<name>;
+//                                    meta:changeSeq (the change counter); lock:<name>
+//   changes   log ("items"), seq     the change log the revisions are made from
+// S3: payloads/<sha256>.json, state/<name>.json (the revision state)
 import { HttpError } from '../util.mjs';
 
 export function marshall(v) {
@@ -284,6 +287,55 @@ export async function createAwsStore({ tables, bucket, region, now = Date.now, c
       });
       return Number(r.Attributes.n.N);
     },
+    // ---- change log
+    async appendChange(c) {
+      const r = await send('UpdateItem', {
+        TableName: T.control, Key: { k: S('meta:changeSeq') }, UpdateExpression: 'ADD #n :one',
+        ExpressionAttributeValues: { ':one': { N: '1' } }, ReturnValues: 'UPDATED_NEW',
+      });
+      const seq = Number(r.Attributes.n.N);
+      await send('PutItem', { TableName: T.changes, Item: marshallMap({ ...c, log: 'items', seq }) });
+      return seq;
+    },
+    async latestChangeSeq() {
+      const r = await send('GetItem', { TableName: T.control, Key: { k: S('meta:changeSeq') }, ConsistentRead: true });
+      return r.Item?.n ? Number(r.Item.n.N) : 0;
+    },
+    async listChanges(after, limit) {
+      const out = await queryAll({
+        TableName: T.changes, ConsistentRead: true, KeyConditionExpression: '#log = :l AND #seq > :a',
+        ExpressionAttributeValues: { ':l': S('items'), ':a': { N: String(after) } },
+      }, limit);
+      return out.slice(0, limit).map(fromDb).map(({ log: _, ...c }) => c);
+    },
+
+    // ---- revision state (S3) and the run lock
+    async getState(name) {
+      try {
+        const r = await send('GetObject', { Bucket: bucket, Key: `state/${name}.json` });
+        return JSON.parse(Buffer.from(await r.Body.transformToByteArray()).toString('utf8'));
+      } catch (e) { if (e?.name === 'NoSuchKey' || e?.$metadata?.httpStatusCode === 404 || e?.name === 'AccessDenied') return null; throw e; }
+    },
+    async putState(name, v) {
+      await send('PutObject', { Bucket: bucket, Key: `state/${name}.json`, Body: JSON.stringify(v), ContentType: 'application/json' });
+    },
+    async acquireLock(name, owner, ttlSec) {
+      const t = nowSec();
+      try {
+        await send('PutItem', {
+          TableName: T.control, Item: marshallMap({ k: `lock:${name}`, owner, expires: t + ttlSec }),
+          ConditionExpression: 'attribute_not_exists(#k) OR #expires < :t OR #owner = :o',
+          ExpressionAttributeValues: { ':t': { N: String(t) }, ':o': S(owner) },
+        });
+        return true;
+      } catch (e) { if (isCond(e)) return false; throw e; }
+    },
+    async releaseLock(name, owner) {
+      try {
+        await send('DeleteItem', { TableName: T.control, Key: { k: S(`lock:${name}`) }, ConditionExpression: '#owner = :o', ExpressionAttributeValues: { ':o': S(owner) } });
+      } catch (e) { if (!isCond(e)) throw e; }
+    },
+
     async getMeta(k) {
       const r = await send('GetItem', { TableName: T.control, Key: { k: S(`meta:${k}`) }, ConsistentRead: true });
       return r.Item?.v ? unmarshall(r.Item.v) : null;
@@ -298,7 +350,7 @@ export function awsStoreFromEnv(env = process.env) {
     bucket: env.PAYLOAD_BUCKET,
     tables: {
       items: env.ITEMS_TABLE, marks: env.MARKS_TABLE, profiles: env.PROFILES_TABLE, handles: env.HANDLES_TABLE,
-      contacts: env.CONTACTS_TABLE, events: env.EVENTS_TABLE, control: env.CONTROL_TABLE,
+      contacts: env.CONTACTS_TABLE, events: env.EVENTS_TABLE, control: env.CONTROL_TABLE, changes: env.CHANGES_TABLE,
     },
   });
 }

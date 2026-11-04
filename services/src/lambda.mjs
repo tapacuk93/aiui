@@ -1,16 +1,34 @@
 // Lambda entry points (deploy/services.yaml).
 //   api    - API Gateway HTTP API (payload 2.0) for shared.aiui.oeaio.com and users.aiui.oeaio.com
-//   mirror - EventBridge schedule (every 15 min): the GitHub mirror when due
+//   mirror - the GitHub revisions: SQS messages (sent, delayed, after each item change), the
+//            safety-net schedule (every 15 min), or {"force": true} by hand
 import { createApp } from './app.mjs';
 import { awsStoreFromEnv } from './store/aws.mjs';
 import { githubClient } from './github.mjs';
-import { runMirror } from './mirror.mjs';
+import { runRevisions } from './mirror.mjs';
+import { reviewerFromEnv } from './review.mjs';
+
+// Asks for a revisions run in `seconds` (SQS delay, at most 15 minutes). No queue: nothing (the
+// schedule picks the change up).
+let sqs;
+export async function requestRun(seconds = 90, env = process.env) {
+  if (!env.REVISIONS_QUEUE_URL) return;
+  if (!sqs) {
+    const { SQSClient, SendMessageCommand } = await import('@aws-sdk/client-sqs');
+    const client = new SQSClient({});
+    sqs = (input) => client.send(new SendMessageCommand(input));
+  }
+  await sqs({ QueueUrl: env.REVISIONS_QUEUE_URL, MessageBody: '{"run":"revisions"}', DelaySeconds: Math.max(0, Math.min(900, Math.round(seconds))) });
+}
 
 let app;
 async function getApp() {
   app ??= createApp({
     store: await awsStoreFromEnv(),
-    config: { cacheMs: 60_000, writesPerHour: Number(process.env.WRITES_PER_HOUR || 60), readsPerHour: Number(process.env.READS_PER_HOUR || 600) },
+    config: {
+      cacheMs: 60_000, writesPerHour: Number(process.env.WRITES_PER_HOUR || 60), readsPerHour: Number(process.env.READS_PER_HOUR || 600),
+      onChange: () => requestRun(90),
+    },
   });
   return app;
 }
@@ -57,7 +75,11 @@ export async function mirror(event = {}) {
   const store = await awsStoreFromEnv();
   const repo = process.env.MIRROR_REPO || 'tapacuk93/aiui-shared';
   const github = async () => githubClient({ token: await githubToken(), repo, apiUrl: process.env.GITHUB_API_URL || 'https://api.github.com' });
-  const result = await runMirror({ store, github, repo, branch: process.env.MIRROR_BRANCH || 'main', force: !!event.force, log: console.log });
-  console.log(JSON.stringify(result));
-  return result;
+  const review = await reviewerFromEnv().catch((e) => { console.log(`AI review off: ${e.message}`); return null; });
+  const result = await runRevisions({
+    store, github, branch: process.env.MIRROR_BRANCH || 'main', force: !!event.force,
+    notify: (s) => requestRun(s), review, log: console.log,
+  });
+  console.log(JSON.stringify({ status: result.status, revisions: result.revisions.map((r) => r.message) }));
+  return { status: result.status, revisions: result.revisions };
 }

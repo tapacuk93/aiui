@@ -25,7 +25,7 @@ export function serviceForHost(host) {
 
 export function createApp({ store, now = Date.now, config = {} }) {
   const cfg = { writesPerHour: 60, readsPerHour: 600, cacheMs: 0, ...config };
-  const ctx = { store, now, cfg, nowIso: () => iso(now()) };
+  const ctx = { store, now, cfg, nowIso: () => iso(now()), onChange: cfg.onChange || null };
   const hour = () => Math.floor(now() / 3600000);
 
   // Signed write: verify, then count against the signer's hourly write budget.

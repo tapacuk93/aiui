@@ -5,12 +5,15 @@
 #                                            into the oeaio.com zone; prints ARN and status
 #   deploy/deploy-services.sh                test, package the Lambda code, create/update the stack
 #                                            (needs the ISSUED certificate), smoke-check both hosts
-#   deploy/deploy-services.sh --mirror-now   run the GitHub mirror once, forced
+#   deploy/deploy-services.sh --mirror-now   make the pending GitHub revisions now (no settle wait)
 # Optional environment: AWS_REGION (default us-east-1), MIRROR_ENABLED=true|false, MIRROR_REPO,
-# MIRROR_BRANCH (kept from the last deploy when unset).
+# MIRROR_BRANCH, REVIEW_ENABLED=true|false (kept from the last deploy when unset).
 # First run: --cert, wait until it prints ISSUED (a few minutes), then without arguments.
 # The mirror token: aws secretsmanager create-secret --name aiui/github-mirror --secret-string <token>
 # then MIRROR_ENABLED=true deploy/deploy-services.sh.
+# The optional AI review of revisions: aws secretsmanager create-secret --name aiui/revision-review
+#   --secret-string '{"provider":"anthropic","apiKey":"..."}'   (or {"provider":"aicoin","token":"..."})
+# then REVIEW_ENABLED=true deploy/deploy-services.sh (bundles @anthropic-ai/sdk into the Lambda code).
 set -eu
 export AWS_REGION="${AWS_REGION:-us-east-1}"
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -63,7 +66,16 @@ fi
 CERT=$(find_cert ISSUED)
 [ "$CERT" != "None" ] && [ -n "$CERT" ] || { echo "no ISSUED certificate yet - run deploy/deploy-services.sh --cert and wait" >&2; exit 1; }
 
-# 2. package: services/src is the Lambda code (the AWS SDK v3 comes with the runtime)
+# 2. package: services/src is the Lambda code (the AWS SDK v3 comes with the runtime); with the AI
+#    review, plus @anthropic-ai/sdk (the version services/package.json names)
+BUNDLE=$ROOT/build/services-lambda
+rm -rf "$BUNDLE" && mkdir -p "$BUNDLE" && cp -R "$ROOT/services/src/." "$BUNDLE/"
+REVIEW=${REVIEW_ENABLED:-$(aws cloudformation describe-stacks --stack-name $STACK \
+  --query "Stacks[0].Parameters[?ParameterKey=='ReviewEnabled'].ParameterValue | [0]" --output text 2>/dev/null || echo false)}
+if [ "$REVIEW" = true ]; then
+  SDK=$(node -p "require('$ROOT/services/package.json').optionalDependencies['@anthropic-ai/sdk']")
+  (cd "$BUNDLE" && echo '{"private":true}' > package.json && npm install --omit=dev --no-audit --no-fund "@anthropic-ai/sdk@$SDK" >/dev/null)
+fi
 ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
 ARTIFACTS=aiui-services-artifacts-$ACCOUNT
 if ! aws s3api head-bucket --bucket "$ARTIFACTS" 2>/dev/null; then
@@ -81,6 +93,7 @@ set -- CertificateArn="$CERT"
 [ -n "${MIRROR_ENABLED:-}" ] && set -- "$@" MirrorEnabled="$MIRROR_ENABLED"
 [ -n "${MIRROR_REPO:-}" ] && set -- "$@" MirrorRepo="$MIRROR_REPO"
 [ -n "${MIRROR_BRANCH:-}" ] && set -- "$@" MirrorBranch="$MIRROR_BRANCH"
+[ -n "${REVIEW_ENABLED:-}" ] && set -- "$@" ReviewEnabled="$REVIEW_ENABLED"
 aws cloudformation deploy --stack-name $STACK --template-file "$ROOT/build/services.packaged.yaml" \
   --capabilities CAPABILITY_IAM --parameter-overrides "$@" --tags project=aiui --no-fail-on-empty-changeset
 

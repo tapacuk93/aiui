@@ -37,7 +37,15 @@ export function githubClient({ token, repo, apiUrl = 'https://api.github.com', f
     async getCommitTree(sha) { return (await call('GET', `/git/commits/${sha}`)).tree.sha; },
     async getTree(sha) { return call('GET', `/git/trees/${sha}?recursive=1`); },
     async createBlob(buf) { return (await call('POST', '/git/blobs', { content: Buffer.from(buf).toString('base64'), encoding: 'base64' })).sha; },
-    async createTree(entries) { return (await call('POST', '/git/trees', { tree: entries })).sha; },
+    // With a base tree, entries change only the paths they name (sha null deletes a path).
+    async createTree(entries, baseTree) { return (await call('POST', '/git/trees', baseTree ? { base_tree: baseTree, tree: entries } : { tree: entries })).sha; },
+    // A lightweight tag; moved if it already exists (a run retried after a crash).
+    async setTag(name, sha) {
+      try { return await call('POST', '/git/refs', { ref: `refs/tags/${name}`, sha }); } catch (e) {
+        if (e.status !== 422) throw e;
+        return call('PATCH', `/git/refs/tags/${encodeURIComponent(name)}`, { sha, force: true });
+      }
+    },
     async createCommit(message, tree, parents) { return (await call('POST', '/git/commits', { message, tree, parents })).sha; },
     async updateRef(branch, sha) { return call('PATCH', ref(branch), { sha, force: false }); },
     async createRef(branch, sha) { return call('POST', '/git/refs', { ref: `refs/heads/${branch}`, sha }); },

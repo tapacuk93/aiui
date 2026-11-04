@@ -8,7 +8,7 @@ const clone = (v) => (v === undefined ? undefined : structuredClone(v));
 const newestFirst = (a, b) => (a.updated === b.updated ? (a.id < b.id ? 1 : -1) : a.updated < b.updated ? 1 : -1);
 
 export function createMemoryStore({ dir, now = Date.now } = {}) {
-  let s = { items: {}, keys: {}, marks: {}, profiles: {}, handles: {}, contacts: {}, events: {}, control: {}, meta: {} };
+  let s = { items: {}, keys: {}, marks: {}, profiles: {}, handles: {}, contacts: {}, events: {}, control: {}, meta: {}, changes: [], changeSeq: 0, states: {}, locks: {} };
   if (dir) {
     mkdirSync(join(dir, 'payloads'), { recursive: true });
     if (existsSync(join(dir, 'state.json'))) s = { ...s, ...JSON.parse(readFileSync(join(dir, 'state.json'), 'utf8')) };
@@ -132,6 +132,24 @@ export function createMemoryStore({ dir, now = Date.now } = {}) {
       s.control[key] = { n: 1, expires: t + ttlSec };
       return 1;
     },
+    // ---- the change log of the collection (revisions): {seq, at, type, id, item}
+    async appendChange(c) {
+      const seq = ++s.changeSeq;
+      s.changes.push(clone({ ...c, seq })); save(); return seq;
+    },
+    async latestChangeSeq() { return s.changeSeq; },
+    async listChanges(after, limit) { return clone(s.changes.filter((c) => c.seq > after).slice(0, limit)); },
+
+    // ---- larger state documents (the revision state), and a lock for single runs
+    async getState(name) { return clone(s.states[name]) ?? null; },
+    async putState(name, v) { s.states[name] = clone(v); save(); },
+    async acquireLock(name, owner, ttlSec) {
+      const t = nowSec(), l = s.locks[name];
+      if (l && l.expires > t && l.owner !== owner) return false;
+      s.locks[name] = { owner, expires: t + ttlSec }; return true;
+    },
+    async releaseLock(name, owner) { if (s.locks[name]?.owner === owner) delete s.locks[name]; },
+
     async getMeta(k) { return clone(s.meta[k]) ?? null; },
     async setMeta(k, v) { s.meta[k] = clone(v); save(); },
   };

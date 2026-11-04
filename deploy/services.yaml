@@ -32,9 +32,22 @@ Parameters:
   MirrorSecretName:
     Type: String
     Default: aiui/github-mirror
+  ReviewEnabled:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: >
+      Optional AI review of each revision (Claude writes the human part of the notes for the next
+      revision). Needs the secret ReviewSecretName and a code bundle with @anthropic-ai/sdk
+      (deploy-services.sh adds it when REVIEW_ENABLED=true).
+  ReviewSecretName:
+    Type: String
+    Default: aiui/revision-review
+    Description: '{"provider":"anthropic","apiKey":"..."} or {"provider":"aicoin","token":"..."}'
 
 Conditions:
   MirrorOn: !Equals [!Ref MirrorEnabled, "true"]
+  ReviewOn: !And [!Condition MirrorOn, !Equals [!Ref ReviewEnabled, "true"]]
 
 Resources:
   # ---------------------------------------------------------------- storage
@@ -114,6 +127,31 @@ Resources:
           KeySchema: [{AttributeName: id, KeyType: HASH}, {AttributeName: owner, KeyType: RANGE}]
           Projection: {ProjectionType: ALL}
       PointInTimeRecoverySpecification: {PointInTimeRecoveryEnabled: true}
+      Tags: [{Key: project, Value: aiui}]
+
+  # the change log of the shared collection: one revision per changed item is made from it
+  ChangesTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: aiui-shared-changes
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions: [{AttributeName: log, AttributeType: S}, {AttributeName: seq, AttributeType: N}]
+      KeySchema: [{AttributeName: log, KeyType: HASH}, {AttributeName: seq, KeyType: RANGE}]
+      PointInTimeRecoverySpecification: {PointInTimeRecoveryEnabled: true}
+      Tags: [{Key: project, Value: aiui}]
+
+  # a write asks for a revisions run 90 s later (the settle time); the mirror re-arms it while a
+  # burst goes on. Messages are only triggers: losing one delays a revision to the next schedule.
+  RevisionsQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: aiui-services-revisions
+      DelaySeconds: 90
+      VisibilityTimeout: 900
+      MessageRetentionPeriod: 86400
+      SqsManagedSseEnabled: true
       Tags: [{Key: project, Value: aiui}]
 
   EventsTable:
@@ -197,8 +235,14 @@ Resources:
                   - !GetAtt EventsTable.Arn
                   - !GetAtt ControlTable.Arn
               - Effect: Allow
+                Action: [dynamodb:PutItem]
+                Resource: !GetAtt ChangesTable.Arn
+              - Effect: Allow
                 Action: [s3:GetObject, s3:PutObject]
                 Resource: !Sub "${PayloadBucket.Arn}/payloads/*"
+              - Effect: Allow
+                Action: [sqs:SendMessage]
+                Resource: !GetAtt RevisionsQueue.Arn
       Tags: [{Key: project, Value: aiui}]
 
   MirrorRole:
@@ -217,15 +261,29 @@ Resources:
                 Action: [dynamodb:Query]
                 Resource: !Sub "${ItemsTable.Arn}/index/live"
               - Effect: Allow
-                Action: [dynamodb:GetItem, dynamodb:PutItem]
+                Action: [dynamodb:GetItem, dynamodb:PutItem, dynamodb:DeleteItem]
                 Resource: !GetAtt ControlTable.Arn
-                Condition: {"ForAllValues:StringLike": {"dynamodb:LeadingKeys": ["meta:*"]}}
+                Condition: {"ForAllValues:StringLike": {"dynamodb:LeadingKeys": ["meta:*", "lock:*"]}}
+              - Effect: Allow
+                Action: [dynamodb:Query]
+                Resource: !GetAtt ChangesTable.Arn
               - Effect: Allow
                 Action: [s3:GetObject]
                 Resource: !Sub "${PayloadBucket.Arn}/payloads/*"
               - Effect: Allow
+                Action: [s3:GetObject, s3:PutObject]
+                Resource: !Sub "${PayloadBucket.Arn}/state/*"
+              - Effect: Allow
+                Action: [sqs:SendMessage, sqs:ReceiveMessage, sqs:DeleteMessage, sqs:GetQueueAttributes]
+                Resource: !GetAtt RevisionsQueue.Arn
+              - Effect: Allow
                 Action: [secretsmanager:GetSecretValue]
-                Resource: !Sub "arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${MirrorSecretName}-??????"
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${MirrorSecretName}-??????"
+                  - !If
+                    - ReviewOn
+                    - !Sub "arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${ReviewSecretName}-??????"
+                    - !Ref AWS::NoValue
       Tags: [{Key: project, Value: aiui}]
 
   ApiFunction:
@@ -237,7 +295,7 @@ Resources:
       Runtime: !Ref Runtime
       Architectures: [arm64]
       Handler: lambda.api
-      Code: ../services/src
+      Code: ../build/services-lambda   # services/src (+ @anthropic-ai/sdk with the AI review), deploy-services.sh
       MemorySize: 512
       Timeout: 15
       Role: !GetAtt ApiRole.Arn
@@ -250,7 +308,9 @@ Resources:
           CONTACTS_TABLE: !Ref ContactsTable
           EVENTS_TABLE: !Ref EventsTable
           CONTROL_TABLE: !Ref ControlTable
+          CHANGES_TABLE: !Ref ChangesTable
           PAYLOAD_BUCKET: !Ref PayloadBucket
+          REVISIONS_QUEUE_URL: !If [MirrorOn, !Ref RevisionsQueue, ""]
       Tags: [{Key: project, Value: aiui}]
 
   MirrorFunction:
@@ -258,11 +318,11 @@ Resources:
     DependsOn: MirrorLogs
     Properties:
       FunctionName: aiui-services-mirror
-      Description: GitHub mirror of shared.aiui.oeaio.com
+      Description: GitHub revisions of shared.aiui.oeaio.com
       Runtime: !Ref Runtime
       Architectures: [arm64]
       Handler: lambda.mirror
-      Code: ../services/src
+      Code: ../build/services-lambda   # services/src (+ @anthropic-ai/sdk with the AI review), deploy-services.sh
       MemorySize: 1024
       Timeout: 600
       Role: !GetAtt MirrorRole.Arn
@@ -270,13 +330,27 @@ Resources:
         Variables:
           ITEMS_TABLE: !Ref ItemsTable
           CONTROL_TABLE: !Ref ControlTable
+          CHANGES_TABLE: !Ref ChangesTable
           PAYLOAD_BUCKET: !Ref PayloadBucket
+          REVISIONS_QUEUE_URL: !Ref RevisionsQueue
           MIRROR_REPO: !Ref MirrorRepo
           MIRROR_BRANCH: !Ref MirrorBranch
           MIRROR_SECRET: !Ref MirrorSecretName
+          REVIEW_SECRET: !If [ReviewOn, !Ref ReviewSecretName, ""]
       Tags: [{Key: project, Value: aiui}]
 
-  # every 15 minutes; the function decides whether a run is due (settled 15 min, or 6 h)
+  # the delayed trigger after each change (one run at a time; the run takes a lock)
+  MirrorQueueTrigger:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      EventSourceArn: !GetAtt RevisionsQueue.Arn
+      FunctionName: !Ref MirrorFunction
+      Enabled: !If [MirrorOn, true, false]
+      BatchSize: 10
+      MaximumBatchingWindowInSeconds: 20
+      ScalingConfig: {MaximumConcurrency: 2}
+
+  # safety net every 15 minutes: picks up settled changes whose trigger was lost
   MirrorSchedule:
     Type: AWS::Events::Rule
     Properties:
@@ -371,3 +445,4 @@ Outputs:
   ApiFunction: {Value: !Ref ApiFunction}
   MirrorFunction: {Value: !Ref MirrorFunction}
   PayloadBucket: {Value: !Ref PayloadBucket}
+  RevisionsQueue: {Value: !Ref RevisionsQueue}

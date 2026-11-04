@@ -95,6 +95,11 @@ export function rank(items, q, kind) {
 export function sharedRoutes(ctx) {
   const { store } = ctx;
   const changed = () => store.setMeta('lastChange', ctx.nowIso());
+  // The change log the GitHub revisions are made from (one revision per changed item).
+  const record = async (type, x) => {
+    await store.appendChange({ type, id: x.id, at: ctx.nowIso(), item: type === 'added' || type === 'updated' ? x : null });
+    try { await ctx.onChange?.(type, x.id); } catch (e) { console.error('onChange', e); }
+  };
   const liveItem = async (id) => {
     if (!ULID_RE.test(id)) throw new HttpError(404, 'no such item');
     const x = await store.getItem(id);
@@ -162,10 +167,12 @@ export function sharedRoutes(ctx) {
         item = { ...prev, ...base, version: prev.version + 1 };
         if (!item.authorName) delete item.authorName;
         await store.saveVersion(item, prev.version);
+        if (item.status === 'live') await record('updated', item);
       } else {
         item = { id: ulid(ctx.now()), ...base, version: 1, created: at, adoptions: 0, reports: 0, status: 'live' };
         if (!item.authorName) delete item.authorName;
         await store.createItem(item, key);
+        await record('added', item);
       }
       await changed();
       return json(prev ? 200 : 201, publicItem(item));
@@ -178,6 +185,7 @@ export function sharedRoutes(ctx) {
       if (x.author !== me) throw new HttpError(403, 'not yours');
       const at = ctx.nowIso();
       await store.withdrawItem(id, itemKey(x.author, x.kind, x.path, x.name), at);
+      if (x.status === 'live') await record('withdrawn', x);
       await changed();
       return json(200, { id, withdrawn: at });
     }],
@@ -197,6 +205,7 @@ export function sharedRoutes(ctx) {
       if (await store.addMark(id, 'report', me, { reason })) {
         x = await store.bump(id, 'reports');
         if (x.reports >= LIMITS.reportsToHide) hidden = await store.hideItem(id, ctx.nowIso());
+        if (hidden) await record('hidden', x);
         await changed();
       }
       return json(200, { id, reports: x.reports, hidden: hidden || x.status === 'hidden' });

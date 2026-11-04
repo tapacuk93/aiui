@@ -1,7 +1,7 @@
 // The Lambda adapter and the DynamoDB marshalling (the AWS store itself needs AWS or DynamoDB Local).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { requestFromEvent, responseToResult } from '../src/lambda.mjs';
+import { requestFromEvent, responseToResult, requestRun } from '../src/lambda.mjs';
 import { marshall, unmarshall, marshallMap, unmarshallMap, withNames, createAwsStore } from '../src/store/aws.mjs';
 
 test('API Gateway HTTP API events become requests; binary responses are base64', () => {
@@ -61,4 +61,36 @@ test('the AWS store sends the expected commands (fake clients)', async () => {
   const tx = sent.find((c) => c.name === 'TransactWriteItems').input.TransactItems;
   assert.deepEqual(tx[0].Put.Item.liveKey, { S: 'U#I' });
   assert.deepEqual(tx[1].Put.Item.k, { S: 'key:k' });
+});
+
+test('the AWS store: change log, revision state in S3, run lock', async () => {
+  const sent = [];
+  const fake = (name) => class { constructor(input) { this.name = name; this.input = input; } };
+  const commands = Object.fromEntries(['GetItem', 'PutItem', 'UpdateItem', 'DeleteItem', 'Query', 'TransactWriteItems', 'PutObject', 'GetObject'].map((n) => [`${n}Command`, fake(n)]));
+  const client = { send: async (c) => {
+    sent.push(c);
+    if (c.name === 'UpdateItem') return { Attributes: { n: { N: '7' } } };
+    if (c.name === 'Query') return { Items: [{ log: { S: 'items' }, seq: { N: '8' }, type: { S: 'added' }, id: { S: 'I' }, at: { S: 'T' }, item: { NULL: true } }] };
+    if (c.name === 'GetObject') return { Body: { transformToByteArray: async () => Buffer.from('{"revision":3}') } };
+    return {};
+  } };
+  const store = await createAwsStore({ tables: { items: 'items', control: 'control', changes: 'changes' }, bucket: 'b', clients: { ddb: client, s3: client, commands } });
+  assert.equal(await store.appendChange({ type: 'added', id: 'I', at: 'T', item: null }), 7);
+  const put = sent.find((c) => c.name === 'PutItem' && c.input.TableName === 'changes').input.Item;
+  assert.deepEqual([put.log, put.seq], [{ S: 'items' }, { N: '7' }]);
+  assert.deepEqual(await store.listChanges(7, 10), [{ seq: 8, type: 'added', id: 'I', at: 'T', item: null }]);
+  const q = sent.find((c) => c.name === 'Query').input;
+  assert.equal(q.KeyConditionExpression, '#log = :l AND #seq > :a');
+  assert.deepEqual(q.ExpressionAttributeNames, { '#log': 'log', '#seq': 'seq' });
+  assert.deepEqual(await store.getState('collection'), { revision: 3 });
+  await store.putState('collection', { revision: 4 });
+  assert.equal(sent.find((c) => c.name === 'PutObject').input.Key, 'state/collection.json');
+  assert.equal(await store.acquireLock('revisions', 'me', 900), true);
+  await store.releaseLock('revisions', 'me');
+  const lock = sent.filter((c) => c.input.Key?.k?.S === 'lock:revisions' || c.input.Item?.k?.S === 'lock:revisions');
+  assert.equal(lock.length, 2);
+});
+
+test('without a queue, asking for a run is a no-op (the schedule catches up)', async () => {
+  await requestRun(90, {});
 });

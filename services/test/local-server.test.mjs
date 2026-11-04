@@ -58,3 +58,16 @@ test('the local server serves both hosts by Host header and by path prefix', asy
   assert.equal(m.json.status, 'committed');
   assert.ok((await raw(`${s.url}/_local/mirror`)).json.files.includes('component/games/core/gameKit/payload.json'));
 });
+
+test('the local server makes a revision by itself once changes settle', async (t) => {
+  const gh = await startMockGitHub();
+  const github = githubClient({ token: gh.token, repo: gh.repo, apiUrl: gh.url });
+  const s = await startLocalServer({ port: 0, github, settleMs: 50 });
+  t.after(async () => { await s.close(); await gh.close(); });
+  const k = newKey(), body = Buffer.from(JSON.stringify(item()));
+  const post = await raw(`${s.url}/shared/v1/items`, { method: 'POST', body, headers: signHeaders(k, 'POST', '/v1/items', body, Date.now()) });
+  assert.equal(post.status, 201);
+  for (let i = 0; i < 50 && !gh.files().has('revisions/r1.md'); i++) await new Promise((r) => setTimeout(r, 50));
+  assert.ok(gh.files().has('revisions/r1.md'));
+  assert.equal(gh.tags.has('r1'), true);
+});

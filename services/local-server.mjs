@@ -6,19 +6,29 @@
 //
 //   node local-server.mjs [--port 8787] [--data ./.local-data] [--mirror]
 //     --data    keep state in a directory (default: memory only)
-//     --mirror  start a mock GitHub too; POST /_local/mirror runs the mirror against it
-//               (GET /_local/mirror lists the mirrored files)
+//     --mirror  start a mock GitHub too: each item change makes a revision there once changes
+//               settle (90 s; --settle <seconds> to change), POST /_local/mirror?force=1 runs it
+//               now, GET /_local/mirror lists the mirrored files
 import { createServer } from 'node:http';
 import { pathToFileURL } from 'node:url';
 import { createApp, serviceForHost } from './src/app.mjs';
 import { createMemoryStore } from './src/store/memory.mjs';
 import { githubClient } from './src/github.mjs';
-import { runMirror } from './src/mirror.mjs';
+import { runRevisions } from './src/mirror.mjs';
 import { startMockGitHub } from './mock-github.mjs';
 
-export async function startLocalServer({ port = 8787, store, now = Date.now, config = {}, github = null, branch = 'main' } = {}) {
+export async function startLocalServer({ port = 8787, store, now = Date.now, config = {}, github = null, branch = 'main', settleMs = 90_000 } = {}) {
   store ??= createMemoryStore({ now });
-  const app = createApp({ store, now, config });
+  // The same flow as in AWS: a change asks for a run after the settle time (SQS there, a timer here).
+  let timer = null;
+  const run = (force = false) => runRevisions({ store, github, branch, now, force, debounceMs: settleMs, notify: (s) => schedule(s * 1000) });
+  const schedule = (ms) => {
+    if (!github) return;
+    clearTimeout(timer);
+    timer = setTimeout(() => run().catch((e) => console.error('revisions', e)), ms);
+    timer.unref?.();
+  };
+  const app = createApp({ store, now, config: { ...config, onChange: () => schedule(settleMs) } });
   const server = createServer(async (req, res) => {
     const chunks = [];
     for await (const c of req) chunks.push(c);
@@ -29,7 +39,7 @@ export async function startLocalServer({ port = 8787, store, now = Date.now, con
     let out;
     if (path === '/_local/mirror' && github) {
       const r = req.method === 'POST'
-        ? await runMirror({ store, github, branch, now, force: url.searchParams.get('force') === '1' }).catch((e) => ({ status: 'error', error: e.message }))
+        ? await run(url.searchParams.get('force') === '1').catch((e) => ({ status: 'error', error: e.message }))
         : { files: github.files ? [...github.files(branch).keys()] : [] };
       out = { status: 200, headers: { 'content-type': 'application/json' }, body: JSON.stringify(r) };
     } else {
@@ -43,7 +53,7 @@ export async function startLocalServer({ port = 8787, store, now = Date.now, con
     res.end(out.body);
   });
   await new Promise((r) => server.listen(port, '127.0.0.1', r));
-  return { url: `http://127.0.0.1:${server.address().port}`, server, store, app, close: () => new Promise((r) => server.close(r)) };
+  return { url: `http://127.0.0.1:${server.address().port}`, server, store, app, close: () => { clearTimeout(timer); return new Promise((r) => server.close(r)); } };
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1]).href) {
@@ -60,7 +70,7 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
       github = Object.assign(client, { files: (b) => mock.files(b) });
     }
   }
-  const s = await startLocalServer({ port, store: createMemoryStore({ dir }), github, branch: process.env.MIRROR_BRANCH || 'main' });
+  const s = await startLocalServer({ port, store: createMemoryStore({ dir }), github, branch: process.env.MIRROR_BRANCH || 'main', settleMs: Number(arg('--settle', 90)) * 1000 });
   console.log(`shared: ${s.url}/shared/v1/index   users: ${s.url}/users/v1/find?q=...` +
     (dir ? `   data: ${dir}` : '   (memory only)') + (mock ? `   mock GitHub: ${mock.url}` : github ? `   mirror: ${process.env.MIRROR_REPO}` : ''));
 }

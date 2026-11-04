@@ -111,24 +111,79 @@ Limits: payload ≤ 512 KB; name/title ≤ 80 chars; description/usage ≤ 4 KB.
 - Sharing: on a local module or an applet, an explicit "Share globally" action shows exactly what
   will be published (and strips state), then signs and posts it.
 
-### Mirror to GitHub
+### Mirror to GitHub: one revision per change
 
-The registry periodically (every 6 hours, and after a burst of changes settles for 15 minutes)
-pushes the whole tree of live shared items to a GitHub repository (default
-`tapacuk93/aiui-shared`, branch `main`), as one commit per run, only when something changed:
+The registry mirrors the live shared items to a GitHub repository (default `tapacuk93/aiui-shared`,
+branch `main`) as **one evolving collection** whose direction is *a personal OS with all its
+software*. Every change to the collection - an item added, a new version, a withdrawal, an item
+hidden by reports - becomes **one revision**: one commit, tagged `r<N>` and `v<version>`. A write
+asks for a run 90 seconds later; while a burst goes on the run waits until the newest change is 90 s
+old (at most 10 minutes after the oldest), then makes one revision per changed item in the order of
+their first change (several changes of one item in a burst are one revision with its last state).
+Adoptions alone do not make revisions; they count in the next one.
 
 ```
-README.md                         generated: what this is, counts, how to adopt in AI UI
-index.json                        the same as GET /v1/index (all live items, no payloads)
+README.md                          generated: what this is, version, maturity, coverage, the formula
+TAXONOMY.json                      the target: categories of software a complete personal OS needs
+COLLECTION.json                    version, maturity, coverage per category, each item's category and value
+REVISIONS.md                       every revision, newest first
+revisions/r<N>.md                  one revision: the change, its value, maturity, coverage, notes
+index.json                         the same as GET /v1/index (all live items, no payloads)
 <kind>/<path...>/<name>/meta.json  the item's metadata (as in the API)
 <kind>/<path...>/<name>/payload.json  the exact payload bytes (sha256 matches meta.sha256)
 <kind>/<path...>/<name>/code.js   components/utils: the code alone, for reading and diffs
 ```
 
-Withdrawn and hidden (reported) items are removed from the tree. Authors appear by app id
-(and display name if they set one). Commits are made through the GitHub API by a bot token kept in
-AWS Secrets Manager (`aiui/github-mirror`), with the message `Shared: +N updated M removed K`.
-The mirror is read-only output: nothing is ever read back from GitHub.
+Withdrawn and hidden (reported) items are removed from the tree (their revision files stay).
+Authors appear by app id (and display name if they set one). Commits are made through the GitHub
+API by a bot token kept in AWS Secrets Manager (`aiui/github-mirror`), with the message
+`r<N> v<version>: <added|updated|withdrawn|hidden> <kind>/<path>/<name> (value <v>, maturity <m>)`.
+The mirror is read-only output: nothing is read back from GitHub except the branch's tree listing.
+
+### Revisions: taxonomy, value, maturity, notes
+
+**Taxonomy.** `TAXONOMY.json` (in `services/src/`) lists 25 categories a complete personal OS needs -
+system and settings, files, text, documents, spreadsheets and data, charts, presentations, media
+players, media editors, drawing/design/music, web and reading, mail and messaging, calendar and
+clock, notes and tasks, developer tools, network, security, money, learning, games, maps and
+weather, health, AI, interface building blocks, calculators and converters - each with a weight
+(3 essential, 2 expected, 1 nice to have), keywords and examples. Each item is mapped to one
+category from its path, name, title, description and usage (path segment = category id or alias: 6;
+keyword in path/name: 3, in the title: 2, in description/usage: 1; at least 2, else
+*uncategorized*). **Coverage** = the weight of categories with at least one live item over all weights.
+
+**Value of a revision** (deterministic; constants in `services/src/analysis.mjs`):
+
+- *source* = 10 x log2(1 + novel / 512) x documentation, where *novel* = brotli(references + source)
+  - brotli(references) in bytes (quality 9, 24-bit window), over whitespace-normalized source
+  (components/utils: code + css; applets: the html), and the references are the item's previous
+  version and its (up to 4) most similar live items (MinHash similarity >= 0.1). *documentation* =
+  0.5, +0.25 for a description of 40+ characters, +0.25 for usage of 20+ characters, +0.1 when the
+  code carries self-tests (`test(`, `assert(`, `expect(`, `describe(`), at most 1.1.
+- *coverage*: the first item in a category earns 15 x weight; the second and third 3 x weight.
+- *builds on*: 2 per live item listed in `uses`, at most 5 counted.
+- *duplicate*: 90%+ alike (MinHash over 5-token shingles, 64 hashes; or identical after
+  normalization) to another live item -> the whole value is 0.
+- *usage*: +0.5 per adoption, -2 per report since the previous revision (in the next revision).
+- *withdrawn*: minus everything the item added; *hidden* (3 reports): that and 5 more.
+
+**Maturity.** Points P = the sum of revision values, never below 0; the **maturity index** =
+100 x P / (P + 1000) (50 at 1000 points, approaching 100). The **version** MAJOR.MINOR.PATCH: MAJOR =
+the number of weighted-coverage quarters reached (25/50/75/100%; it never goes back); otherwise a
+revision worth 20 or more bumps MINOR, any other (also negative) PATCH. So a reformatted copy or a
+typo fix moves maturity by ~0 and is a PATCH, while a substantial item in a new category moves it a
+lot and is a MINOR (or MAJOR when it crosses a coverage quarter).
+
+**Notes for the next revision.** Each revision ends with notes computed from the collection after
+it: the most valuable next contribution (the heaviest uncovered category, else the thinnest), gaps
+in the taxonomy, near-duplicates to merge (60%+ alike, neither `uses` the other), items that should
+build on each other (30-60% alike), items missing description/usage or self-tests, and items the
+taxonomy cannot place. Each note has a stable id; the next revision lists the previous notes as
+*addressed* (no longer open) or *still open (since r<N>)*. Optionally (off by default,
+`ReviewEnabled`), Claude reads the revision, the deterministic notes, its own previous notes and the
+item's source (as untrusted data) and adds "Reviewer notes (AI)"; the key is in Secrets Manager
+(`aiui/revision-review`: an Anthropic API key or an AICoin token for `proxy.aicoin.oeaio.com`).
+Without it, or when it fails or declines, the notes are the deterministic ones.
 
 ## users.aiui.oeaio.com
 
@@ -213,14 +268,15 @@ Points the contract above left open, as the backend implements them:
   all GETs, 600/hour per IP. The API also throttles at 50 requests/s (burst 100).
 - **Replay.** Ed25519 signatures are deterministic: an identical request signed in the same
   millisecond is a replay (`409`). Unknown method on a known path is `405`.
-- **Mirror.** Triggered every 15 minutes; a run happens when changes have settled for 15 minutes or
-  6 hours have passed, and commits only when the tree differs from the branch (a fingerprint of the
-  last pushed tree skips even the GitHub calls). `index.json` in the mirror has `next: null` and
-  `generated` = the latest item update (not the run time, which would change every run). When two
-  authors share kind + path + name, the earliest-created item keeps the plain directory and later
-  ones get `<name>.<first 12 hex of the author id>`. The secret holds the token itself or
-  `{"token": "..."}`; an empty repository gets a first commit through the contents API. The
-  schedule is off until the stack is deployed with `MirrorEnabled=true`.
+- **Mirror.** Writes record a change log (DynamoDB); a write sends a delayed SQS message (90 s)
+  that starts the mirror Lambda; a 15-minute schedule is the safety net. One run at a time (a
+  lock); a run that stops half-way is completed by the next without duplicates. The first run makes
+  revisions of the items already live, in creation order. `index.json` in the mirror has `next:
+  null` and `generated` = the latest item update. When two authors share kind + path + name, the
+  earliest-created item keeps the plain directory and later ones get `<name>.<first 12 hex of the
+  author id>`. The secret holds the token itself or `{"token": "..."}`; an empty repository gets a
+  first commit through the contents API. Nothing runs until the stack is deployed with
+  `MirrorEnabled=true`.
 - **Hosting.** Region us-east-1 (as the web stack; the regional certificate for both names lives
   there). Lambda runtime `nodejs24.x` by default: the code needs Node.js 20 or later, and Lambda
   deprecated `nodejs20.x` on 2026-04-30. DNS has A aliases only (the regional API domains are IPv4).
