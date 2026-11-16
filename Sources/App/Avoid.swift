@@ -23,6 +23,8 @@ final class Avoid {
     private var entries: [String: Entry] = [:]
     private var checking = Set<String>()
     static let firstBackoff: Double = 600, maxBackoff: Double = 7 * 86_400
+    /// The clock (tests move it forward to make rechecks due).
+    var now: () -> Date = Date.init
 
     init(dir: URL) {
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -35,7 +37,7 @@ final class Avoid {
     /// Records failures reported by a view: [{url, reason}]. A host counts as failing once two
     /// of its resources failed, or one was refused outright (401/403/451, DNS).
     func record(_ items: [[String: Any]]) {
-        let now = Date()
+        let now = self.now()
         for item in items {
             guard let url = item["url"] as? String, let u = URL(string: url), let host = u.host else { continue }
             let reason = item["reason"] as? String ?? "failed"
@@ -70,7 +72,7 @@ final class Avoid {
     /// Rechecks entries whose time has come; a success clears the entry (and, for a host,
     /// its URLs), a failure doubles the wait.
     func recheckDue() {
-        let now = Date()
+        let now = self.now()
         for e in entries.values where e.nextCheck <= now && !checking.contains(e.key) {
             guard let url = URL(string: e.sample) else { entries[e.key] = nil; continue }
             checking.insert(e.key)
@@ -92,7 +94,7 @@ final class Avoid {
                     } else {
                         cur.reason = status > 0 ? String(status) : (error.map { ($0 as NSError).code == NSURLErrorTimedOut ? "timeout" : "failed" } ?? "failed")
                         cur.backoff = min(cur.backoff * 2, Self.maxBackoff)
-                        cur.nextCheck = Date().addingTimeInterval(cur.backoff)
+                        cur.nextCheck = self.now().addingTimeInterval(cur.backoff)
                         self.entries[e.key] = cur
                     }
                     self.persist()
