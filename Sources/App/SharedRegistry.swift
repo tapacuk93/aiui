@@ -22,7 +22,7 @@ final class SharedRegistry {
     /// Items this installation shared: item id → what it was made from ({module} or {applet}).
     private var mine: [String: [String: Any]] = [:]
     /// Payloads downloaded, verified and reviewed, waiting for the user's confirmation.
-    private var pending: [String: (version: Int, sha: String, payload: Data, item: [String: Any])] = [:]
+    var pending: [String: (version: Int, sha: String, payload: Data, item: [String: Any])] = [:]
     private var syncing = false
     private var timer: Timer?
 
@@ -35,6 +35,9 @@ final class SharedRegistry {
     var appletList: () -> [[String: Any]] = { [] }
     var storeApplet: (String, [String: Any], String) -> String = { _, _, _ in "" }
     var paused: () -> Bool = { false }
+    /// The first check after launch and the interval between checks (tests shorten them).
+    var firstSyncDelay: TimeInterval = 8
+    var checkEvery: TimeInterval = 1800
 
     init(dir: URL, utilities: Utilities) {
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -46,8 +49,8 @@ final class SharedRegistry {
     // MARK: - Index sync (on launch when older than 6 h, every 6 h, on demand)
 
     func start() {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 8) { [weak self] in self?.syncIfDue() }
-        timer = Timer.scheduledTimer(withTimeInterval: 1800, repeats: true) { [weak self] _ in self?.syncIfDue() }
+        DispatchQueue.main.asyncAfter(deadline: .now() + firstSyncDelay) { [weak self] in self?.syncIfDue() }
+        timer = Timer.scheduledTimer(withTimeInterval: checkEvery, repeats: true) { [weak self] _ in self?.syncIfDue() }
     }
 
     func syncIfDue() {

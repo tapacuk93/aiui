@@ -17,6 +17,8 @@ final class AppIdentity {
     ]
     private var cached: Curve25519.Signing.PrivateKey?
     private let lock = NSLock()
+    /// Saves a new key to the Keychain (SecItemAdd; tests inject a failure).
+    var secAdd: (CFDictionary, UnsafeMutablePointer<CFTypeRef?>?) -> OSStatus = SecItemAdd
 
     /// A given key (tests); the shared instance reads the Keychain.
     init(key: Curve25519.Signing.PrivateKey? = nil) { cached = key }
@@ -38,7 +40,7 @@ final class AppIdentity {
         var add = keychain
         add[kSecValueData as String] = k.rawRepresentation
         add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-        let status = SecItemAdd(add as CFDictionary, nil)
+        let status = secAdd(add as CFDictionary, nil)
         guard status == errSecSuccess else {
             throw NSError(domain: "aiui.identity", code: Int(status),
                           userInfo: [NSLocalizedDescriptionKey: "Could not save the app id to the Keychain (\(status))."])
@@ -133,8 +135,7 @@ enum Services {
         if data.isEmpty { return [:] }
         guard let obj = try? JSONSerialization.jsonObject(with: data) else { throw error(502, "The service answered with something that is not JSON.") }
         if let d = obj as? [String: Any] { return d }
-        if let a = obj as? [Any] { return ["items": a] }
-        return [:]
+        return (obj as? [Any]).map { ["items": $0] } ?? [:]
     }
 
     static func iso(_ d: Date) -> String { ISO8601DateFormatter().string(from: d) }
