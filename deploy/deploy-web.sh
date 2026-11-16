@@ -19,6 +19,7 @@ mkdir -p "$ROOT/build"
 swiftc -o "$ROOT/build/export-prompts" "$ROOT/Sources/App/Prompts.swift" "$ROOT/tools/export-prompts/main.swift"
 rm -rf "$DIST" && cp -R "$ROOT/web" "$DIST"
 "$ROOT/build/export-prompts" "$DIST/prompts.json"
+"$ROOT/tools/web-bundle/run.sh" "$DIST"   # one minified, content-hashed script + stylesheet
 
 # 2. infrastructure (needs the issued certificate)
 if [ "${1:-}" != "--content" ]; then
@@ -29,8 +30,15 @@ aws cloudformation deploy --stack-name $STACK --template-file "$ROOT/deploy/stac
   --parameter-overrides CertificateArn="$CERT" --no-fail-on-empty-changeset
 fi
 
-# 3. upload (short cache: the files are not content-hashed) and invalidate
-aws s3 sync "$DIST" s3://aiui-oeaio-site --delete --cache-control 'public, max-age=60' --only-show-errors
+# 3. upload and invalidate. Content-hashed files (app.<hash>.js/.css) never change: cached for a
+#    year, so browsers also keep their compiled code. Everything else: a short cache. The hashed
+#    files go first, so a new index.html never points at a file that isn't there yet; --delete
+#    runs last, so a page loaded just before keeps its old files for that pass.
+aws s3 sync "$DIST" s3://aiui-oeaio-site --exclude '*' --include 'app.*.js' --include 'app.*.css' --include 'app.*.js.map' \
+  --cache-control 'public, max-age=31536000, immutable' --only-show-errors
+aws s3 sync "$DIST" s3://aiui-oeaio-site --exclude 'app.*.js' --exclude 'app.*.css' --exclude 'app.*.js.map' \
+  --cache-control 'public, max-age=60' --only-show-errors
+aws s3 sync "$DIST" s3://aiui-oeaio-site --delete --exclude 'app.*' --only-show-errors
 DIST_ID=$(aws cloudformation describe-stacks --stack-name $STACK \
   --query "Stacks[0].Outputs[?OutputKey=='DistributionId'].OutputValue" --output text)
 aws cloudfront create-invalidation --distribution-id "$DIST_ID" --paths '/*' --query Invalidation.Id --output text >/dev/null

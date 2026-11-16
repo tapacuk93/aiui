@@ -4,7 +4,7 @@ name: Deploy web
 on:
   push:
     branches: [main]
-    paths: [web/**, Sources/App/Prompts.swift, tools/export-prompts/**, deploy/deploy-web.sh, .github/workflows/deploy-web.yml]
+    paths: [web/**, tools/web-bundle/**, Sources/App/Prompts.swift, tools/export-prompts/**, deploy/deploy-web.sh, .github/workflows/deploy-web.yml]
   workflow_dispatch:
 
 permissions:

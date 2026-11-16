@@ -74,6 +74,7 @@ cp "$BUILD/aiui" "$APP/Contents/MacOS/aiui"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
 cp Resources/icon/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 cp -R web "$APP/Contents/Resources/web"
+tools/web-bundle/run.sh "$APP/Contents/Resources/web"   # shipped: minified + bundled (AIUI_WEB serves the sources)
 ditto "$CEF/Release/Chromium Embedded Framework.framework" "$APP/Contents/Frameworks/Chromium Embedded Framework.framework"
 
 for pair in ":" " (GPU):.gpu" " (Renderer):.renderer" " (Plugin):.plugin" " (Alerts):.alerts"; do

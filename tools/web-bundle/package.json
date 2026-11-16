@@ -1,0 +1,1 @@
+{ "private": true, "name": "aiui-web-bundle", "dependencies": { "esbuild": "0.28.2" } }
