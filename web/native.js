@@ -27,7 +27,8 @@ async function showNativeLibraries() {
   <script>
   const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
   const mb = (n) => { n = Number(n) || 0; return n >= 1e6 ? (n / 1e6).toFixed(n >= 1e8 ? 0 : 1) + ' MB' : Math.max(1, Math.round(n / 1e3)) + ' KB'; };
-  const native = (o) => aiui.sys({ op: 'native', ...o });
+  // The Mac host takes native tool requests as sys {op: 'native', action, ...}.
+  const native = ({ op, ...o }) => aiui.sys({ ...o, op: 'native', action: op });
   let timer = null;
   function render(st) {
     const p = st.policy || {};

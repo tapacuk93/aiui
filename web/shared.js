@@ -526,12 +526,6 @@ async function peopleOpen(c) {
   return false;
 }
 
-function peopleMinus(c) {
-  if (!c.contact) return false;
-  call('people', { op: 'remove', id: c.contact }).then((st) => { peopleState = st; flashStatus('👥 ' + t('peopleRemoved')); }).catch((e) => toast(e.message));
-  return true;
-}
-
 function showPersonCard(p) {
   const S = strings(['copied', 'peopleAdd', 'peopleAddBack', 'peopleRemove', 'peopleRemoved', 'peopleAddedMsg']);
   const verified = p.state === 'mutual';
@@ -594,7 +588,7 @@ const LOCAL_SCREENS = {
   shared: { open: (c) => { sharedOpen(c); } },
   sharedSearch: { submit: (q) => searchShared(q) },
   library: { open: (c) => (c.id === 'sh:open' ? (showShared(), undefined) : c.util ? (showModuleCard(c.util), undefined) : false) },
-  people: { open: (c) => { peopleOpen(c); }, minus: (c) => peopleMinus(c) },
+  people: { open: (c) => { peopleOpen(c); } },
   peopleFind: { submit: (q) => findPeople(q) },
   peopleAdd: {
     submit: async (text) => {

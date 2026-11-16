@@ -4,3 +4,6 @@ build/
 AIUI.xcodeproj/
 services/node_modules/
 services/.local-data/
+tools/coverage/web/node_modules/
+tools/coverage/web/.out/
+tools/coverage/web/test-results/
