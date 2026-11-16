@@ -16,6 +16,7 @@ EXCLUDE=(
   "Sources/iOS/WebView.swift            WKWebView + UIKit; built only by the iOS Xcode project"
   "Sources/Mac/main.swift               process entry point, one line: exit(AppMain.run()); AppMain is tested"
   "Sources/App/Storage.swift::ubiquityContainer   default lookup of the real iCloud container; tests inject it and never touch iCloud"
+  "Sources/Mac/MacHost.swift::sysOpen        default opener hands the target to LaunchServices (opens an app/window); tests inject a recorder"
   "Sources/Mac/AppDelegate.swift::present   default hook that puts a real window on screen and activates the app"
   "Sources/Mac/AppDelegate.swift::install   default hook that installs the menu bar and gives the process a Dock icon"
 )
