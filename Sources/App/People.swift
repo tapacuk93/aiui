@@ -21,6 +21,9 @@ final class People {
     private var polling = false
 
     var emit: ([String: Any]) -> Void = { _ in }
+    /// The poll interval and the first poll's delay after launch (tests shorten them).
+    var pollInterval: TimeInterval = People.pollEvery
+    var firstPollDelay: TimeInterval = 5
 
     init(dir: URL) {
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -29,8 +32,8 @@ final class People {
     }
 
     func start() {
-        timer = Timer.scheduledTimer(withTimeInterval: Self.pollEvery, repeats: true) { [weak self] _ in self?.pollIfActive() }
-        if active { DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in self?.pollIfActive() } }
+        timer = Timer.scheduledTimer(withTimeInterval: pollInterval, repeats: true) { [weak self] _ in self?.pollIfActive() }
+        if active { DispatchQueue.main.asyncAfter(deadline: .now() + firstPollDelay) { [weak self] in self?.pollIfActive() } }
     }
 
     func pollIfActive() {

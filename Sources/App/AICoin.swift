@@ -19,7 +19,11 @@ import AICoinKit
 final class AICoin {
     static let shared = AICoin()
     /// `AIUI_AICOIN_PROXY` points at another proxy (a local stub in tests).
-    static let proxy = ProcessInfo.processInfo.environment["AIUI_AICOIN_PROXY"] ?? "https://proxy.aicoin.oeaio.com"
+    static let proxy = env("AIUI_AICOIN_PROXY", "https://proxy.aicoin.oeaio.com")
+    /// An environment variable, or the fallback.
+    static func env(_ name: String, _ fallback: String) -> String {
+        ProcessInfo.processInfo.environment[name] ?? fallback
+    }
     static let appName = "AI UI"
 
     /// What the AI can spend now: the owner's spendable coins while linked, else this wallet's own.
@@ -28,6 +32,11 @@ final class AICoin {
     private(set) var lastStatus: [String: Any]?
     private var token: (value: String, expires: Date)?
     private var watching: UUID?
+    /// While the link code is shown: how often the balance is asked for, and for how long.
+    var watchEvery: UInt64 = 2_000_000_000
+    var watchFor: TimeInterval = 1800
+    /// Saves a new wallet key to the Keychain (SecItemAdd; tests inject a failure).
+    var secAdd: (CFDictionary, UnsafeMutablePointer<CFTypeRef?>?) -> OSStatus = SecItemAdd
 
     /// AICoin is always offered: the wallet is created when first chosen.
     static var available: Bool { true }
@@ -41,7 +50,7 @@ final class AICoin {
     #else
     // The same item AICoinKit's WalletKeychainStore keeps on this device: the 32-byte seed.
     private static let keychain: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
-                                                   kSecAttrService as String: ProcessInfo.processInfo.environment["AIUI_AICOIN_WALLET"] ?? "com.oeaio.aiui.aicoin.wallet",
+                                                   kSecAttrService as String: env("AIUI_AICOIN_WALLET", "com.oeaio.aiui.aicoin.wallet"),
                                                    kSecAttrAccount as String: "wallet-seed"]
     private func loadKey() -> Curve25519.Signing.PrivateKey? {
         var q = Self.keychain
@@ -57,7 +66,7 @@ final class AICoin {
         var q = Self.keychain
         q[kSecValueData as String] = k.rawRepresentation
         q[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
-        let status = SecItemAdd(q as CFDictionary, nil)
+        let status = secAdd(q as CFDictionary, nil)
         guard status == errSecSuccess else { throw aiError("Could not save the AICoin wallet to the Keychain (\(status)).") }
         return k
     }
@@ -155,14 +164,14 @@ final class AICoin {
     /// While the code is on screen: asks for the balance every 2 seconds until `linked_to` appears
     /// (then switches the AI to AICoin), the page cancels, or 30 minutes pass.
     private func watch(_ id: UUID, _ addr: String, use: @escaping () -> Bool) async {
-        let until = Date().addingTimeInterval(1800)
+        let until = Date().addingTimeInterval(watchFor)
         func current() async -> Bool { await MainActor.run { self.watching == id } }
         while await current() {
             if Date() > until {
                 await MainActor.run { if self.watching == id { self.watching = nil; API.emit(["type": "aicoinLink", "state": "timeout"]) } }
                 return
             }
-            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            try? await Task.sleep(nanoseconds: watchEvery)
             guard await current(), let st = try? await status(addr), st["linked_to"] is String else { continue }
             await MainActor.run {
                 guard self.watching == id else { return }
