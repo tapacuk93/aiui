@@ -29,7 +29,8 @@ final class AddressBar: NSView {
         set(["AI UI"])
     }
 
-    required init?(coder: NSCoder) { fatalError() }
+    /// Never loaded from a nib.
+    required init?(coder: NSCoder) { return nil }
 
     override func updateLayer() {
         layer?.backgroundColor = NSColor.clear.cgColor   // a plain path, no field
@@ -84,8 +85,6 @@ final class AddressBar: NSView {
             stack.addArrangedSubview(close)
         }
     }
-
-    @objc private func clicked(_ sender: NSButton) { onSelect?(sender.tag) }
 }
 
 /// A label that reports clicks (and shows the pointing hand).

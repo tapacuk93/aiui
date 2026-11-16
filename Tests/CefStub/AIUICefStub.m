@@ -1,29 +1,25 @@
-// Test stand-in for Sources/Native/AIUICef.mm: the same interface, no CEF. Every call is
-// recorded (AIUICefStubCalls) so tests can assert what the Swift side asked the browser to do.
+// Test stand-in for Sources/Native/AIUICef.mm: the same interface, no CEF. Every call is posted
+// as an "AIUICefStub" notification whose object is a description ("js <code>", "browser <url>",
+// ...), so tests can assert what the Swift side asked the browser to do. With the environment
+// variable AIUI_CEF_STUB_FAIL set, +start fails (and onReady is not called).
 #import "AIUICef.h"
+#include <stdlib.h>
 
 @implementation AIUIApplication
 @end
 
-static NSMutableArray<NSString *> *calls;
-static BOOL startResult = YES;
-
-NSMutableArray<NSString *> *AIUICefStubCalls(void) {
-    if (!calls) calls = [NSMutableArray array];
-    return calls;
+static void record(NSString *s) {
+    [[NSNotificationCenter defaultCenter] postNotificationName:@"AIUICefStub" object:s];
 }
-
-void AIUICefStubSetStartResult(BOOL ok) { startResult = ok; }
-
-static void record(NSString *s) { [AIUICefStubCalls() addObject:s]; }
 
 @implementation AIUICef
 
 + (BOOL)startWithArgc:(int)argc argv:(char *_Nullable *_Nonnull)argv host:(id<AIUIHost>)host
               webRoot:(NSString *)webRoot cachePath:(NSString *)cachePath onReady:(void (^)(void))onReady {
     record([NSString stringWithFormat:@"start %@ %@", webRoot, cachePath]);
-    if (startResult) onReady();
-    return startResult;
+    if (getenv("AIUI_CEF_STUB_FAIL")) return NO;
+    onReady();
+    return YES;
 }
 + (void)setVendorRoot:(NSString *)path { record([@"vendor " stringByAppendingString:path]); }
 + (void)createBrowserInView:(NSView *)view url:(NSString *)url { record([@"browser " stringByAppendingString:url]); }

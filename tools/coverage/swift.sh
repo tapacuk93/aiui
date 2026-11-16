@@ -14,7 +14,9 @@ EXCLUDE=(
   "Sources/iOS/AIUIApp.swift            UIKit/SwiftUI app; built only by the iOS Xcode project (project.yml), not on macOS"
   "Sources/iOS/SystemAccess.swift       UIKit; built only by the iOS Xcode project"
   "Sources/iOS/WebView.swift            WKWebView + UIKit; built only by the iOS Xcode project"
-  "Sources/Mac/main.swift               process entry point (top-level code); its logic is in AppMain, which is tested"
+  "Sources/Mac/main.swift               process entry point, one line: exit(AppMain.run()); AppMain is tested"
+  "Sources/Mac/AppDelegate.swift::present   default hook that puts a real window on screen and activates the app"
+  "Sources/Mac/AppDelegate.swift::install   default hook that installs the menu bar and gives the process a Dock icon"
 )
 
 REPORT=0; TEST=1
