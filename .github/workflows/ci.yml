@@ -40,6 +40,16 @@ jobs:
       - name: Tests + coverage gate
         run: tools/os-installer/coverage.sh --report
 
+  swift:
+    name: App Swift tests, 100% line coverage
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain
+        run: swift --version && xcodebuild -version
+      - name: Tests + coverage gate
+        run: tools/coverage/swift.sh
+
   # The Mac app: build.sh downloads CEF from the public CDN and signs ad hoc, so it needs no secrets.
   # Not yet proven on hosted runners (toolchain version, time), so it does not block the gates.
   # Only in CI itself: release.yml builds and attaches the app on its own.
