@@ -112,7 +112,7 @@ final class AvoidTests: AIUITestCase {
         a.recheckDue()
         a.clear()
         spin(0.6)
-        XCTAssertEqual(MockURL.seen.count, 2, "one request per entry, not repeated while in flight")
+        XCTAssertEqual(MockURL.seen.filter { $0.url.host == "wait.test" }.count, 2, "one request per entry, not repeated while in flight")
         XCTAssertTrue(a.list().isEmpty, "a cleared entry stays cleared")
     }
 

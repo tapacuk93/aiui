@@ -40,6 +40,9 @@ enum TestEnv {
         ]
         URLProtocol.registerClass(MockURL.self)
         NetworkControl.shared.interface = { nil }
+        // The shared native-tool store (started by every API) stays offline, so its background
+        // maintenance never sends requests into later tests.
+        NativeLibraries.shared.networkOverride = { NativeLibraries.NetState(satisfied: false, constrained: false, expensive: false) }
         atexit {
             TestEnv.removeKeychainItems()
             try? FileManager.default.removeItem(at: TestEnv.root)
