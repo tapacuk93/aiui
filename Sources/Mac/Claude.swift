@@ -22,6 +22,8 @@ final class Claude {
     var model: String? = ProcessInfo.processInfo.environment["AIUI_MODEL"]
     /// No tools at all (reviews of untrusted code): only the structured answer.
     var readOnly = false
+    /// Watchdog: seconds a call may run before it is ended (nil: 180 persistent, 100 otherwise).
+    var timeout: TimeInterval?
 
     func reset() {
         cancel()
@@ -127,7 +129,11 @@ final class Claude {
             }
         }
 
+        // One reader of the pipes at a time: a chunk the handler took is fully handled before the
+        // termination handler reads the rest and decides the result.
+        let readLock = NSLock()
         out.fileHandleForReading.readabilityHandler = { h in
+            readLock.lock(); defer { readLock.unlock() }
             let chunk = h.availableData
             if chunk.isEmpty { return }
             buffer.append(chunk)
@@ -138,11 +144,13 @@ final class Claude {
             }
         }
         errPipe.fileHandleForReading.readabilityHandler = { h in
+            readLock.lock(); defer { readLock.unlock() }
             let d = h.availableData
             if !d.isEmpty { lock.lock(); stderrText += String(decoding: d, as: UTF8.self); lock.unlock() }
         }
 
         p.terminationHandler = { [weak self] proc in
+            readLock.lock()
             out.fileHandleForReading.readabilityHandler = nil
             errPipe.fileHandleForReading.readabilityHandler = nil
             let rest = out.fileHandleForReading.readDataToEndOfFile()
@@ -150,7 +158,10 @@ final class Claude {
                 buffer.append(rest)
                 for line in buffer.split(separator: 0x0A) where !line.isEmpty { handle(line: Data(line)) }
             }
+            let errRest = errPipe.fileHandleForReading.readDataToEndOfFile()
+            readLock.unlock()
             lock.lock()
+            if !errRest.isEmpty { stderrText += String(decoding: errRest, as: UTF8.self) }
             let s = screen, text = resultText, rErr = resultError, stderr = stderrText
             lock.unlock()
             onMain {
@@ -176,7 +187,7 @@ final class Claude {
         process = p
         Shell.adopt(p)
         // Watchdog: a call that runs past its deadline is ended (the page has its own limits too).
-        let deadline = persistent ? 180.0 : 100.0
+        let deadline = timeout ?? (persistent ? 180.0 : 100.0)
         DispatchQueue.main.asyncAfter(deadline: .now() + deadline) { [weak self, weak p] in
             guard let self, let p, p.isRunning, self.generation == gen else { return }
             p.terminate()
