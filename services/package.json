@@ -4,7 +4,7 @@
   "description": "shared.aiui.oeaio.com and users.aiui.oeaio.com (docs/shared-and-users.md)",
   "type": "module",
   "engines": {
-    "node": ">=20"
+    "node": ">=22.8"
   },
   "scripts": {
     "start": "node local-server.mjs --mirror",

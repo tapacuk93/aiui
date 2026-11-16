@@ -17,19 +17,18 @@ concurrency:
 
 jobs:
   services:
-    name: Services tests (node --test)
+    name: Services tests, 100% line/branch/function coverage
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
-      - name: Install (optional; the tests run without the AWS SDK too)
+          node-version: 24   # the coverage thresholds need Node >= 22.8
+      - name: Install (the tests use the real AWS SDK clients with faked sends)
         working-directory: services
-        run: npm ci || true
-      - name: Test
-        working-directory: services
-        run: node --test
+        run: npm ci
+      - name: Tests + coverage gate
+        run: tools/coverage/services.sh
 
   os-installer:
     name: os-installer tests, 100% line coverage
