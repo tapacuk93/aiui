@@ -145,4 +145,75 @@ final class AvoidTests: AIUITestCase {
         big.record((0..<251).map { ["url": "https://h\($0).test/x"] })
         XCTAssertEqual(big.list().count, 500)
     }
+
+    // MARK: - Two devices sharing one synced folder
+
+    private func removedFile(_ dir: URL) -> [String: Any] {
+        StoreFiles.json(dir.appendingPathComponent("avoid-removed.json")) as? [String: Any] ?? [:]
+    }
+
+    func testSavesMergeWithAnotherDevicesEntries() {
+        let dir = TestEnv.tempDir()
+        let mac = make(dir), phone = make(dir)
+        mac.record([["url": "https://a.test/1", "reason": "403"]])
+        phone.record([["url": "https://b.test/1", "reason": "403"]])   // phone never read the Mac's entry
+        mac.record([["url": "https://c.test/1", "reason": "403"]])
+        // Nobody's entries were overwritten.
+        XCTAssertEqual(keys(make(dir)), ["a.test", "https://a.test/1", "b.test", "https://b.test/1", "c.test", "https://c.test/1"])
+        // The list file keeps the format older app versions read: a plain array of entries.
+        XCTAssertNotNil(StoreFiles.json(dir.appendingPathComponent("avoid.json")) as? [[String: Any]])
+    }
+
+    func testAClearedEntryStaysClearedOnOtherDevices() {
+        let dir = TestEnv.tempDir()
+        let mac = make(dir)
+        mac.record([["url": "https://gone.test/1", "reason": "403"]])
+        let phone = make(dir)                                         // has the entry in memory
+        t0 += 5
+        mac.clear()
+        XCTAssertNotNil(removedFile(dir)["gone.test"])
+        t0 += 5
+        phone.record([["url": "https://other.test/1", "reason": "403"]])   // saves its older copy
+        XCTAssertEqual(keys(phone), ["other.test", "https://other.test/1"], "the deletion record wins over the older copy")
+        XCTAssertEqual(keys(make(dir)), ["other.test", "https://other.test/1"])
+    }
+
+    func testARecheckSuccessIsRecordedForOtherDevices() {
+        let dir = TestEnv.tempDir()
+        let mac = make(dir)
+        MockURL.on("back.test", .text("fine"))
+        mac.record([["url": "https://back.test/1", "reason": "403"], ["url": "https://bad.test/x", "reason": "403"]])
+        let phone = make(dir)
+        t0 += 700
+        mac.recheckDue()
+        waitUntil { !self.keys(mac).contains("back.test") }
+        XCTAssertNotNil(removedFile(dir)["back.test"])
+        XCTAssertNotNil(removedFile(dir)["https://back.test/1"], "the host's URLs are recorded too")
+        phone.reload()
+        XCTAssertFalse(keys(phone).contains("back.test"))
+        XCTAssertFalse(keys(phone).contains("https://back.test/1"))
+    }
+
+    func testFailingAgainInTheSameSecondAsTheClearCounts() {
+        let dir = TestEnv.tempDir()
+        let mac = make(dir)
+        t0 = Date(timeIntervalSince1970: 1_800_000_000.2)
+        mac.record([["url": "https://flaky.test/1", "reason": "403"]])
+        mac.clear()
+        t0 = Date(timeIntervalSince1970: 1_800_000_000.7)              // same whole second as the clear
+        mac.record([["url": "https://flaky.test/1", "reason": "403"]])
+        XCTAssertTrue(keys(make(dir)).contains("flaky.test"), "the new failure outlives the older deletion on every device")
+    }
+
+    func testOldDeletionRecordsArePruned() {
+        let dir = TestEnv.tempDir()
+        let a = make(dir)
+        a.record([["url": "https://old.test/1", "reason": "403"]])
+        a.clear()
+        XCTAssertNotNil(removedFile(dir)["old.test"])
+        t0 += Avoid.removedKeep + 60
+        a.record([["url": "https://new.test/1", "reason": "403"]])
+        XCTAssertNil(removedFile(dir)["old.test"])
+        XCTAssertNil(removedFile(dir)["new.test"], "only deletions are recorded")
+    }
 }

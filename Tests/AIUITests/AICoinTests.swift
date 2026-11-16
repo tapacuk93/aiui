@@ -117,6 +117,20 @@ final class AICoinTests: AIUITestCase {
         XCTAssertEqual(MockURL.seen.filter { $0.url.path == "/wallet/api/claim" }.count, n)
     }
 
+    /// A wallet whose status says `"linked_to": null` is not linked: it still claims its free coins.
+    func testPrepareTreatsNullLinkAsNotLinked() {
+        SharedTestKit.removeWalletItem()
+        let c = AICoin()
+        var claimed = false
+        MockURL.on("aicoin.test/wallet/api/balance/") { _ in .json(["balance": claimed ? 5.0 : 0.0, "linked_to": NSNull()]) }
+        MockURL.on("aicoin.test/wallet/api/claim", method: "POST") { _ in claimed = true; return .json(["ok": true]) }
+        var done: Result<Double, Error>?
+        c.prepare { done = $0 }
+        waitUntil { done != nil }
+        XCTAssertTrue(claimed)
+        XCTAssertEqual(done?.succeeded, 5)
+    }
+
     func testPrepareOfflineStillSucceeds() {
         SharedTestKit.removeWalletItem()
         let c = AICoin()
@@ -258,6 +272,26 @@ final class AICoinTests: AIUITestCase {
             spin(0.2)
         }
         XCTAssertTrue(events.contains { $0["state"] as? String == "timeout" })
+    }
+
+    /// `"linked_to": null` while the code is shown: the app keeps watching for the scan.
+    func testLinkWatchesWhenLinkIsNull() {
+        let c = AICoin()
+        freshWallet(c)
+        c.watchEvery = 20_000_000
+        var calls = 0
+        MockURL.on("aicoin.test/wallet/api/balance/") { _ in
+            calls += 1
+            return calls >= 3 ? .json(["balance": 1.0, "linked_to": "owner"]) : .json(["balance": 1.0, "linked_to": NSNull()])
+        }
+        var used = false
+        let events = SharedTestKit.events(self) {
+            let r = handle(c, ["op": "link"], use: { used = true; return true })
+            XCTAssertEqual(r.sent.first?["linked"] as? Bool, false)
+            waitUntil { used }
+            spin(0.1)
+        }
+        XCTAssertTrue(events.contains { $0["state"] as? String == "connected" })
     }
 
     func testLinkWatchCancelled() {

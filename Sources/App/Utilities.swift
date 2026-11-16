@@ -83,7 +83,7 @@ final class Utilities {
                                  description: m["description"] as? String ?? prev?.description ?? "",
                                  usage: m["usage"] as? String ?? prev?.usage ?? "",
                                  code: code, version: (prev?.version ?? 0) + 1, uses: prev?.uses ?? 0,
-                                 created: prev?.created ?? now, updated: now, lastUsed: now)
+                                 created: prev?.created ?? now, updated: afterDeletion(now, deleted[id]), lastUsed: now)
             deleted[id] = nil
             ids.append(id)
         }
@@ -250,7 +250,7 @@ final class Utilities {
                                   description: into["description"] as? String ?? "", usage: into["usage"] as? String ?? "",
                                   code: code, version: (olds.map(\.version).max() ?? 0) + 1,
                                   uses: olds.reduce(0) { $0 + $1.uses }, created: olds.map(\.created).min() ?? now,
-                                  updated: now, lastUsed: olds.map(\.lastUsed).max() ?? now)
+                                  updated: afterDeletion(now, deleted[nid]), lastUsed: olds.map(\.lastUsed).max() ?? now)
             deleted[nid] = nil
             for o in from where o != nid { modules[o] = nil; deleted[o] = now; aliases[o] = nid }
         }
@@ -304,7 +304,7 @@ final class Utilities {
         let prev = modules[id]
         var m = Module(id: id, path: p.isEmpty ? ["misc"] : p, name: name, kind: kind == "css" ? "css" : "js", role: role,
                        description: description, usage: usage, code: code, version: (prev?.version ?? 0) + 1,
-                       uses: prev?.uses ?? 0, created: prev?.created ?? now, updated: now, lastUsed: now)
+                       uses: prev?.uses ?? 0, created: prev?.created ?? now, updated: afterDeletion(now, deleted[id]), lastUsed: now)
         m.origin = origin
         m.originVersion = originVersion
         modules[id] = m
@@ -348,4 +348,12 @@ final class Utilities {
                        lastReview: lastReview, publishesSinceReview: publishesSinceReview)
         if let data = try? enc.encode(s) { Storage.write(data, to: file) }
     }
+}
+
+/// A time for an item coming back after a deletion record `tombstone`. The synced files keep
+/// whole seconds, so an item re-added in the same second as its deletion would tie with it on
+/// another device and be deleted there; this keeps it at least one whole second later.
+func afterDeletion(_ now: Date, _ tombstone: Date?) -> Date {
+    guard let t = tombstone else { return now }
+    return max(now, Date(timeIntervalSince1970: floor(t.timeIntervalSince1970) + 1))
 }

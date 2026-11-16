@@ -77,7 +77,7 @@ final class Hints {
             x.why = h["why"] as? String ?? x.why
             x.confidence = max(x.confidence * 0.7 + conf * 0.3, conf)
             x.evidence += 1
-            x.updated = now
+            x.updated = afterDeletion(now, retired[id])
             hints[id] = x
             retired[id] = nil
         }

@@ -319,4 +319,20 @@ final class UtilitiesTests: AIUITestCase {
         u.reload()
         XCTAssertNotNil(u.module(ids[1]))
     }
+
+    func testRepublishedInTheSameSecondAsItsDeletionSurvivesOnOtherDevices() {
+        let dir = TestEnv.tempDir()
+        let u = Utilities(dir: dir)
+        let id = u.publish(from: ["publish": [mod(["a"], "back")]])[0]
+        u.delete(id)
+        _ = u.publish(from: ["publish": [mod(["a"], "back")]])          // within the same second
+        XCTAssertNotNil(Utilities(dir: dir).module(id), "another device keeps the re-published module")
+    }
+
+    func testAfterDeletion() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000.4)
+        XCTAssertEqual(afterDeletion(now, nil), now)
+        XCTAssertEqual(afterDeletion(now, Date(timeIntervalSince1970: 1_800_000_000.1)).timeIntervalSince1970, 1_800_000_001)
+        XCTAssertEqual(afterDeletion(now, Date(timeIntervalSince1970: 1_799_999_990)), now)
+    }
 }

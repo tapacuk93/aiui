@@ -91,7 +91,7 @@ final class AICoin {
             do {
                 let k = try loadOrCreateKey()
                 var st = try? await status(AICoinSign.address(k))
-                if st?["linked_to"] == nil, (st?["balance"] as? Double ?? 0) < 1 {
+                if !(st?["linked_to"] is String), (st?["balance"] as? Double ?? 0) < 1 {   // not linked: absent or null
                     _ = try? await Self.call("POST", "/wallet/api/claim", body: Data(), signer: k)
                     st = (try? await status(AICoinSign.address(k))) ?? st
                 }
@@ -145,7 +145,7 @@ final class AICoin {
                     out["qr"] = qr; out["payload"] = payload; out["app"] = Self.appName
                     let shown = out
                     await MainActor.run { send(shown) }
-                    if st?["linked_to"] == nil { await watch(id, addr, use: use) }
+                    if !(st?["linked_to"] is String) { await watch(id, addr, use: use) }   // absent or null: not linked yet
                 case "unlink":
                     let body = try JSONSerialization.data(withJSONObject: ["address": addr])
                     _ = try await Self.call("POST", "/wallet/api/links/remove", body: body, signer: k)

@@ -20,7 +20,15 @@ final class Avoid {
     }
 
     private let file: URL
+    /// Deletion records (key → when it was cleared), kept beside the list in their own file so
+    /// app versions that read only `avoid.json` keep working. Without them, another device's
+    /// older copy would bring a cleared entry back.
+    private let removedFile: URL
     private var entries: [String: Entry] = [:]
+    private var removed: [String: Date] = [:]
+    /// Deletion records are kept this long: past it, any copy that still has the entry is far
+    /// older than its next recheck anyway.
+    static let removedKeep: Double = 30 * 86_400
     private var checking = Set<String>()
     static let firstBackoff: Double = 600, maxBackoff: Double = 7 * 86_400
     /// The clock (tests move it forward to make rechecks due).
@@ -29,6 +37,7 @@ final class Avoid {
     init(dir: URL) {
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         file = dir.appendingPathComponent("avoid.json")
+        removedFile = dir.appendingPathComponent("avoid-removed.json")
         mergeDisk()
     }
 
@@ -46,7 +55,8 @@ final class Avoid {
                                               last: now, nextCheck: now.addingTimeInterval(Self.firstBackoff),
                                               backoff: Self.firstBackoff, checks: 0)
                 e.failures += 1
-                e.last = now
+                e.last = afterDeletion(now, removed[key])
+                removed[key] = nil
                 e.reason = reason
                 e.sample = url
                 entries[key] = e
@@ -74,7 +84,7 @@ final class Avoid {
     func recheckDue() {
         let now = self.now()
         for e in entries.values where e.nextCheck <= now && !checking.contains(e.key) {
-            guard let url = URL(string: e.sample) else { entries[e.key] = nil; continue }
+            guard let url = URL(string: e.sample) else { forget(e.key, now); continue }
             checking.insert(e.key)
             var req = URLRequest(url: url, timeoutInterval: 15)
             req.httpMethod = "GET"
@@ -87,9 +97,10 @@ final class Avoid {
                     self.checking.remove(e.key)
                     cur.checks += 1
                     if ok {
-                        self.entries[e.key] = nil
+                        let at = self.now()
+                        self.forget(e.key, at)
                         if cur.kind == "host" {
-                            for (k, v) in self.entries where v.kind == "url" && URL(string: k)?.host == cur.key { self.entries[k] = nil }
+                            for (k, v) in self.entries where v.kind == "url" && URL(string: k)?.host == cur.key { self.forget(k, at) }
                         }
                     } else {
                         cur.reason = status > 0 ? String(status) : (error.map { ($0 as NSError).code == NSURLErrorTimedOut ? "timeout" : "failed" } ?? "failed")
@@ -111,24 +122,45 @@ final class Avoid {
         }
     }
 
-    func clear() { entries = [:]; persist() }
+    func clear() {
+        let now = self.now()
+        for k in Array(entries.keys) { forget(k, now) }
+        persist()
+    }
 
-    // MARK: - Storage (merge on write, newest `last` wins)
+    private func forget(_ key: String, _ at: Date) {
+        entries[key] = nil
+        removed[key] = max(at, removed[key] ?? .distantPast)
+    }
+
+    // MARK: - Storage (merge on write: newest `last` wins, deletion records win over older copies)
 
     private func mergeDisk() {
         let dec = JSONDecoder(); dec.dateDecodingStrategy = .iso8601
-        guard let data = Storage.read(file), let disk = try? dec.decode([Entry].self, from: data) else { return }
-        for e in disk {
-            if let mine = entries[e.key], mine.last >= e.last { continue }
-            entries[e.key] = e
+        if let data = Storage.read(removedFile), let disk = try? dec.decode([String: Date].self, from: data) {
+            for (k, at) in disk where (removed[k] ?? .distantPast) < at { removed[k] = at }
         }
+        if let data = Storage.read(file), let disk = try? dec.decode([Entry].self, from: data) {
+            for e in disk {
+                if let mine = entries[e.key], mine.last >= e.last { continue }
+                entries[e.key] = e
+            }
+        }
+        // The file keeps whole seconds: compare deletions with entries at that precision.
+        for (k, at) in removed where (entries[k].map { floor($0.last.timeIntervalSince1970) } ?? .infinity) <= floor(at.timeIntervalSince1970) {
+            entries[k] = nil
+        }
+        let cutoff = now().addingTimeInterval(-Self.removedKeep)
+        removed = removed.filter { $0.value > cutoff }
     }
 
     private func persist() {
+        mergeDisk()
         if entries.count > 500 {
             for e in entries.values.sorted(by: { $0.last < $1.last }).prefix(entries.count - 500) { entries[e.key] = nil }
         }
         let enc = JSONEncoder(); enc.dateEncodingStrategy = .iso8601
         if let data = try? enc.encode(Array(entries.values)) { Storage.write(data, to: file) }
+        if let data = try? enc.encode(removed) { Storage.write(data, to: removedFile) }
     }
 }

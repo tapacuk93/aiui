@@ -188,4 +188,15 @@ final class HintsTests: AIUITestCase {
         h.reload()
         XCTAssertEqual(h.status()["journal"] as? Int, 2)
     }
+
+    func testRelearnedInTheSameSecondAsItsRetirementSurvivesOnOtherDevices() {
+        let dir = TestEnv.tempDir()
+        let h = Hints(dir: dir)
+        h.applyRetro(["hints": [["text": "Comes back"]]])
+        let id = (h.retroInput()["hints"] as? [[String: Any]])?.first?["id"] as? String
+        h.applyRetro(["retire": [id!]])
+        h.applyRetro(["hints": [["text": "Comes back"]]])                // within the same second
+        let texts = (Hints(dir: dir).status()["hints"] as? [[String: Any]] ?? []).compactMap { $0["text"] as? String }
+        XCTAssertEqual(texts, ["Comes back"])
+    }
 }
