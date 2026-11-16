@@ -767,9 +767,10 @@ final class NativeLibraries {
         p.standardOutput = pipe; p.standardError = pipe; p.standardInput = FileHandle.nullDevice
         do { try p.run() } catch { return (-1, "\(error.localizedDescription)") }
         var data = Data()
-        let reader = DispatchQueue.global()
         let g = DispatchGroup()
-        g.enter(); reader.async { data = pipe.fileHandleForReading.readDataToEndOfFile(); g.leave() }
+        // Its own thread, not the shared pool: when every pool thread is busy waiting (callers
+        // block on installs), a pooled reader would never start and the command would time out.
+        g.enter(); Thread.detachNewThread { data = pipe.fileHandleForReading.readDataToEndOfFile(); g.leave() }
         if g.wait(timeout: .now() + timeout) == .timedOut { p.terminate(); _ = g.wait(timeout: .now() + 2); return (-2, "timed out") }
         p.waitUntilExit()
         return (p.terminationStatus, String(decoding: data, as: UTF8.self))
