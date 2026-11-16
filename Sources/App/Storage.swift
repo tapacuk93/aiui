@@ -6,11 +6,14 @@ import Foundation
 /// writes (newest wins, deletions kept as tombstones), so two devices don't overwrite each other.
 enum Storage {
     static let container = "iCloud.com.oeaio.aiui"
-    private(set) static var isICloud = false
+    /// Whether `root` chose the iCloud container (settable by tests).
+    static var isICloud = false
+    /// Finds the iCloud container (nil when unavailable); tests answer with a temporary folder.
+    static var ubiquityContainer: (String) -> URL? = { FileManager.default.url(forUbiquityContainerIdentifier: $0) }
 
     static func root(local: URL) -> URL {
         try? FileManager.default.createDirectory(at: local, withIntermediateDirectories: true)
-        guard let c = FileManager.default.url(forUbiquityContainerIdentifier: container) else { return local }
+        guard let c = ubiquityContainer(container) else { return local }
         let r = c.appendingPathComponent("Documents/AIUI", isDirectory: true)
         try? FileManager.default.createDirectory(at: r, withIntermediateDirectories: true)
         isICloud = true
