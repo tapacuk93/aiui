@@ -6,3 +6,6 @@ services/node_modules/
 services/.local-data/
 .build/
 Package.resolved
+tools/coverage/web/node_modules/
+tools/coverage/web/.out/
+tools/coverage/web/test-results/

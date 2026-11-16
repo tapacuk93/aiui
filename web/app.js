@@ -48,8 +48,9 @@ const paging = { loading: false, failed: false, token: 0, n: 0 };
 // ---------------------------------------------------------------- API bridge
 
 // Inside the Mac app the page is served from aiui:// and /api/* is native. Anywhere else this is
-// the web version, answered by WebBackend (backend.js) in the browser.
-const NATIVE = location.protocol === 'aiui:';
+// the web version, answered by WebBackend (backend.js) in the browser. (The coverage tests,
+// tools/coverage/web, serve /api/* themselves and say so with __AIUI_TEST_NATIVE__.)
+const NATIVE = location.protocol === 'aiui:' || window.__AIUI_TEST_NATIVE__ === true;
 // The iOS app answers through a WebKit message handler instead of the aiui:// scheme.
 const IOS_BRIDGE = NATIVE && window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.aiui;
 document.documentElement.classList.toggle('web', !NATIVE);
@@ -250,7 +251,7 @@ function circleSummary(c) {
   return o;
 }
 
-async function ask(evt, { label, replace = false, circle = null, retried = false } = {}) {
+async function ask(evt, { label, circle = null, retried = false } = {}) {
   if (busy) await cancel();
   const payload = {
     ...evt,
@@ -278,7 +279,7 @@ async function ask(evt, { label, replace = false, circle = null, retried = false
     renderActivity();
   }, 1000);
   const quickTimer = setTimeout(async () => {
-    if (my !== seq || replace) return;
+    if (my !== seq) return;
     if (policy.then === 'wait') { flashStatus((policy.label ? policy.label + ' · ' : '') + t('stillWorking')); return; }
     if (policy.then === 'cancel') {
       call('cancel').catch(() => {});
@@ -329,14 +330,10 @@ async function ask(evt, { label, replace = false, circle = null, retried = false
     }
     // An applet already open (here or back in the history) is returned to, not opened twice.
     if (returned) flashStatus('↩︎ ' + t('returnedTo') + ' «' + (next.title || '') + '»');
-    if (!replace && sceneKey && (returned || next.kind === 'html') && returnTo(sceneKey, next)) { stopWriting(true); render(); return; }
-    if (replace) {
-      current.screen = next;
-    } else {
-      forwardStack = [];
-      stack.push(current);
-      current = { screen: next, label: label || next.title || evt.event, evt: payload, key: sceneKey };
-    }
+    if (sceneKey && (returned || next.kind === 'html') && returnTo(sceneKey, next)) { stopWriting(true); render(); return; }
+    forwardStack = [];
+    stack.push(current);
+    current = { screen: next, label: label || next.title || evt.event, evt: payload, key: sceneKey };
     stopWriting(true);
     render();
     if (stale) revise(current, payload);
@@ -345,7 +342,7 @@ async function ask(evt, { label, replace = false, circle = null, retried = false
       if (e.message === 'no-ai') { setBusy(false); return showSetup(); }
       // Cancelled by something other than the user (another request took the AI session):
       // try once more instead of showing an error.
-      if (e.message === 'cancelled' && !retried && !interim) { setBusy(false); return ask(evt, { label, replace, circle, retried: true }); }
+      if (e.message === 'cancelled' && !retried && !interim) { setBusy(false); return ask(evt, { label, circle, retried: true }); }
       if (!interim) toast(e.message);
       if (e.message !== 'cancelled') journal('error', current.screen, `${evt.event}: ${e.message}`);
     }
@@ -665,6 +662,7 @@ function render() {
   if (!s.fullscreen && document.body.classList.contains('immersive')) setImmersive(false);
   shownAt = s.local ? 0 : performance.now();
   trail.length = 0;
+  hoverId = null; // a hover of the previous screen's circle with the same id isn't this one's
 }
 
 // Keeps each circle's text inside it: a label that wraps leaves the hint one line; a label
@@ -782,9 +780,9 @@ function showPage() {
   }));
   // Freeze every page up to the one shown (not while typing: live circles re-flow freely).
   if (!typing()) s.frozen = pages.slice(0, (s.page || 0) + 1).map((p) => p.map((n) => n.dataset.id));
-  // Keep the focus ring on this page.
-  const shown = pages[s.page] || [];
-  if (shown.length && !shown.some((n) => n.dataset.id === focusedId())) {
+  // Keep the focus ring on this page (a screen without one yet gets it from initFocus).
+  const shown = pages[s.page] || [], f = focusedId();
+  if (shown.length && f != null && !shown.some((n) => n.dataset.id === f)) {
     setFocus((focusEdge === 'last' ? shown[shown.length - 1] : shown[0]).dataset.id);
   }
   focusEdge = 'first';
@@ -966,71 +964,6 @@ function toggleSelect(c, node) {
   refresh(c, node);
 }
 
-function minus(c, node) {
-  const ext = typeof LOCAL_SCREENS !== 'undefined' && LOCAL_SCREENS[current.screen.local];
-  if (ext && ext.minus && ext.minus(c) !== false) {
-    c.removed = true;
-    node.classList.add('leaving');
-    node.addEventListener('animationend', () => { node.remove(); layoutPages(); }, { once: true });
-    return;
-  }
-  if (current.screen.local === 'jslibs' && c.jslib) {
-    call('libraries', { op: 'remove', id: c.jslib }).catch(() => {});
-    c.removed = true;
-    node.classList.add('leaving');
-    node.addEventListener('animationend', () => { node.remove(); layoutPages(); }, { once: true });
-    return;
-  }
-  if (current.screen.local === 'profile' && c.trait) {
-    call('profile', { op: 'remove', path: c.trait }).catch(() => {});
-    c.removed = true;
-    node.classList.add('leaving');
-    node.addEventListener('animationend', () => { node.remove(); layoutPages(); }, { once: true });
-    return;
-  }
-  if (current.screen.local === 'library' && c.util) {
-    call('utilities', { op: 'delete', id: c.util, path: current.screen.libPath }).catch(() => {});
-    c.removed = true;
-    node.classList.add('leaving');
-    node.addEventListener('animationend', () => { node.remove(); layoutPages(); }, { once: true });
-    return;
-  }
-  if (c.suggested) {
-    live.circles = live.circles.filter((x) => x !== c);
-    return rerenderLive();
-  }
-  const mode = c.minus || 'remove';
-  if (mode === 'decrement' && c.value > 0) c.value -= 1;
-  else if (c.selected) { c.selected = false; if (c.value > 1 && mode !== 'decrement') c.value = null; }
-  else if (c.value > 0 && mode !== 'remove') c.value -= 1;
-  else if (mode === 'deselect') return;
-  else {
-    c.removed = true;
-    node.classList.add('leaving');
-    node.addEventListener('animationend', () => { node.remove(); updateGo(); layoutPages(); }, { once: true });
-    return;
-  }
-  refresh(c, node);
-}
-
-function plus(c, node) {
-  if (c.suggested) {
-    // Adopt the suggestion into the screen, selected.
-    live.circles = live.circles.filter((x) => x !== c);
-    const { suggested, ...rest } = c;
-    current.screen.circles.push({ ...rest, id: c.id.replace(/^s~/, 'a~'), selected: true });
-    return rerenderLive();
-  }
-  const mode = c.plus || 'select';
-  if (mode === 'more') {
-    return ask({ event: 'more', target: circleSummary(c) }, { replace: true, circle: node });
-  }
-  if (mode === 'increment') c.value = (Number(c.value) || 0) + 1;
-  else if (!c.selected) c.selected = true;
-  else c.value = (Number(c.value) || 1) + 1; // select again = more of it
-  refresh(c, node);
-}
-
 function refresh(c, node) {
   const fresh = circleEl(c, 0);
   fresh.style.animation = 'none';
@@ -1075,7 +1008,7 @@ const HEALTH_SHIM = `<script>(() => {
   const report = (kind, detail) => { try { parent.postMessage({ aiuiHealth: { kind, detail: String(detail).slice(0, 300) } }, '*'); } catch {} };
   addEventListener('error', (e) => {
     const t = e.target;
-    if (t && t !== window && (t.src || t.href)) report('resource', (t.tagName || '') + ' failed: ' + (t.src || t.href));
+    if (t && t !== window && (t.src || t.href)) { if (!(t.dataset && t.dataset.aiui)) report('resource', (t.tagName || '') + ' failed: ' + (t.src || t.href)); } // the app's own loads (screenshots) don't count
     else report('error', (e.message || 'error') + (e.lineno ? ' (line ' + e.lineno + ')' : ''));
   }, true);
   addEventListener('unhandledrejection', (e) => report('error', 'unhandled: ' + ((e.reason && e.reason.message) || e.reason)));
@@ -1265,7 +1198,7 @@ const SCENE_SHIM = `<script>(() => {
     if (!e.data || !e.data.aiuiShotRequest) return;
     try {
       if (!window.html2canvas) await new Promise((ok, no) => {
-        const tryLoad = (src, next) => { const sc = document.createElement('script'); sc.src = src; sc.onload = ok; sc.onerror = next; document.head.appendChild(sc); };
+        const tryLoad = (src, next) => { const sc = document.createElement('script'); sc.dataset.aiui = '1'; sc.src = src; sc.onload = ok; sc.onerror = next; document.head.appendChild(sc); };
         tryLoad(e.data.local, () => tryLoad('https://cdn.jsdelivr.net/npm/html2canvas@1/dist/html2canvas.min.js', no));
       });
       const scale = Math.min(1, 900 / Math.max(1, innerWidth));
@@ -1313,8 +1246,9 @@ const LAB_MOCK = `<script>(() => {
 // Starts the hidden lab clone for a view; reports interaction problems to the repair.
 function runLab(s, sharedHead, html, mode = 'lab', tests = null) {
   if (s.local || paused || !settings.qa) return;
-  if (mode === 'lab') { if (s.labbed) return; s.labbed = true; }
+  if (mode === 'lab' && s.labbed) return;
   if (labFor) return setTimeout(() => runLab(s, sharedHead, html, mode, tests), 1500); // one lab at a time
+  if (mode === 'lab') s.labbed = true;
   s.labHead = sharedHead;
   let lab = document.getElementById('lab');
   if (!lab) { lab = document.createElement('div'); lab.id = 'lab'; document.body.appendChild(lab); }
@@ -1409,7 +1343,7 @@ function viewHealth(h) {
   if (s.health.length > 30) s.health.shift();
   // Into the indexed avoid record (rechecked in the background with backoff).
   const m = String(h.detail).match(/https?:\/\/\S+/);
-  if (m && h.kind !== 'error') reportFailure(m[0], h.kind === 'timeout' ? 'timeout' : (String(h.detail).match(/^(\d{3}) /) || [])[1] || 'failed');
+  if (m && h.kind !== 'error') reportFailure(m[0].replace(/[:,;.)]+$/, ''), h.kind === 'timeout' ? 'timeout' : (String(h.detail).match(/^(\d{3}) /) || [])[1] || 'failed');
   // Failures matter even after ready(): once things go quiet, repair the view if they add up.
   s.failures = (s.failures || 0) + (h.kind === 'error' || h.kind === 'fetch' ? 2 : 1);
   clearTimeout(s.failTimer);
@@ -1511,7 +1445,7 @@ function watchView(s) {
 
 // Asks the AI to repair a stuck or broken view; replaces it in place; drops the broken cached copy.
 async function selfFix(s, reason) {
-  if (s.fixing || (s.fixAttempts || 0) >= 1) return;
+  if (s.fixing || s.fixed || (s.fixAttempts || 0) >= 1) return; // one repair: a repaired scene isn't repaired again
   journal('repair', s, reason + ' · ' + (s.health || []).slice(-6).join(' | '));
   s.fixing = true; s.fixAttempts = (s.fixAttempts || 0) + 1;
   const entry = current;
@@ -1609,8 +1543,6 @@ window.addEventListener('message', async (e) => {
   if (d.aiuiReview) return viewReview(d.aiuiReview);
   if (d.aiuiKey) return onKey(new KeyboardEvent('keydown', { key: d.aiuiKey, metaKey: !!d.meta, shiftKey: !!d.shift }));
   if (d.aiuiCall == null) return;
-  if (d.aiuiHealth) return viewHealth(d.aiuiHealth);
-  if (d.aiuiReview) return viewReview(d.aiuiReview);
   const src = e.source;
   const fns = { sys: (a) => aiui.sys(a), next: (a) => aiui.next(a), back: () => aiui.back(), home: () => aiui.home(),
     'state.load': () => sceneState(), 'state.save': (o) => saveSceneState(o),
@@ -2982,7 +2914,7 @@ async function showNetwork(refresh = false) {
   try { r = await call('network', { op: 'scan' }); } catch (e) { el.circles.classList.remove('holding'); return toast(e.message); }
   const bars = (rssi) => rssi >= -55 ? '▂▄▆█' : rssi >= -67 ? '▂▄▆' : rssi >= -78 ? '▂▄' : '▂';
   const circles = (r.networks || []).map((n) => ({
-    id: 'net:' + n.ssid, ssid: n.ssid, secure: n.secure, known: n.known,
+    id: 'net:' + n.ssid, ssid: n.ssid, secure: n.secure, saved: n.known, // not `known`: that marks circles opened elsewhere
     icon: n.current ? '📶' : n.secure ? '🔒' : '📡', label: n.ssid, selected: !!n.current,
     hint: [bars(n.rssi), n.band, n.current ? t('netConnected') : n.known ? t('netKnown') : n.secure ? t('netSecured') : t('netOpen')].filter(Boolean).join(' · '),
   }));
@@ -3002,7 +2934,7 @@ async function networkOpen(c) {
     try { await call('network', { op: 'power', on: c.label === t('netOn') }); } catch (e) { return toast(e.message); }
     return showNetwork(true);
   }
-  if (c.secure && !c.known) {
+  if (c.secure && !c.saved) {
     return push({ kind: 'text', local: 'wifipass', ssid: c.ssid, go: 'OK', title: `${t('netPassword')} «${c.ssid}»`, message: '', text: '' }, c.ssid);
   }
   return joinNetwork(c.ssid, '');
@@ -3197,7 +3129,9 @@ function printScene() {
   if (current.screen.kind === 'html' && f) f.contentWindow.postMessage({ aiuiPrint: true }, '*');
   else window.print();
 }
-if (zoomLevel !== 1) applyZoom();
+// At load only the zoom itself: the first render lays the pages out (and later declarations,
+// like `paused`, aren't initialised yet here).
+if (zoomLevel !== 1) document.body.style.zoom = String(zoomLevel);
 
 // ---------------------------------------------------------------- status bar
 // Left: ⏸/▶ pauses all background work, ⚙ opens Settings. Right: what exactly is happening —
@@ -3741,7 +3675,7 @@ el.consoleForm.addEventListener('submit', async (e) => {
   const builtin = {
     '/help': () => log('reply', 'Commands: /help /clear /state /pause /resume /reload /retro /system — anything else goes to the AI with the current context.'),
     '/clear': () => { logLines.length = 0; el.consoleLog.innerHTML = ''; },
-    '/state': () => log('reply', JSON.stringify(sceneState(), null, 2) || 'no state'),
+    '/state': () => { const st = sceneState(); log('reply', st == null ? 'no state' : JSON.stringify(st, null, 2)); },
     '/pause': () => { setPaused(true); log('reply', 'background work paused'); },
     '/resume': () => { setPaused(false); log('reply', 'background work resumed'); },
     '/reload': () => { reloadScene(); log('reply', 'scene reloaded (state kept)'); },
@@ -3930,5 +3864,6 @@ async function restoreMedia() {
 restoreNav();
 render();
 restoreMedia();
+initUser();
 // No AI available yet: ask for one.
 call('engine', { op: 'status' }).then((st) => { if (!st.active) showSetup(); else initLanguage(); }).catch(() => {});

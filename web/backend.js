@@ -683,7 +683,7 @@ const WebBackend = (() => {
           const k = getKey();
           if (!k) throw err('no-ai');
           const pr = await loadPrompts();
-          const evidence = { tree: profileOverview(80), flows: overview(40), utilities: utilOverview([], 20),
+          const evidence = { tree: profileOverview(80), flows: overview(40), utilities: libOverview([], 20),
             language: navigator.language, behavior: body.behavior || {} };
           const { screen } = await turn(k, instructions(pr.system + pr.profiler), JSON.parse(pr.profileSchema), [],
             'Update the user\'s characteristic tree from this evidence:\n' + json(evidence), null, 'profile', () => {});
