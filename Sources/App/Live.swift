@@ -114,6 +114,7 @@ final class NetworkControl: NSObject {
         return String(decoding: data, as: UTF8.self)
     }
     #else
+    func askLocation() {}
     func status() -> [String: Any] { ["wifi": false, "addresses": Self.addresses()] }
     func scan() -> [String: Any] { ["networks": [], "error": "Wi-Fi is managed by the system on this device"] }
     func connect(_ ssid: String, password: String?) -> [String: Any] { ["ok": false, "error": "not available on this device"] }
