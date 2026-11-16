@@ -23,10 +23,14 @@ final class NativeLibraries {
     static let shared = NativeLibraries()
 
     /// The folder on the PATH (stable, so the shell environment can be computed once).
-    static let binDir: URL = root.appendingPathComponent("bin", isDirectory: true)
-    static let root: URL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+    static var binDir: URL { root.appendingPathComponent("bin", isDirectory: true) }
+    /// Set before first use to keep tests out of the real Application Support folder.
+    static var root: URL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         .appendingPathComponent("aiui/native", isDirectory: true)
-    static let liveCatalogURL = URL(string: ProcessInfo.processInfo.environment["AIUI_NATIVE_CATALOG"] ?? "https://aiui.oeaio.com/native.json")!
+    static let liveCatalogURL = catalogURL(env: ProcessInfo.processInfo.environment)
+    static func catalogURL(env: [String: String]) -> URL {
+        URL(string: env["AIUI_NATIVE_CATALOG"] ?? "https://aiui.oeaio.com/native.json")!
+    }
 
     struct Installed: Codable {
         var id: String
@@ -61,8 +65,24 @@ final class NativeLibraries {
     private(set) var lastUpdateCheck: Date?
     private var maintaining = false
     private let work = DispatchQueue(label: "aiui.native", qos: .utility)
-    private var path: NWPath?
+    /// The network as NWPathMonitor last reported it (nil until it has).
+    struct NetState: Equatable {
+        var satisfied: Bool
+        var constrained: Bool
+        var expensive: Bool
+    }
+    private(set) var monitoredPath: NetState?
+    /// Replaces the monitored network state when set (tests).
+    var networkOverride: (() -> NetState?)?
+    private var path: NetState? {
+        if let networkOverride { return networkOverride() }
+        return monitoredPath
+    }
     private let monitor = NWPathMonitor()
+    /// How often a running download reports its progress.
+    var progressInterval: TimeInterval = 1
+    /// Whether an administrator policy (managed preference) fixes a setting.
+    static var adminForced: (String) -> Bool = { UserDefaults.standard.objectIsForced(forKey: $0) }
     private var requestWatch: DispatchSourceFileSystemObject?
     private var stateFile: URL { dir.appendingPathComponent("installed.json") }
     private var liveCatalogFile: URL { dir.appendingPathComponent("catalog.json") }
@@ -86,7 +106,10 @@ final class NativeLibraries {
         for name in (try? fm.contentsOfDirectory(atPath: dir.path)) ?? [] where name.hasPrefix(".") {
             try? fm.removeItem(at: dir.appendingPathComponent(name))
         }
-        monitor.pathUpdateHandler = { [weak self] p in DispatchQueue.main.async { self?.path = p } }
+        monitor.pathUpdateHandler = { [weak self] p in
+            let s = NetState(satisfied: p.status == .satisfied, constrained: p.isConstrained, expensive: p.isExpensive)
+            DispatchQueue.main.async { self?.monitoredPath = s }
+        }
         monitor.start(queue: DispatchQueue(label: "aiui.native.net"))
     }
 
@@ -144,14 +167,14 @@ final class NativeLibraries {
     /// background work is not paused. Returns why not, or nil when allowed.
     func blocked(background: Bool) -> String? {
         let d = UserDefaults.standard
-        if d.objectIsForced(forKey: "AllowNativeDownloads"), !d.bool(forKey: "AllowNativeDownloads") {
+        if Self.adminForced("AllowNativeDownloads"), !d.bool(forKey: "AllowNativeDownloads") {
             return "denied by an administrator policy (AllowNativeDownloads)"
         }
         if !Self.settingOn { return "turned off in Settings (Download native libraries)" }
         if let p = path {
-            if p.status != .satisfied { return "offline" }
-            if p.isConstrained { return "Low Data Mode is on" }
-            if p.isExpensive { return "the network is metered" }
+            if !p.satisfied { return "offline" }
+            if p.constrained { return "Low Data Mode is on" }
+            if p.expensive { return "the network is metered" }
         }
         if background && API.paused { return "background work is paused" }
         return nil
@@ -164,9 +187,9 @@ final class NativeLibraries {
 
     func policy() -> [String: Any] {
         let d = UserDefaults.standard
-        let managed: Any = d.objectIsForced(forKey: "AllowNativeDownloads") ? d.bool(forKey: "AllowNativeDownloads") : NSNull()
+        let managed: Any = Self.adminForced("AllowNativeDownloads") ? d.bool(forKey: "AllowNativeDownloads") : NSNull()
         var net = "unknown"
-        if let p = path { net = p.status != .satisfied ? "offline" : p.isConstrained ? "low data mode" : p.isExpensive ? "metered" : "ok" }
+        if let p = path { net = !p.satisfied ? "offline" : p.constrained ? "low data mode" : p.expensive ? "metered" : "ok" }
         let b = blocked(background: true)
         return ["allowed": b == nil, "reason": b ?? NSNull(), "setting": Self.settingOn, "managed": managed,
                 "network": net, "paused": API.paused, "foregroundAllowed": blocked(background: false) == nil,
@@ -352,7 +375,7 @@ final class NativeLibraries {
             }
             job.task = task
             let before = arts.prefix(i).reduce(0) { $0 + ($1["bytes"] as? Int ?? 0) }
-            job.timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { _ in
+            job.timer = Timer.scheduledTimer(withTimeInterval: progressInterval, repeats: true) { _ in
                 let got = before + Int(task.countOfBytesReceived)
                 API.activity("native-" + id, title, kind: "native", name: id, detail: "\(Self.mb(got)) / \(Self.mb(total))", actions: ["cancel"])
             }

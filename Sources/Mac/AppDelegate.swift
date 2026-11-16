@@ -5,16 +5,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTo
     private let addressBar = AddressBar(frame: NSRect(x: 0, y: 0, width: 420, height: 24))
     private static let addressItem = NSToolbarItem.Identifier("aiui.address")
     let api: API
+    /// Shows the new window and brings the app forward (tests keep windows off screen).
+    static var present: (NSWindow) -> Void = { w in w.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true) }
+    /// Installs the menu bar and makes the app a regular (Dock) app.
+    static var install: (NSMenu) -> Void = { menu in NSApp.mainMenu = menu; NSApp.setActivationPolicy(.regular) }
 
-    init(support: URL) {
-        api = API(support: support)
+    /// `support`: the synced stores (Storage.root); `device`: this Mac's Application Support/aiui.
+    init(support: URL, device: URL) {
+        api = API(support: support, device: device)
         super.init()
     }
-    private var window: NSWindow?
+    private(set) var window: NSWindow?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        NSApp.mainMenu = makeMenu()
-        NSApp.setActivationPolicy(.regular)
+        Self.install(makeMenu())
         // Other devices' changes arrive through iCloud: merge them in regularly.
         Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in self?.api.syncNow() }
     }
@@ -50,8 +54,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTo
         let content = NSView(frame: NSRect(origin: .zero, size: w.contentLayoutRect.size))
         content.autoresizingMask = [.width, .height]
         w.contentView = content
-        w.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+        Self.present(w)
         window = w
         // The address: a plain path in the title bar, right after the window buttons (no toolbar,
         // so no bezel); the rest of the title bar stays draggable.
@@ -133,7 +136,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTo
         AIUICef.evalJS("window.aiui && aiui.menuUsed && aiui.menuUsed(), window.aiui && aiui.home()")
     }
 
-    private func makeMenu() -> NSMenu {
+    func makeMenu() -> NSMenu {
         let main = NSMenu()
 
         let appItem = NSMenuItem()

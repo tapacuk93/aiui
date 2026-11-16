@@ -46,14 +46,16 @@ final class Profile {
 
     /// Per measure, the summary with more samples wins; active hours take the larger count.
     static func mergeBaseline(_ a: [String: Any], _ b: [String: Any]) -> [String: Any] {
+        // Whole numbers come back from disk as Int (AnyCodable): read any number.
+        func num(_ v: Any?) -> Double { (v as? NSNumber)?.doubleValue ?? 0 }
         var out = a
         for (k, v) in b {
             switch (out[k], v) {
             case (nil, _): out[k] = v
             case (let x as [String: Any], let y as [String: Any]):
-                if (y["n"] as? Double ?? 0) > (x["n"] as? Double ?? 0) { out[k] = y }
+                if num(y["n"]) > num(x["n"]) { out[k] = y }
             case (let x as [Any], let y as [Any]) where x.count == y.count:
-                out[k] = zip(x, y).map { max(($0 as? Double) ?? 0, ($1 as? Double) ?? 0) }
+                out[k] = zip(x, y).map { max(num($0), num($1)) }
             default: break
             }
         }
@@ -75,10 +77,12 @@ final class Profile {
             t.updated = Date()
             traits[k] = t
         }
-        for r in result["remove"] as? [[String]] ?? [] { traits[Self.key(r)] = nil }
+        // Removed and trimmed traits leave tombstones, or the copy on disk would bring them back.
+        let now = Date()
+        for r in result["remove"] as? [[String]] ?? [] { traits[Self.key(r)] = nil; removed[Self.key(r)] = now }
         if traits.count > limit {
             for t in traits.values.sorted(by: { $0.confidence * Double($0.evidence) < $1.confidence * Double($1.evidence) })
-                .prefix(traits.count - limit) { traits[Self.key(t.path)] = nil }
+                .prefix(traits.count - limit) { traits[Self.key(t.path)] = nil; removed[Self.key(t.path)] = now }
         }
         persist()
     }
@@ -109,7 +113,6 @@ final class Profile {
     }
 
     func remove(_ path: [String]) { traits[Self.key(path)] = nil; removed[Self.key(path)] = Date(); persist() }
-    func clear() { traits = [:]; baseline = [:]; persist() }
 
     func persist() {
         mergeDisk()

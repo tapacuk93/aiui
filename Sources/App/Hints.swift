@@ -126,7 +126,8 @@ final class Hints {
         // Whole seconds: the file keeps ISO-8601 dates without fractions, memory keeps them exact.
         let key = { (i: Incident) in "\(Int(i.at.timeIntervalSince1970))|\(i.kind)|\(i.detail)" }
         var seen = Set<String>()
-        journal = (journal + d.journal).sorted { $0.at < $1.at }.filter { seen.insert(key($0)).inserted }
+        // Mine first, so the exact copy of an incident wins over the file's truncated one.
+        journal = (journal + d.journal).filter { seen.insert(key($0)).inserted }.sorted { $0.at < $1.at }
         if journal.count > 300 { journal.removeFirst(journal.count - 300) }
         for (id, at) in d.retired where (retired[id] ?? .distantPast) < at { retired[id] = at }
         for h in d.hints {

@@ -45,7 +45,9 @@ final class Libraries {
         }
         // Housekeeping: junk that got in earlier, leftovers from interrupted or scoped installs.
         for id in installed.keys where entry(id) == nil { remove(id) }
-        for name in (try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? [] where name.hasPrefix(".") || name.hasPrefix("@") {
+        // (Scoped packages used to get nested @scope/name folders; now they are flat "@scope__name", which stay.)
+        for name in (try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []
+        where name.hasPrefix(".") || (name.hasPrefix("@") && !name.contains("__")) {
             try? FileManager.default.removeItem(at: dir.appendingPathComponent(name))
         }
     }
@@ -67,12 +69,20 @@ final class Libraries {
     /// The storage budget libraries and the memory cache share: 10 GB, but never more than
     /// 10% of the free space above a 5 GB reserve (nothing when the disk is tight).
     static var sharedBudget: Int {
-        let free = (try? URL(fileURLWithPath: NSHomeDirectory())
-            .resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]))?
-            .volumeAvailableCapacityForImportantUsage ?? 0
+        let free = availableCapacity()
         if free < 5_000_000_000 { return 0 }
         return Int(min(Double(free - 5_000_000_000) * 0.10, 10_000_000_000))
     }
+
+    /// Free space for important use on the home volume (replaceable in tests).
+    static var availableCapacity: () -> Int = {
+        Int((try? URL(fileURLWithPath: NSHomeDirectory())
+            .resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]))?
+            .volumeAvailableCapacityForImportantUsage ?? 0)
+    }
+
+    /// How long `ensure` holds a screen for an install before it gets the CDN copy.
+    var ensureTimeout: TimeInterval = 12
 
     /// What the memory cache currently uses (set by the API), taken out of the shared budget.
     var cacheBytes: () -> Int = { 0 }
@@ -254,7 +264,7 @@ final class Libraries {
             var finished = false
             install(id) { _ in if !finished { finished = true; group.leave() } }
             // Don't hold a screen for long: after 12 s it gets the CDN copy instead.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 12) { if !finished { finished = true; group.leave() } }
+            DispatchQueue.main.asyncAfter(deadline: .now() + ensureTimeout) { if !finished { finished = true; group.leave() } }
         }
         group.notify(queue: .main) {
             var tags: [[String: String]] = []

@@ -4,3 +4,5 @@ build/
 AIUI.xcodeproj/
 services/node_modules/
 services/.local-data/
+.build/
+Package.resolved
