@@ -2280,7 +2280,7 @@ const STR = {
   actTranslate: 'translating the interface', actLearn: 'learning about you', actLibs: 'loading JS libraries',
   actLab: 'testing every interaction (phone, other theme)', actRunDoD: 'running the Definition of Done tests',
   actReview: 'checking layout, readability, accessibility', jsLibs: 'JS libraries',
-  nativeLibs: 'Native libraries', setNative: 'Download native libraries',
+  setNative: 'Download native libraries',
   actImprove: 'improving', actRevise: 'updating from memory', actComponent: 'improving component', actRetro: 'learning from what went wrong',
   actLibrarian: 'integrating shared components and utilities',
   qaCancel: 'Cancel', qaPause: 'Pause', qaResume: 'Resume', qaStop: 'Stop', qaSkip: 'Skip',

@@ -50,6 +50,22 @@ jobs:
       - name: Tests + coverage gate
         run: tools/coverage/swift.sh
 
+  web:
+    name: Web client tests, 100% line coverage
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Install the harness and Chromium
+        working-directory: tools/coverage/web
+        run: npm ci && npx playwright install chromium
+      - name: Bundle check (the shipped form must build)
+        run: cp -R web "$RUNNER_TEMP/webdist" && tools/web-bundle/run.sh "$RUNNER_TEMP/webdist"
+      - name: Tests + coverage gate
+        run: tools/coverage/web.sh
+
   # The Mac app: build.sh downloads CEF from the public CDN and signs ad hoc, so it needs no secrets.
   # Not yet proven on hosted runners (toolchain version, time), so it does not block the gates.
   # Only in CI itself: release.yml builds and attaches the app on its own.
