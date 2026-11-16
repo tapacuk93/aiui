@@ -1,0 +1,10 @@
++-o J313AP  <class IOPlatformExpertDevice, id 0x100000225, registered, matched, active, busy 0 (201764 ms), retain 35>
+    {
+      "target-type" = <"J313">
+      "name" = <"device-tree">
+      "manufacturer" = <"Apple Inc.">
+      "target-sub-type" = <"J313AP">
+      "compatible" = <"J313AP","MacBookAir10,1","AppleARM">
+      "model" = <"MacBookAir10,1">
+      "device_type" = <"bootrom">
+    }

@@ -1,0 +1,60 @@
+# Gates for pull requests and pushes to main; release.yml calls the same jobs before releasing.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  services:
+    name: Services tests (node --test)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install (optional; the tests run without the AWS SDK too)
+        working-directory: services
+        run: npm ci || true
+      - name: Test
+        working-directory: services
+        run: node --test
+
+  os-installer:
+    name: os-installer tests, 100% line coverage
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain
+        run: swift --version && xcodebuild -version
+      - name: Tests + coverage gate
+        run: tools/os-installer/coverage.sh --report
+
+  # The Mac app: build.sh downloads CEF from the public CDN and signs ad hoc, so it needs no secrets.
+  # Not yet proven on hosted runners (toolchain version, time), so it does not block the gates.
+  # Only in CI itself: release.yml builds and attaches the app on its own.
+  mac-app:
+    name: Mac app (build.sh)
+    if: github.workflow == 'CI'
+    runs-on: macos-latest
+    continue-on-error: true
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: vendor/cef
+          key: cef-${{ runner.os }}-${{ hashFiles('build.sh') }}
+      - name: Build
+        run: ./build.sh

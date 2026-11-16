@@ -1,0 +1,113 @@
+# Release: on a v* tag (or by hand), run the CI gates, build the aiui-os installer CLI (universal,
+# release), package it as zip + sha256 and attach it to a GitHub Release. The Mac app is built
+# and attached too when build.sh succeeds on the runner (see the mac-app job).
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to release (created at this commit if new). Empty: build only, no release.'
+        required: false
+        default: ''
+
+permissions:
+  contents: write   # create the release and upload assets (GITHUB_TOKEN, no stored secrets)
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  TAG: ${{ github.ref_type == 'tag' && github.ref_name || inputs.tag }}
+
+jobs:
+  gates:
+    uses: ./.github/workflows/ci.yml
+
+  installer:
+    name: Build aiui-os
+    needs: gates
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build (release, arm64 + x86_64)
+        working-directory: tools/os-installer
+        run: |
+          swift build -c release --arch arm64 --arch x86_64
+          BIN=$(swift build -c release --arch arm64 --arch x86_64 --show-bin-path)
+          lipo -info "$BIN/aiui-os"
+          # Smoke test on recorded fixtures: valid JSON (exit 1 = "not ready" is expected there).
+          out=$("$BIN/aiui-os" preflight --json --fixtures Fixtures/this-mac-2026-11-16) || true
+          echo "$out" | python3 -m json.tool > /dev/null
+          mkdir -p dist/aiui-os
+          cp "$BIN/aiui-os" README.md dist/aiui-os/
+      - name: Package (zip + sha256)
+        working-directory: tools/os-installer/dist
+        run: |
+          VERSION=${TAG:-${GITHUB_SHA::7}}
+          NAME=aiui-os-$VERSION-macos-universal.zip
+          ditto -c -k --keepParent aiui-os "$NAME"
+          shasum -a 256 "$NAME" > "$NAME.sha256"
+          cat "$NAME.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: aiui-os
+          path: |
+            tools/os-installer/dist/*.zip
+            tools/os-installer/dist/*.sha256
+
+  mac-app:
+    name: Build AI UI.app
+    needs: gates
+    runs-on: macos-latest
+    # Not yet proven on hosted runners; a failure here must not block the installer release.
+    continue-on-error: true
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: vendor/cef
+          key: cef-${{ runner.os }}-${{ hashFiles('build.sh') }}
+      - name: Build (ad-hoc signed, not notarized)
+        run: ./build.sh
+      - name: Package (zip + sha256)
+        run: |
+          VERSION=${TAG:-${GITHUB_SHA::7}}
+          NAME=AI-UI-$VERSION-macos-arm64.zip
+          mkdir -p dist
+          ditto -c -k --keepParent "build/AI UI.app" "dist/$NAME"
+          (cd dist && shasum -a 256 "$NAME" > "$NAME.sha256")
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mac-app
+          path: dist/*
+
+  publish:
+    name: GitHub Release
+    needs: [installer, mac-app]
+    if: always() && needs.installer.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Create or update the release
+        if: env.TAG != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          ls -l dist
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --clobber
+          else
+            gh release create "$TAG" dist/* --title "AI UI $TAG" --generate-notes --target "$GITHUB_SHA"
+          fi
+      - name: Build only
+        if: env.TAG == ''
+        run: echo "No tag given; the packages are in this run's artifacts."

@@ -1,0 +1,17 @@
+{
+  "os_list": [
+    {
+      "name": "AI UI OS",
+      "default_os_name": "AI UI OS",
+      "boot_object": "m1n1.bin",
+      "next_object": "m1n1/boot.bin",
+      "package": "aiui-os.zip",
+      "supported_fw": ["12.3", "12.3.1", "13.5", "14.8.3"],
+      "partitions": [
+        {"name": "EFI", "type": "EFI", "size": "524288000B", "format": "fat", "copy_firmware": true, "copy_installer_data": true, "source": "esp"},
+        {"name": "Boot", "type": "Linux", "size": "1073741824B", "image": "boot.img"},
+        {"name": "Root", "type": "Linux", "size": "7516192768B", "expand": true, "image": "root.img"}
+      ]
+    }
+  ]
+}
