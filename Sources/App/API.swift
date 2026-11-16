@@ -79,8 +79,7 @@ final class API: NSObject {
 
     /// `support`: where the synced stores live (Storage.root). `device`: this device's own
     /// Application Support/aiui (screenshots, installed libraries, shared code, people).
-    init(support: URL, device: URL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("aiui", isDirectory: true)) {
+    init(support: URL, device: URL = API.defaultDevice) {
         // The cache shares one 10 GB budget with the JS libraries (Libraries.sharedBudget): up to
         // 2 GB of it, or AIUI_CACHE_MB.
         let shared = Libraries.sharedBudget / 1_048_576
@@ -126,35 +125,48 @@ final class API: NSObject {
         native.start()
         #endif
         // Improvements follow each applet's own schedule, early ones within seconds: check often.
-        Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
-            guard let self, !Self.paused else { return }
-            self.improveIfDue(); self.improveComponentIfDue()
-        }
+        Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in self?.improveTick() }
+    }
+
+    /// This device's own Application Support/aiui.
+    static var defaultDevice: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("aiui", isDirectory: true)
+    }
+
+    /// Builds the engines `use` picks: nil builds the real ones; tests give fakes
+    /// (id, persistent, system prompt, schema).
+    static var engineFactory: ((String, Bool, String, String) -> AIEngine)?
+
+    /// The 10-second tick: improvements follow each applet's own schedule.
+    func improveTick() {
+        guard !Self.paused else { return }
+        improveIfDue(); improveComponentIfDue()
     }
 
     /// Switches the AI to a detected CLI ("claude", "codex", "gemini") or the saved API key ("key").
     @discardableResult
     func use(_ id: String) -> Bool {
-        let make: (Bool, String, String) -> AIEngine
+        let real: (Bool, String, String) -> AIEngine
         switch id {
         #if os(macOS)
         case "claude":
             guard Shell.which("claude") != nil else { return false }
-            make = { Claude(persistent: $0, systemPrompt: $1, schema: $2) }
+            real = { Claude(persistent: $0, systemPrompt: $1, schema: $2) }
         case "codex", "gemini":
             guard Shell.which(id) != nil else { return false }
             let name = Provider.clis.first { $0.id == id }?.name ?? id
-            make = { AgentCLI(id: id, label: name, persistent: $0, systemPrompt: $1, schema: $2) }
+            real = { AgentCLI(id: id, label: name, persistent: $0, systemPrompt: $1, schema: $2) }
         #endif
         case "aicoin":
             guard let key = AICoin.shared.key() else { return false }
-            make = { APIEngine(key: key, persistent: $0, systemPrompt: $1, schema: $2) }
+            real = { APIEngine(key: key, persistent: $0, systemPrompt: $1, schema: $2) }
         case "key":
             guard let key = Provider.loadKey() else { return false }
-            make = { APIEngine(key: key, persistent: $0, systemPrompt: $1, schema: $2) }
+            real = { APIEngine(key: key, persistent: $0, systemPrompt: $1, schema: $2) }
         default:
             return false
         }
+        let make = Self.engineFactory.map { f in { f(id, $0, $1, $2) } } ?? real
         claude?.cancel(); pager?.cancel(); suggester?.cancel(); scout?.cancel(); refiner?.cancel(); reviser?.cancel()
         claude = make(true, systemPrompt, Prompts.screenSchema)
         pager = make(false, pagerPrompt, Prompts.pageSchema)
