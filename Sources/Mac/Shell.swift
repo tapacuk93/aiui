@@ -32,11 +32,17 @@ enum Shell {
 
     static let launched = Date()
 
+    /// What quitting runs and signals (tests record instead of touching real processes and apps).
+    static var quitRun: (String, [String]) -> Result = { runSync($0, $1) }
+    static var signal: (pid_t, Int32) -> Void = { _ = kill($0, $1) }
+    /// Grace period between SIGTERM and SIGKILL of the launched groups (microseconds).
+    static var killGrace: useconds_t = 300_000
+
     /// Media players started while the app ran (the AI's shell can detach them into their own
     /// process group, so group cleanup alone misses them): stopped on quit.
     private static func stopPlayersStartedSinceLaunch() {
         let players: Set<String> = ["ffplay", "afplay", "mpv", "mpg123", "vlc", "cvlc", "say", "play", "mplayer", "ffmpeg"]
-        let r = runSync("/bin/ps", ["-axo", "pid=,etime=,comm="])
+        let r = quitRun("/bin/ps", ["-axo", "pid=,etime=,comm="])
         let uptime = Date().timeIntervalSince(launched)
         for line in r.stdout.split(separator: "\n") {
             let parts = line.split(separator: " ", omittingEmptySubsequences: true)
@@ -49,7 +55,7 @@ enum Shell {
             let clock = dayParts.last!.split(separator: ":").compactMap { Double($0) }
             for v in clock { secs = secs * 60 + v }
             if dayParts.count == 2, let d = Double(dayParts[0]) { secs += d * 86_400 }
-            if secs < uptime { kill(pid, SIGTERM) }
+            if secs < uptime { signal(pid, SIGTERM) }
         }
     }
 
@@ -58,15 +64,18 @@ enum Shell {
         stopPlayersStartedSinceLaunch()
         lock.lock(); let gs = groups, ms = media; lock.unlock()
         for app in ms {
-            _ = runSync("/usr/bin/osascript", ["-e", "if application \"\(app)\" is running then tell application \"\(app)\" to pause"])
+            _ = quitRun("/usr/bin/osascript", ["-e", "if application \"\(app)\" is running then tell application \"\(app)\" to pause"])
         }
-        for g in gs { kill(-g, SIGTERM) }
-        usleep(300_000)
-        for g in gs { kill(-g, SIGKILL) }
+        for g in gs { signal(-g, SIGTERM) }
+        usleep(killGrace)
+        for g in gs { signal(-g, SIGKILL) }
     }
 
     /// Computed once on first use (tests replace it to put fake tools on the PATH).
-    static var loginEnvironment: [String: String] = {
+    static var loginEnvironment: [String: String] = computeLoginEnvironment()
+
+    /// The login shell's PATH plus the usual install folders and the app's native tools.
+    static func computeLoginEnvironment() -> [String: String] {
         var env = ProcessInfo.processInfo.environment
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/bin/zsh")
@@ -89,7 +98,7 @@ enum Shell {
         env["AIUI_NATIVE_BIN"] = native
         env["PATH"] = parts.joined(separator: ":")
         return env
-    }()
+    }
 
     static func which(_ name: String) -> String? {
         for dir in (loginEnvironment["PATH"] ?? "").split(separator: ":") {

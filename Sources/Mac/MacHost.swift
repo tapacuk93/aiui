@@ -6,6 +6,14 @@ extension API: AIUIHost {}
 extension API {
     // MARK: - System access for the page and AI-generated views (Mac: everything)
 
+    /// What `sys` acts through (tests swap them so they never open apps, run AppleScript or
+    /// change the user's clipboard): process runner, URL opener, pasteboard.
+    static var sysRun: (String, [String], String?, @escaping (Shell.Result) -> Void) -> Void = {
+        Shell.run($0, $1, stdin: $2, completion: $3)
+    }
+    static var sysOpen: (URL) -> Void = { NSWorkspace.shared.open($0) }
+    static var sysPasteboard: () -> NSPasteboard = { .general }
+
     static func sys(_ input: [String: Any], send: @escaping ([String: Any]) -> Void, fail: @escaping (String) -> Void) {
         let op = input["op"] as? String ?? ""
         let shellResult: (Shell.Result) -> Void = { r in
@@ -14,21 +22,21 @@ extension API {
         switch op {
         case "shell":
             guard let cmd = input["cmd"] as? String else { return fail("cmd required") }
-            Shell.run("/bin/zsh", ["-lc", cmd], completion: shellResult)
+            sysRun("/bin/zsh", ["-lc", cmd], nil, shellResult)
         case "jxa":
             guard let script = input["script"] as? String else { return fail("script required") }
-            Shell.run("/usr/bin/osascript", ["-l", "JavaScript", "-"], stdin: script, completion: shellResult)
+            sysRun("/usr/bin/osascript", ["-l", "JavaScript", "-"], script, shellResult)
         case "applescript":
             guard let script = input["script"] as? String else { return fail("script required") }
-            Shell.run("/usr/bin/osascript", ["-"], stdin: script, completion: shellResult)
+            sysRun("/usr/bin/osascript", ["-"], script, shellResult)
         case "open":
             guard let target = input["target"] as? String else { return fail("target required") }
             if let url = URL(string: target), url.scheme != nil, !target.hasPrefix("/") {
-                NSWorkspace.shared.open(url)
+                sysOpen(url)
             } else if FileManager.default.fileExists(atPath: (target as NSString).expandingTildeInPath) {
-                NSWorkspace.shared.open(URL(fileURLWithPath: (target as NSString).expandingTildeInPath))
+                sysOpen(URL(fileURLWithPath: (target as NSString).expandingTildeInPath))
             } else {
-                Shell.run("/usr/bin/open", ["-a", target]) { r in
+                sysRun("/usr/bin/open", ["-a", target], nil) { r in
                     if r.code != 0 { fail(r.stderr) } else { send(["ok": true]) }
                 }
                 return
@@ -48,7 +56,7 @@ extension API {
                 send(["ok": true])
             } catch { fail(error.localizedDescription) }
         case "clipboard":
-            let pb = NSPasteboard.general
+            let pb = sysPasteboard()
             if let text = input["text"] as? String {
                 pb.clearContents()
                 pb.setString(text, forType: .string)
@@ -62,7 +70,7 @@ extension API {
             let title = input["title"] as? String ?? "AI UI"
             let text = input["text"] as? String ?? ""
             let script = "display notification \(appleQuote(text)) with title \(appleQuote(title))"
-            Shell.run("/usr/bin/osascript", ["-e", script]) { _ in send(["ok": true]) }
+            sysRun("/usr/bin/osascript", ["-e", script], nil) { _ in send(["ok": true]) }
         default:
             fail("unknown op \(op)")
         }

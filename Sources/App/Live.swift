@@ -144,7 +144,7 @@ enum LiveStats {
     static let started = Date()
 
     static func process() -> [String: Any] {
-        var r: [String: Any] = ["uptime": Date().timeIntervalSince(started), "cores": ProcessInfo.processInfo.activeProcessorCount,
+        var r: [String: Any] = ["uptime": -started.timeIntervalSinceNow, "cores": ProcessInfo.processInfo.activeProcessorCount,
                                 "memoryTotal": ProcessInfo.processInfo.physicalMemory]
         var loads = [Double](repeating: 0, count: 3)
         if getloadavg(&loads, 3) == 3 { r["load"] = loads }

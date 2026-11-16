@@ -18,6 +18,8 @@ final class AgentCLI: AIEngine {
     private var transcript: [String] = []
     /// Read-only sandbox, no auto-approved tools (reviews of untrusted code).
     var readOnly = false
+    /// Watchdog: seconds a call may run before it is ended (nil: 180 persistent, 100 otherwise).
+    var timeout: TimeInterval?
 
     init(id: String, label: String, persistent: Bool, systemPrompt: String, schema: String) {
         self.id = id; self.label = label
@@ -73,19 +75,21 @@ final class AgentCLI: AIEngine {
         var stdout = Data()
         let lock = NSLock()
         out.fileHandleForReading.readabilityHandler = { h in
-            let d = h.availableData
+            // Taken and stored under the lock, so the termination handler never misses a chunk.
+            lock.lock(); let d = h.availableData; stdout.append(d); lock.unlock()
             guard !d.isEmpty else { return }
-            lock.lock(); stdout.append(d); lock.unlock()
             if let line = String(data: d, encoding: .utf8)?.split(separator: "\n").last {
                 let s = String(line.prefix(120))
                 DispatchQueue.main.async { [weak self] in if self?.generation == gen { progress(s) } }
             }
         }
         p.terminationHandler = { [weak self] proc in
+            lock.lock()
             out.fileHandleForReading.readabilityHandler = nil
             let rest = out.fileHandleForReading.readDataToEndOfFile()
+            stdout.append(rest); let all = String(decoding: stdout, as: UTF8.self)
+            lock.unlock()
             let errText = String(decoding: err.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
-            lock.lock(); stdout.append(rest); let all = String(decoding: stdout, as: UTF8.self); lock.unlock()
             let last = (try? String(contentsOf: outFile, encoding: .utf8)) ?? all
             try? FileManager.default.removeItem(at: outFile)
             DispatchQueue.main.async {
@@ -105,7 +109,7 @@ final class AgentCLI: AIEngine {
         do { try p.run() } catch { pendingDone = nil; return done(.failure(error)) }
         process = p
         Shell.adopt(p)
-        let deadline = persistent ? 180.0 : 100.0
+        let deadline = timeout ?? (persistent ? 180.0 : 100.0)
         DispatchQueue.main.asyncAfter(deadline: .now() + deadline) { [weak self, weak p] in
             guard let self, let p, p.isRunning, self.generation == gen else { return }
             p.terminate()
