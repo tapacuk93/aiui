@@ -65,7 +65,8 @@ enum Shell {
         for g in gs { kill(-g, SIGKILL) }
     }
 
-    static let loginEnvironment: [String: String] = {
+    /// Computed once on first use (tests replace it to put fake tools on the PATH).
+    static var loginEnvironment: [String: String] = {
         var env = ProcessInfo.processInfo.environment
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/bin/zsh")

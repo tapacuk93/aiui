@@ -69,9 +69,9 @@ enum Provider {
         return nil
     }
 
-    // Keychain (generic password).
-    private static let service = "com.oeaio.aiui.provider"
-    private static let legacyService = "dev.aiui.app.provider"
+    // Keychain (generic password). `AIUI_PROVIDER_SERVICE` keeps a test key apart from the real one.
+    private static let service = ProcessInfo.processInfo.environment["AIUI_PROVIDER_SERVICE"] ?? "com.oeaio.aiui.provider"
+    private static let legacyService = ProcessInfo.processInfo.environment["AIUI_PROVIDER_SERVICE"].map { $0 + ".legacy" } ?? "dev.aiui.app.provider"
 
     static func loadKey() -> Key? {
         if let k = read(service) { return k }

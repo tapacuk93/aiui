@@ -23,8 +23,9 @@ final class NativeLibraries {
     static let shared = NativeLibraries()
 
     /// The folder on the PATH (stable, so the shell environment can be computed once).
-    static let binDir: URL = root.appendingPathComponent("bin", isDirectory: true)
-    static let root: URL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+    static var binDir: URL { root.appendingPathComponent("bin", isDirectory: true) }
+    /// Set before first use to keep tests out of the real Application Support folder.
+    static var root: URL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         .appendingPathComponent("aiui/native", isDirectory: true)
     static let liveCatalogURL = URL(string: ProcessInfo.processInfo.environment["AIUI_NATIVE_CATALOG"] ?? "https://aiui.oeaio.com/native.json")!
 

@@ -12,15 +12,22 @@ final class NetworkControl: NSObject {
     #if os(macOS)
     private let location = CLLocationManager()
     private var scanned: [String: CWNetwork] = [:]
-    private var iface: CWInterface? { CWWiFiClient.shared().interface() }
+    /// The Wi-Fi interface (tests give a stand-in, so they never change the real Wi-Fi).
+    var interface: () -> CWInterface? = { CWWiFiClient.shared().interface() }
+    private var iface: CWInterface? { interface() }
+    /// Location permission state and its request (replaceable in tests).
+    lazy var authorization: () -> CLAuthorizationStatus = { [location] in location.authorizationStatus }
+    lazy var requestLocation: () -> Void = { [location] in location.requestWhenInUseAuthorization() }
+    /// Runs networksetup (replaceable in tests): path, arguments → combined output.
+    static var run: (String, [String]) -> String = runProcess
 
     /// Location permission (macOS shows network names only with it).
     var locationAllowed: Bool {
-        let s = location.authorizationStatus
+        let s = authorization()
         return s == .authorizedAlways || s == .authorized
     }
     func askLocation() {
-        DispatchQueue.main.async { self.location.requestWhenInUseAuthorization() }
+        DispatchQueue.main.async { self.requestLocation() }
     }
 
     func status() -> [String: Any] {
@@ -98,7 +105,7 @@ final class NetworkControl: NSObject {
         return Set(out.split(separator: "\n").dropFirst().map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty })
     }
 
-    private static func run(_ path: String, _ args: [String]) -> String {
+    static func runProcess(_ path: String, _ args: [String]) -> String {
         let p = Process(); p.executableURL = URL(fileURLWithPath: path); p.arguments = args
         let pipe = Pipe(); p.standardOutput = pipe; p.standardError = pipe
         do { try p.run() } catch { return error.localizedDescription }

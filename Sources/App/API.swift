@@ -77,7 +77,10 @@ final class API: NSObject {
         return before.suffix(10).map(\.line)
     }
 
-    init(support: URL) {
+    /// `support`: where the synced stores live (Storage.root). `device`: this device's own
+    /// Application Support/aiui (screenshots, installed libraries, shared code, people).
+    init(support: URL, device: URL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("aiui", isDirectory: true)) {
         // The cache shares one 10 GB budget with the JS libraries (Libraries.sharedBudget): up to
         // 2 GB of it, or AIUI_CACHE_MB.
         let shared = Libraries.sharedBudget / 1_048_576
@@ -89,11 +92,9 @@ final class API: NSObject {
         hints = Hints(dir: support.appendingPathComponent("hints", isDirectory: true))
         appStore = AppStore(dir: support.appendingPathComponent("app", isDirectory: true))
         usage = Usage(dir: support.appendingPathComponent("usage", isDirectory: true),
-                      shots: FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-                        .appendingPathComponent("aiui/shots", isDirectory: true))
+                      shots: device.appendingPathComponent("shots", isDirectory: true))
         // Installed JS libraries stay on this device (re-downloadable), outside iCloud.
-        let local = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("aiui/vendor", isDirectory: true)
+        let local = device.appendingPathComponent("vendor", isDirectory: true)
         libraries = Libraries(dir: local, catalogFile: API.webRoot?.appendingPathComponent("libraries.json"))
         registry = SharedRegistry(dir: local.deletingLastPathComponent().appendingPathComponent("shared", isDirectory: true), utilities: utilities)
         people = People(dir: local.deletingLastPathComponent().appendingPathComponent("people", isDirectory: true))
