@@ -30,10 +30,8 @@ export async function authenticate(req, { store, now }) {
   if (!/^\d{1,16}$/.test(time)) throw new HttpError(401, 'bad X-AIUI-Time');
   if (Math.abs(now() - Number(time)) > SKEW_MS) throw new HttpError(401, 'X-AIUI-Time is more than 5 minutes off');
   if (!/^[A-Za-z0-9_-]{86}$/.test(sig)) throw new HttpError(401, 'bad X-AIUI-Signature');
-  let ok = false;
-  try {
-    ok = verify(null, Buffer.from(signedMessage(req.method, req.path, time, req.body)), publicKey(id), Buffer.from(sig, 'base64url'));
-  } catch { ok = false; }
+  // 32-byte keys and 64-byte signatures (the patterns above): verify answers false, never throws
+  const ok = verify(null, Buffer.from(signedMessage(req.method, req.path, time, req.body)), publicKey(id), Buffer.from(sig, 'base64url'));
   if (!ok) throw new HttpError(401, 'bad signature');
   if (await store.seen(`replay:${id}:${time}:${sig}`, REPLAY_SECONDS)) throw new HttpError(409, 'replayed request');
   return id;

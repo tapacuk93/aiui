@@ -76,3 +76,98 @@ test('notes: carried over, addressed, capped', () => {
   assert.equal(c.shown.filter((n) => n.kind === 'tests').length, 8);
   assert.equal(c.totals.tests, 12);
 });
+
+test('uncategorized items: titled "Uncategorized", weight 0, no coverage term', () => {
+  assert.equal(A.categoryTitle(A.UNCATEGORIZED), 'Uncategorized');
+  assert.equal(A.categoryWeight(A.UNCATEGORIZED), 0);
+  const v = A.itemValue({ item: { kind: 'util', name: 'x', path: [] }, category: A.UNCATEGORIZED, novel: 512, duplicateOf: null, countsBefore: {}, liveIds: new Set(), tests: false });
+  assert.deepEqual(v.terms.map((t) => t.term), ['source']);
+  assert.equal(v.value, 5, '10 x log2(2) x 0.5 (no docs)');
+});
+
+test('builds on: one live shared item, not itself, not a withdrawn one', () => {
+  const v = A.itemValue({ item: { id: 'X', kind: 'util', name: 'x', path: [], uses: ['A', 'X', 'GONE'] }, category: 'files', previousCategory: 'files', novel: 0, duplicateOf: null, countsBefore: {}, liveIds: new Set(['A', 'X']), tests: true });
+  assert.deepEqual(v.terms.at(-1), { term: 'builds on', value: 2, why: 'uses 1 shared item: 2 each, at most 5' });
+  assert.equal(v.terms.length, 2, 'staying in its category earns no coverage again');
+});
+
+test('the source of an item: code and css, applet html or its JSON, or the raw bytes', () => {
+  assert.equal(A.sourceOf('util', Buffer.from('{"code":"a()","css":".x{}"}')), 'a()\n.x{}');
+  assert.equal(A.sourceOf('component', Buffer.from('{"css":".x{}"}')), '\n.x{}');
+  assert.equal(A.sourceOf('component', Buffer.from('{"code":"a()"}')), 'a()\n');
+  assert.equal(A.sourceOf('applet', Buffer.from('{"kind":"screen","html":"<b>x</b>"}')), '<b>x</b>');
+  assert.equal(A.sourceOf('applet', Buffer.from('{"kind":"screen","rows":[1]}')), '{"kind":"screen","rows":[1]}');
+  assert.equal(A.sourceOf('util', Buffer.from('not json')), 'not json');
+});
+
+test('similarity of empty and very short sources', () => {
+  assert.equal(A.novelBytes('  \n '), 0);
+  assert.equal(A.novelBytes('const a = 1;', ['', '   ']), A.compressedSize('const a = 1;'), 'blank references are no references');
+  assert.equal(A.similarity(A.signature(''), A.signature('')), 1);
+  assert.equal(A.similarity(A.signature('a + b'), A.signature('a + b')), 1, 'fewer than 5 tokens: one shingle');
+  assert.ok(A.similarity(A.signature('a + b'), A.signature('a - b')) < 0.5);
+  assert.equal(A.similarity(null, A.signature('x')), 0);
+  assert.equal(A.similarity(A.signature('x'), ''), 0);
+  assert.equal(A.pairKey('b', 'a'), 'a|b');
+  assert.equal(A.pairKey('a', 'b'), 'a|b');
+});
+
+// A collection state for openNotes: entries by id.
+const entry = (id, { meta = {}, ...over } = {}) => ({
+  meta: { id, kind: 'util', path: [], name: id, created: '2026-01-01', uses: [], adoptions: 0, ...meta },
+  category: 'files', docs: { description: true, usage: true }, tests: true, ...over,
+});
+
+test('notes: duplicates, building on, items already linked, pairs whose items are gone', () => {
+  const items = {
+    old: entry('old', { meta: { created: '2026-01-01' } }),
+    new: entry('new', { meta: { created: '2026-02-01' } }),
+    rel: entry('rel', { meta: { created: '2026-01-15' } }),
+    lnk: entry('lnk', { meta: { created: '2026-03-01', uses: ['old'] } }),
+    rev: entry('rev', { meta: { created: '2026-04-01' } }),
+  };
+  items.old.meta.uses = ['rev'];
+  const near = { 'new|old': 0.7, 'new|rel': 0.4, 'old|rel': 0.4, 'lnk|old': 0.9, 'gone|old': 0.9, 'old|rev': 0.5 };
+  const notes = A.openNotes({ items, near });
+  const pairs = notes.filter((n) => n.kind === 'duplicate' || n.kind === 'build-on');
+  assert.deepEqual(pairs.map((n) => n.id), ['dup:new|old', 'buildon:new:rel', 'buildon:rel:old'], 'most similar first; equal ones by key; linked and gone pairs skipped');
+  assert.match(pairs[0].text, /util `new` and util `old` are 70% alike - merge them into one\./);
+  assert.match(pairs[1].text, /util `new` overlaps 40% with util `rel` - build on it/);
+  assert.equal(A.openNotes({ items: {} }).filter((n) => n.kind === 'duplicate').length, 0, 'no near map yet');
+});
+
+test('notes: docs, tests and placement per item, most adopted first', () => {
+  const items = {
+    b: entry('b', { meta: { adoptions: 1 }, docs: { description: false, usage: true }, tests: false }),
+    a: entry('a', { meta: { adoptions: 1 }, docs: { description: true, usage: false }, category: A.UNCATEGORIZED }),
+    c: entry('c', { meta: { kind: 'applet', adoptions: 5 }, docs: { description: false, usage: false }, tests: false }),
+  };
+  const notes = A.openNotes({ items, near: {} }).filter((n) => ['docs', 'tests', 'category'].includes(n.kind));
+  assert.deepEqual(notes.map((n) => n.id), ['docs:c', 'docs:a', 'category:a', 'docs:b', 'tests:b']);
+  assert.match(notes[0].text, /applet `c` needs a description \(40\+ characters\) and usage \(20\+ characters\)\./);
+  assert.match(notes[1].text, /needs usage/);
+  assert.match(notes[2].text, /fits no taxonomy category/);
+});
+
+test('notes: with every category covered, the next step deepens the thinnest heaviest one', () => {
+  const items = {};
+  for (const c of A.TAXONOMY.categories) for (let i = 0; i < 3; i++) items[`${c.id}${i}`] = entry(`${c.id}${i}`, { category: c.id });
+  assert.deepEqual(A.openNotes({ items, near: {} }).filter((n) => n.kind === 'next' || n.kind === 'gap'), [], 'three in every category: nothing to suggest');
+  delete items.files1; delete items.files2;
+  delete items.games1;
+  const next = A.openNotes({ items, near: {} }).filter((n) => n.kind === 'next');
+  assert.deepEqual(next, [{ id: 'next:files', kind: 'next', text: 'Most value next: deepen files and storage (1 item).' }]);
+  delete items.files0;
+  items.files9 = entry('files9', { category: 'files' });
+  items.files8 = entry('files8', { category: 'files' });
+  assert.equal(A.openNotes({ items, near: {} }).find((n) => n.kind === 'next').text, 'Most value next: deepen files and storage (2 items).');
+});
+
+test('carrying notes: no previous notes; kinds without a limit are capped at 5', () => {
+  const open = Array.from({ length: 7 }, (_, i) => ({ id: `x:${i}`, kind: 'other', text: `${i}` }));
+  const c = A.carryNotes(null, open, 9);
+  assert.deepEqual([c.addressed, c.stillOpen], [[], []]);
+  assert.equal(c.shown.length, 5);
+  assert.equal(c.shown[0].since, 9);
+  assert.equal(c.totals.other, 7);
+});

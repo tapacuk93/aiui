@@ -278,3 +278,126 @@ test('same kind+path+name from two authors: the later one gets a suffix', () => 
   assert.equal(dirs.get('2'), `util/p/n.${'b'.repeat(12)}`);
   assert.equal(dirs.get('3'), 'util/p/m');
 });
+
+test('item directories: the earliest item keeps the plain one; ties by id', () => {
+  const x = (id, created) => ({ id, author: `${id.toLowerCase().repeat(12)}0000`, created, kind: 'util', path: [], name: 'n' });
+  const dirs = itemDirs([x('B', 'T1'), x('A', 'T1'), x('E', 'T1'), x('C', 'T0'), x('D', 'T2')]);
+  assert.deepEqual(Object.fromEntries(dirs), { C: 'util/n', A: 'util/n.aaaaaaaaaaaa', B: 'util/n.bbbbbbbbbbbb', E: 'util/n.eeeeeeeeeeee', D: 'util/n.dddddddddddd' });
+});
+
+test('changes that cancel out within one run make no revision', async (t) => {
+  const { w, run, share, gh } = await setup(t);
+  const k = newKey();
+  await run();
+  const x = await share(k, { name: 'brief', payload: { code: code('brief') } });
+  await w.shared('DELETE', `/v1/items/${x.id}`, { key: k });
+  w.advance(2 * MIN);
+  const r = await run();
+  assert.deepEqual([r.status, r.revisions], ['nothing', []]);
+  assert.equal(gh.refs.size, 0, 'nothing was committed');
+  assert.equal((await w.store.getState('collection')).seq, 2, 'the changes are done with');
+});
+
+test('near pairs follow their items: an update measures again, a withdrawal forgets them', async (t) => {
+  const { w, run, share, md } = await setup(t);
+  const k = newKey();
+  await run();
+  const base = code('shared', 30);
+  const a = await share(k, { name: 'listA', path: ['notes'], payload: { code: base }, ...documented });
+  w.advance(1000);
+  await share(k, { name: 'listB', path: ['notes'], payload: { code: base + '\n' + code('extra', 6) }, ...documented });
+  w.advance(2 * MIN); await run();
+  const near = async () => Object.keys((await w.store.getState('collection')).near);
+  assert.equal((await near()).length, 1);
+  assert.match(md(2), /### Duplicates to merge/);
+  // the first one changes completely: it is no longer near the second
+  await share(k, { name: 'listA', path: ['notes'], payload: { code: code('rewritten', 30) }, ...documented });
+  w.advance(2 * MIN); await run();
+  assert.deepEqual(await near(), []);
+  assert.doesNotMatch(md(3), /Duplicates to merge/);
+  // back to near the second, then withdrawn: the pair goes with it
+  await share(k, { name: 'listA', path: ['notes'], payload: { code: base }, ...documented });
+  w.advance(2 * MIN); await run();
+  assert.equal((await near()).length, 1);
+  await w.shared('DELETE', `/v1/items/${a.id}`, { key: k });
+  w.advance(2 * MIN); await run();
+  assert.deepEqual(await near(), []);
+  assert.match(md(5), /- \[x\] addressed: component `notes\/listA` and component `notes\/listB` are \d+% alike/);
+});
+
+test('the bootstrap orders items made at the same time by id', async (t) => {
+  const { w, run, share } = await setup(t);
+  const k = newKey();
+  for (const n of ['p1', 'p2', 'p3']) await share(k, { name: n, payload: { code: code(n) } });
+  w.advance(1000);
+  await share(k, { name: 'p1', payload: { code: code('p1') + '\n// v2' } });   // newer, same created time
+  w.advance(2 * MIN);
+  const r = await run();
+  assert.deepEqual(r.revisions.map((x) => x.message.match(/component\/(\w+)/)[1]), ['p1', 'p2', 'p3']);
+});
+
+test('ties: the duplicate named is the lowest id; files of items updated together are ordered by id', async (t) => {
+  const { w, run, share, gh, md } = await setup(t);
+  const k = newKey(), same = code('same', 20);
+  await run();
+  const p = await share(k, { name: 'p', payload: { code: same } });
+  w.advance(-3600_000);   // made later, with an earlier id
+  const q = await share(k, { name: 'q', payload: { code: same } });
+  assert.ok(q.id < p.id);
+  w.advance(3600_000 + 2 * MIN); await run();
+  await share(k, { name: 'r', payload: { code: same } });
+  w.advance(2 * MIN); await run();
+  assert.match(md(3), new RegExp(`\\| duplicate \\| 0 \\| duplicates ${q.id}: adds nothing \\|`), 'p and q are equally alike: the lower id');
+  w.advance(1000);
+  await share(k, { name: 'p', payload: { code: code('p2', 20) } });
+  await share(k, { name: 'q', payload: { code: code('q2', 20) } });
+  w.advance(2 * MIN); await run();
+  const index = JSON.parse(gh.files().get('index.json')).items.map((x) => x.name);
+  assert.deepEqual(index, ['p', 'q', 'r'], 'updated at the same time: the higher id first; then the older r');
+});
+
+test('a failing AI review is logged; the revision goes ahead', async (t) => {
+  const { w, run, share, md } = await setup(t);
+  const logs = [];
+  await share(newKey(), { name: 'x', payload: { code: code('x') } });
+  w.advance(2 * MIN);
+  const r = await run({ review: async () => { throw new Error('overloaded'); }, log: (m) => logs.push(m) });
+  assert.equal(r.status, 'committed');
+  assert.ok(logs.includes('AI review failed: overloaded'));
+  assert.doesNotMatch(md(1), /Reviewer notes/);
+});
+
+test('refuses to commit what it cannot verify: truncated trees, wrong blob ids, payloads that changed', async (t) => {
+  const { w, client, share } = await setup(t);
+  const k = newKey();
+  await share(k, { name: 'x', payload: { code: code('x') } });
+  w.advance(2 * MIN);
+  const run = (github) => runRevisions({ store: w.store, github, now: w.now });
+  await run(client);   // the repository exists from here on
+  await share(k, { name: 'y', payload: { code: code('y') } });
+  w.advance(2 * MIN);
+  await assert.rejects(run({ ...client, getTree: async () => ({ truncated: true, tree: [] }) }), /the branch tree is too large to read in one call/);
+  await assert.rejects(run({ ...client, createBlob: async () => 'f'.repeat(40) }), /blob sha mismatch for /);
+  const getPayload = w.store.getPayload;
+  w.store.getPayload = async () => Buffer.from(JSON.stringify({ code: 'tampered' }));
+  await assert.rejects(run(client), /payload of \w+ is missing or does not match/);
+  w.store.getPayload = getPayload;
+  assert.equal((await run(client)).status, 'committed', 'each failed run let go of the lock');
+});
+
+test('a branch that does not exist yet starts from the full tree, without a parent', async (t) => {
+  const { w, gh, run, share } = await setup(t);
+  const k = newKey();
+  await share(k, { name: 'x', payload: { code: code('x') } });
+  w.advance(2 * MIN); await run();
+  await share(k, { name: 'y', payload: { code: code('y') } });
+  w.advance(2 * MIN);
+  const r = await run({ branch: 'release' });
+  assert.equal(r.status, 'committed');
+  const head = gh.refs.get('release');
+  assert.equal(head, r.revisions[0].commit);
+  assert.deepEqual(gh.commits.get(head).parents, []);
+  const files = gh.files('release');
+  assert.ok(files.has('component/x/meta.json') && files.has('component/y/meta.json') && files.has('revisions/r2.md'));
+  assert.ok(!files.has('revisions/r1.md'), 'earlier revision files are on main only');
+});

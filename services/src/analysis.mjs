@@ -181,7 +181,7 @@ export { pairKey };
 // state.items: id -> entry {meta, category, docs, tests, ...}; state.near: "a|b" -> similarity.
 export function openNotes(state) {
   const items = state.items, all = [];
-  const label = (id) => { const e = items[id]; return e ? `${e.meta.kind} \`${[...e.meta.path, e.meta.name].join('/')}\`` : id; };
+  const label = (id) => { const m = items[id].meta; return `${m.kind} \`${[...m.path, m.name].join('/')}\``; };
   const cov = coverage(Object.values(items));
   const gaps = TAXONOMY.categories.filter((c) => !cov.counts[c.id]).sort((a, b) => b.weight - a.weight);
   for (const c of gaps) all.push({ id: `gap:${c.id}`, kind: 'gap', text: `${c.title} has nothing yet (weight ${c.weight}) - e.g. ${c.examples.join(', ')}.` });

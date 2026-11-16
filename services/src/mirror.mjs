@@ -161,7 +161,7 @@ export function revisionMd(r) {
   for (const kind of Object.keys(A.NOTE_TITLES)) {
     const ns = r.notes.filter((n) => n.kind === kind);
     if (!ns.length) continue;
-    const more = (r.totals[kind] || 0) - ns.length;
+    const more = r.totals[kind] - ns.length;
     L.push(`### ${A.NOTE_TITLES[kind]}`, '', ...ns.map((n) => `- ${n.text}`), ...(more > 0 ? [`- ... and ${more} more`] : []), '');
   }
   if (r.ai) L.push('### Reviewer notes (AI)', '', r.ai.trim(), '');

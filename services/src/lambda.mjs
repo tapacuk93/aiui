@@ -21,15 +21,17 @@ export async function requestRun(seconds = 90, env = process.env) {
   await sqs({ QueueUrl: env.REVISIONS_QUEUE_URL, MessageBody: '{"run":"revisions"}', DelaySeconds: Math.max(0, Math.min(900, Math.round(seconds))) });
 }
 
+// The API's limits from the environment; a change asks for a revisions run once changes settle.
+export function apiConfig(env = process.env) {
+  return {
+    cacheMs: 60_000, writesPerHour: Number(env.WRITES_PER_HOUR || 60), readsPerHour: Number(env.READS_PER_HOUR || 600),
+    onChange: () => requestRun(90, env),
+  };
+}
+
 let app;
 async function getApp() {
-  app ??= createApp({
-    store: await awsStoreFromEnv(),
-    config: {
-      cacheMs: 60_000, writesPerHour: Number(process.env.WRITES_PER_HOUR || 60), readsPerHour: Number(process.env.READS_PER_HOUR || 600),
-      onChange: () => requestRun(90),
-    },
-  });
+  app ??= createApp({ store: await awsStoreFromEnv(), config: apiConfig() });
   return app;
 }
 
@@ -61,24 +63,28 @@ export async function api(event) {
 }
 
 let token;
-async function githubToken() {
+async function githubToken(env) {
   if (token) return token;
   const { SecretsManagerClient, GetSecretValueCommand } = await import('@aws-sdk/client-secrets-manager');
-  const r = await new SecretsManagerClient({}).send(new GetSecretValueCommand({ SecretId: process.env.MIRROR_SECRET || 'aiui/github-mirror' }));
+  const r = await new SecretsManagerClient({}).send(new GetSecretValueCommand({ SecretId: env.MIRROR_SECRET || 'aiui/github-mirror' }));
   const s = (r.SecretString || '').trim();
   token = s.startsWith('{') ? JSON.parse(s).token : s;   // the token itself, or {"token": "..."}
   if (!token) throw new Error('the mirror secret holds no token');
   return token;
 }
 
-export async function mirror(event = {}) {
-  const store = await awsStoreFromEnv();
-  const repo = process.env.MIRROR_REPO || 'tapacuk93/aiui-shared';
-  const github = async () => githubClient({ token: await githubToken(), repo, apiUrl: process.env.GITHUB_API_URL || 'https://api.github.com' });
-  const review = await reviewerFromEnv().catch((e) => { console.log(`AI review off: ${e.message}`); return null; });
+// The handler: Lambda calls it with (event, context).
+export async function mirror(event = {}) { return runMirror(event); }
+
+// One mirror run; `store` and `env` can be given (tests), else the store comes from the environment.
+export async function runMirror(event, { store = null, env = process.env } = {}) {
+  store ??= await awsStoreFromEnv(env);
+  const repo = env.MIRROR_REPO || 'tapacuk93/aiui-shared';
+  const github = async () => githubClient({ token: await githubToken(env), repo, apiUrl: env.GITHUB_API_URL || 'https://api.github.com' });
+  const review = await reviewerFromEnv(env).catch((e) => { console.log(`AI review off: ${e.message}`); return null; });
   const result = await runRevisions({
-    store, github, branch: process.env.MIRROR_BRANCH || 'main', force: !!event.force,
-    notify: (s) => requestRun(s), review, log: console.log,
+    store, github, branch: env.MIRROR_BRANCH || 'main', force: !!event.force,
+    notify: (s) => requestRun(s, env), review, log: console.log,
   });
   console.log(JSON.stringify({ status: result.status, revisions: result.revisions.map((r) => r.message) }));
   return { status: result.status, revisions: result.revisions };

@@ -55,7 +55,11 @@ await fetch('http://127.0.0.1:8787/users/v1/profile', { method: 'PUT', body,
 
 ```sh
 cd services && npm test        # node --test test/*.test.mjs
+npm run coverage               # tools/coverage/services.sh: fails below 100% lines/branches/functions
 ```
+
+`tools/coverage/services.sh` (Node 22.8+) measures everything except `test/` and `mock-github.mjs`
+and lists each uncovered line, branch and function as `file:line`.
 
 The tests sign with real Ed25519 keys and cover every endpoint, bad/expired/replayed signatures,
 limits, versions, withdrawal, report-hiding, find and handle uniqueness, the mutual flow and inbox
@@ -66,8 +70,10 @@ maturity math (duplicates ~0, a new category beats the same category, trivial ch
 withdrawal and reports move maturity back), coverage tracking, bootstrap, recovery after a failed
 run, the run lock, the optional AI review (fake client), and the CloudFormation template
 (`cfn-lint` when installed: on PATH or `CFN_LINT=...`).
-The DynamoDB/S3 store is checked for the commands it builds (fake clients); it has not run against
-real AWS before the first deploy.
+The DynamoDB/S3 store is checked for the commands it builds and its error mapping (fake clients),
+and the Lambda handlers run end to end with the AWS SDK clients' `send` faked (DynamoDB, S3, SQS,
+Secrets Manager) and the mock GitHub; the AI reviewer runs the real Anthropic SDK against a faked
+`fetch`. None of it touches AWS, GitHub or Anthropic.
 
 ## Deploy
 

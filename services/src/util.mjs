@@ -18,7 +18,6 @@ export function gitBlobSha(buf) {
   return createHash('sha1').update(`blob ${b.length}\0`).update(b).digest('hex');
 }
 
-export const b64url = (buf) => Buffer.from(buf).toString('base64url');
 export const iso = (ms) => new Date(ms).toISOString();
 
 // ULID: 48-bit ms time + 80 random bits, Crockford base32, 26 chars.

@@ -149,3 +149,41 @@ test('deleting the profile removes my contact requests and tells the others', as
   assert.deepEqual((await w.users('GET', '/v1/contacts', { key: c })).json.contacts, []);
   assert.deepEqual((await w.users('GET', '/v1/contacts', { key: b })).json.contacts.map((x) => x.state), ['pending']);
 });
+
+test('profiles and contacts: bad bodies, long queries, deleting a profile without a handle', async () => {
+  const w = world(), me = newKey();
+  assert.deepEqual((await w.users('PUT', '/v1/profile', { key: me, body: [] })).json, { error: 'body must be an object' });
+  assert.deepEqual((await w.users('GET', `/v1/find?q=${'a'.repeat(101)}`)).json, { error: 'q is too long' });
+  assert.deepEqual((await w.users('POST', '/v1/contacts', { key: me, body: { id: 7 } })).json, { error: 'id must be 64 lowercase hex' });
+  assert.equal((await w.users('PUT', '/v1/profile', { key: me, body: { name: 'No Handle' } })).status, 200);
+  const del = await w.users('DELETE', '/v1/profile', { key: me });
+  assert.deepEqual(del.json, { id: me.id, deleted: true, contactsRemoved: 0 });
+  assert.equal(await w.store.getProfile(me.id), null);
+});
+
+test('find by name: exact, then prefix, regardless of handles', async () => {
+  const w = world();
+  for (const [name, handle] of [['Annabel', 'bel'], ['Ann', null], ['Bob Ann', null]]) {
+    await w.users('PUT', '/v1/profile', { key: newKey(), body: { name, findable: true, ...(handle ? { handle } : {}) } });
+  }
+  assert.deepEqual((await w.users('GET', '/v1/find?q=ann')).json.profiles.map((p) => p.name), ['Ann', 'Annabel', 'Bob Ann']);
+});
+
+test('at most 1000 contacts', async () => {
+  const w = world(), me = newKey();
+  w.store.listContacts = async () => new Array(1000).fill({});
+  const r = await w.users('POST', '/v1/contacts', { key: me, body: { id: newKey().id } });
+  assert.deepEqual([r.status, r.json], [400, { error: 'too many contacts' }]);
+});
+
+test('contacts are listed newest first; equal times keep their order', async () => {
+  const w = world(), me = newKey(), [a, b, c, d] = [newKey(), newKey(), newKey(), newKey()];
+  await w.users('POST', '/v1/contacts', { key: d, body: { id: me.id } });   // the oldest: an incoming request
+  w.advance(1000);
+  await w.users('POST', '/v1/contacts', { key: me, body: { id: a.id } });
+  await w.users('POST', '/v1/contacts', { key: me, body: { id: b.id } });
+  w.advance(1000);
+  await w.users('POST', '/v1/contacts', { key: me, body: { id: c.id } });
+  const list = (await w.users('GET', '/v1/contacts', { key: me })).json.contacts;
+  assert.deepEqual(list.map((x) => [x.id, x.state]), [[c.id, 'pending'], [a.id, 'pending'], [b.id, 'pending'], [d.id, 'incoming']]);
+});

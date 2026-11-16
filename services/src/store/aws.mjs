@@ -43,7 +43,7 @@ export function unmarshall(a) {
 }
 export function unmarshallMap(m) {
   const o = {};
-  for (const [k, v] of Object.entries(m || {})) o[k] = unmarshall(v);
+  for (const [k, v] of Object.entries(m)) o[k] = unmarshall(v);
   return o;
 }
 

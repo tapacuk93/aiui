@@ -56,21 +56,25 @@ export async function startLocalServer({ port = 8787, store, now = Date.now, con
   return { url: `http://127.0.0.1:${server.address().port}`, server, store, app, close: () => { clearTimeout(timer); return new Promise((r) => server.close(r)); } };
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const arg = (name, def) => { const i = process.argv.indexOf(name); return i > 0 ? process.argv[i + 1] : def; };
+// The command line (usage above). Returns the server and the mock GitHub (when started).
+export async function main(argv = process.argv, env = process.env, log = console.log) {
+  const arg = (name, def) => { const i = argv.indexOf(name); return i > 0 ? argv[i + 1] : def; };
   const port = Number(arg('--port', 8787));
   const dir = arg('--data', null);
   let github = null, mock = null;
-  if (process.argv.includes('--mirror')) {
-    if (process.env.GITHUB_TOKEN && process.env.MIRROR_REPO) {
-      github = githubClient({ token: process.env.GITHUB_TOKEN, repo: process.env.MIRROR_REPO });
+  if (argv.includes('--mirror')) {
+    if (env.GITHUB_TOKEN && env.MIRROR_REPO) {
+      github = githubClient({ token: env.GITHUB_TOKEN, repo: env.MIRROR_REPO });
     } else {
       mock = await startMockGitHub();
       const client = githubClient({ token: mock.token, repo: mock.repo, apiUrl: mock.url });
       github = Object.assign(client, { files: (b) => mock.files(b) });
     }
   }
-  const s = await startLocalServer({ port, store: createMemoryStore({ dir }), github, branch: process.env.MIRROR_BRANCH || 'main', settleMs: Number(arg('--settle', 90)) * 1000 });
-  console.log(`shared: ${s.url}/shared/v1/index   users: ${s.url}/users/v1/find?q=...` +
-    (dir ? `   data: ${dir}` : '   (memory only)') + (mock ? `   mock GitHub: ${mock.url}` : github ? `   mirror: ${process.env.MIRROR_REPO}` : ''));
+  const s = await startLocalServer({ port, store: createMemoryStore({ dir }), github, branch: env.MIRROR_BRANCH || 'main', settleMs: Number(arg('--settle', 90)) * 1000 });
+  log(`shared: ${s.url}/shared/v1/index   users: ${s.url}/users/v1/find?q=...` +
+    (dir ? `   data: ${dir}` : '   (memory only)') + (mock ? `   mock GitHub: ${mock.url}` : github ? `   mirror: ${env.MIRROR_REPO}` : ''));
+  return { server: s, mock };
 }
+
+if (import.meta.url === pathToFileURL(process.argv[1]).href) await main();

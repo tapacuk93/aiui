@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { world, newKey, item } from './helpers.mjs';
+import { gitBlobSha } from '../src/util.mjs';
 
 const sha = (b) => createHash('sha256').update(b).digest('hex');
 
@@ -267,4 +268,93 @@ test('routing: unknown paths, methods, hosts; CORS', async () => {
   const e = await w.shared('GET', '/v1/items/%E0%A4%A');
   assert.equal(e.status, 400);
   assert.equal(e.headers['cache-control'], 'no-store');
+});
+
+test('validation: missing lists, repeated path segments, css type, blank titles and reasons, empty and huge bodies', async () => {
+  const w = world(), k = newKey();
+  const post = (body) => w.shared('POST', '/v1/items', { key: k, body });
+  const { path, libs, uses, ...bare } = item();
+  const r = await post(bare);
+  assert.equal(r.status, 201, r.text);
+  assert.deepEqual([r.json.path, r.json.libs, r.json.uses], [[], [], []]);
+  assert.deepEqual((await post(item({ path: ['a', 'a'] }))).json, { error: 'path has a repeated segment' });
+  assert.deepEqual((await post(item({ payload: { code: 'x', css: 1 } }))).json, { error: 'payload.css must be a string' });
+  assert.equal((await post(item({ name: 'blank', title: '   ' }))).json.title, 'blank');
+  assert.deepEqual((await w.shared('POST', '/v1/items', { key: k })).json, { error: 'body required' });
+  const huge = await post(Buffer.alloc(1024 * 1024 + 1, 0x20));
+  assert.deepEqual([huge.status, huge.json], [413, { error: 'body is too large' }]);
+  const report = await w.shared('POST', `/v1/items/${r.json.id}/report`, { key: newKey(), body: { reason: '  ' } });
+  assert.deepEqual([report.status, report.json], [400, { error: 'reason required' }]);
+});
+
+test('reads: bad cursors and queries, a payload gone missing, deleting what is not an item id', async () => {
+  const w = world(), k = newKey();
+  const x = (await w.shared('POST', '/v1/items', { key: k, body: item() })).json;
+  const cursor = Buffer.from(JSON.stringify({ id: x.id })).toString('base64url');
+  assert.deepEqual((await w.shared('GET', `/v1/index?after=${cursor}`)).json, { error: 'bad cursor' });
+  assert.deepEqual((await w.shared('GET', `/v1/search?q=${'q'.repeat(201)}`)).json, { error: 'q is too long' });
+  assert.deepEqual((await w.shared('GET', '/v1/search?q=---')).json, { items: [] }, 'no words, no matches');
+  w.store.getPayload = async () => null;
+  const p = await w.shared('GET', `/v1/items/${x.id}/payload`);
+  assert.deepEqual([p.status, p.json], [404, { error: 'payload missing' }]);
+  const d = await w.shared('DELETE', '/v1/items/not-an-id', { key: k });
+  assert.deepEqual([d.status, d.json], [404, { error: 'no such item' }]);
+});
+
+test('search: partial path matches, ties by adoptions then newest', async () => {
+  const w = world(), k = newKey();
+  const share = async (over) => { w.advance(1000); return (await w.shared('POST', '/v1/items', { key: k, body: item({ title: 'T', description: '', ...over }) })).json; };
+  const a = await share({ name: 'a1', path: ['mapsets'] });
+  const b = await share({ name: 'b1', path: ['mapsets'] });
+  const c = await share({ name: 'c1', path: ['mapsets'] });
+  const d = await share({ name: 'd1', path: ['mapsets'] });
+  await w.shared('POST', `/v1/items/${b.id}/adopted`, { key: newKey() });
+  const names = (await w.shared('GET', '/v1/search?q=maps')).json.items.map((x) => x.name);
+  assert.deepEqual(names, ['b1', 'd1', 'c1', 'a1'], 'equal scores: the adopted one, then newest first');
+  assert.ok(a && c && d);
+});
+
+test('a failing change hook does not fail the write', async (t) => {
+  const errors = [];
+  t.mock.method(console, 'error', (...a) => errors.push(a));
+  const w = world({ onChange: () => { throw new Error('queue down'); } });
+  const r = await w.shared('POST', '/v1/items', { key: newKey(), body: item() });
+  assert.equal(r.status, 201);
+  assert.equal(errors[0][0], 'onChange');
+  assert.equal(errors[0][1].message, 'queue down');
+});
+
+test('requests without a client address share one read budget; unexpected errors are 500', async (t) => {
+  const w = world({ readsPerHour: 2 });
+  const get = () => w.app.handle({ method: 'GET', host: 'shared.aiui.oeaio.com', path: '/v1/index', query: new URLSearchParams(), headers: {}, body: Buffer.alloc(0) });
+  assert.equal((await get()).status, 200);
+  assert.equal((await get()).status, 200);
+  assert.equal((await get()).status, 429);
+  assert.equal(await w.store.hit(`r:-:${Math.floor(w.now() / 3600000)}`, 7200), 4, 'counted under "-"');
+
+  const noHost = await w.app.handle({ method: 'GET', path: '/v1/index', query: new URLSearchParams(), headers: {}, body: Buffer.alloc(0), ip: '1.1.1.1' });
+  assert.deepEqual([noHost.status, JSON.parse(noHost.body)], [404, { error: 'unknown host' }]);
+
+  const errors = [];
+  t.mock.method(console, 'error', (e) => errors.push(e));
+  const broken = world();
+  broken.store.listLive = async () => { throw new TypeError('store broke'); };
+  const r = await broken.shared('GET', '/v1/index');
+  assert.deepEqual([r.status, r.json], [500, { error: 'internal error' }]);
+  assert.equal(errors[0].message, 'store broke');
+});
+
+test('whole-set reads are cached for cacheMs', async () => {
+  const w = world({ cacheMs: 60_000 }), k = newKey();
+  await w.shared('POST', '/v1/items', { key: k, body: item({ name: 'first' }) });
+  assert.equal((await w.shared('GET', '/v1/search?q=first')).json.items.length, 1);
+  await w.shared('POST', '/v1/items', { key: k, body: item({ name: 'firstAgain' }) });
+  assert.equal((await w.shared('GET', '/v1/search?q=first')).json.items.length, 1, 'still the cached set');
+  w.advance(60_000);
+  assert.equal((await w.shared('GET', '/v1/search?q=first')).json.items.length, 2);
+});
+
+test('git blob ids of strings and bytes are what git computes', () => {
+  assert.equal(gitBlobSha('hello'), 'b6fc4c620b67d95f953a5c1c1230aaab5db5a1b0');
+  assert.equal(gitBlobSha(Buffer.from('hello')), 'b6fc4c620b67d95f953a5c1c1230aaab5db5a1b0');
 });

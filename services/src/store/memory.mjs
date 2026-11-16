@@ -27,7 +27,7 @@ export function createMemoryStore({ dir, now = Date.now } = {}) {
 
     // ---- items
     async getItem(id) { return clone(s.items[id]) ?? null; },
-    async findItemByKey(key) { const id = s.keys[key]; return id ? clone(s.items[id]) ?? null : null; },
+    async findItemByKey(key) { const id = s.keys[key]; return id ? clone(s.items[id]) : null; },
     async createItem(item, key) {
       if (s.items[item.id] || s.keys[key]) throw new HttpError(409, 'conflict, try again');
       s.items[item.id] = clone(item); s.keys[key] = item.id; save();
